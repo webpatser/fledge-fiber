@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -67,8 +70,8 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
-          extensions: mbstring, pdo, pdo_mysql, pdo_pgsql, sockets, pcntl
+          php-version: '8.5'
+          extensions: mbstring, pdo, pdo_mysql, pdo_pgsql, sockets, pcntl, ffi
           coverage: none
 
       - name: Install dependencies
