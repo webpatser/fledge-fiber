@@ -94,8 +94,12 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Fledge\\Async\\Test\\": "tests/"
-        }
+            "Fledge\\Async\\Test\\": "tests/",
+            "Tests\\Fledge\\database\\": "tests/Fledge/database/"
+        },
+        "files": [
+            "tests/helpers.php"
+        ]
     },
     "extra": {
         "laravel": {

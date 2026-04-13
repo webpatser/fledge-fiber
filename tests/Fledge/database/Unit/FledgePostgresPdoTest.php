@@ -1,9 +1,9 @@
 <?php
 
 use Fledge\Async\Database\SqlConnectionPool;
-use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Fiber\Database\Pdo\FledgePostgresPdo;
+use Tests\Fledge\database\Stubs\FakeRowResult;
 
 afterEach(fn () => Mockery::close());
 
@@ -84,16 +84,13 @@ it('returns pgsql as driver name', function () {
 });
 
 it('caches server version', function () {
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('fetchRow')
-        ->once()
-        ->andReturn(['version' => 'PostgreSQL 16.1 on x86_64']);
+    $result = new FakeRowResult([['version' => 'PostgreSQL 16.1 on x86_64']]);
 
     $mockPool = Mockery::mock(SqlConnectionPool::class);
     $mockPool->shouldReceive('query')
         ->once()
         ->with('SELECT version()')
-        ->andReturn($mockResult);
+        ->andReturn($result);
 
     $pdo = new FledgePostgresPdo($mockPool);
 

@@ -1,8 +1,8 @@
 <?php
 
-use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
+use Tests\Fledge\database\Stubs\FakeRowResult;
 
 beforeEach(function () {
     //
@@ -29,12 +29,11 @@ it('collects bound values', function () {
 
 it('passes params to statement on execute', function () {
     $mockStatement = Mockery::mock(SqlStatement::class);
-    $mockResult = Mockery::mock(SqlResult::class);
 
     $mockStatement->shouldReceive('execute')
         ->once()
         ->with(['foo', 'bar'])
-        ->andReturn($mockResult);
+        ->andReturn(new FakeRowResult([]));
 
     $stmt = new FledgePdoStatement($mockStatement);
     $stmt->bindValue(1, 'foo', PDO::PARAM_STR);
@@ -45,12 +44,11 @@ it('passes params to statement on execute', function () {
 
 it('converts 1-based bindings to 0-based array', function () {
     $mockStatement = Mockery::mock(SqlStatement::class);
-    $mockResult = Mockery::mock(SqlResult::class);
 
     $mockStatement->shouldReceive('execute')
         ->once()
         ->with(['first', 'second', 'third'])
-        ->andReturn($mockResult);
+        ->andReturn(new FakeRowResult([]));
 
     $stmt = new FledgePdoStatement($mockStatement);
     $stmt->bindValue(1, 'first', PDO::PARAM_STR);
@@ -62,8 +60,7 @@ it('converts 1-based bindings to 0-based array', function () {
 
 it('clears bindings after execute', function () {
     $mockStatement = Mockery::mock(SqlStatement::class);
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockStatement->shouldReceive('execute')->andReturn($mockResult);
+    $mockStatement->shouldReceive('execute')->andReturn(new FakeRowResult([]));
 
     $stmt = new FledgePdoStatement($mockStatement);
     $stmt->bindValue(1, 'foo', PDO::PARAM_STR);
@@ -79,10 +76,9 @@ it('fetches all rows as objects by default', function () {
         ['id' => 2, 'name' => 'Bob'],
     ];
 
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
     $stmt->setFetchMode(PDO::FETCH_OBJ);
 
     $result = $stmt->fetchAll();
@@ -95,49 +91,44 @@ it('fetches all rows as objects by default', function () {
 
 it('fetches all rows in FETCH_ASSOC mode', function () {
     $rows = [['id' => 1, 'name' => 'Alice']];
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->fetchAll(PDO::FETCH_ASSOC))->toBe([['id' => 1, 'name' => 'Alice']]);
 });
 
 it('fetches all rows in FETCH_NUM mode', function () {
     $rows = [['id' => 1, 'name' => 'Alice']];
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->fetchAll(PDO::FETCH_NUM))->toBe([[1, 'Alice']]);
 });
 
 it('fetches all rows in FETCH_BOTH mode', function () {
     $rows = [['id' => 1, 'name' => 'Alice']];
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->fetchAll(PDO::FETCH_BOTH))->toBe([[1, 'Alice', 'id' => 1, 'name' => 'Alice']]);
 });
 
 it('fetches all rows in FETCH_COLUMN mode', function () {
     $rows = [['id' => 1], ['id' => 2], ['id' => 3]];
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->fetchAll(PDO::FETCH_COLUMN))->toBe([1, 2, 3]);
 });
 
 it('fetches single row', function () {
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('fetchRow')->once()->andReturn(['id' => 1, 'name' => 'Alice']);
+    $result = new FakeRowResult([['id' => 1, 'name' => 'Alice']]);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
     $stmt->setFetchMode(PDO::FETCH_OBJ);
 
     $row = $stmt->fetch();
@@ -147,19 +138,17 @@ it('fetches single row', function () {
 });
 
 it('returns false when no rows remain', function () {
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('fetchRow')->once()->andReturn(null);
+    $result = new FakeRowResult([]);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->fetch())->toBeFalse();
 });
 
 it('returns row count', function () {
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('getRowCount')->once()->andReturn(5);
+    $result = new FakeRowResult([['a' => 1], ['a' => 2], ['a' => 3], ['a' => 4], ['a' => 5]]);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->rowCount())->toBe(5);
 });
@@ -169,20 +158,17 @@ it('returns zero row count without result', function () {
 });
 
 it('advances to next rowset', function () {
-    $nextResult = Mockery::mock(SqlResult::class);
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('getNextResult')->once()->andReturn($nextResult);
+    $result = new FakeRowResult([], new FakeRowResult([]));
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->nextRowset())->toBeTrue();
 });
 
 it('returns false when no next rowset', function () {
-    $mockResult = Mockery::mock(SqlResult::class);
-    $mockResult->shouldReceive('getNextResult')->once()->andReturn(null);
+    $result = new FakeRowResult([]);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     expect($stmt->nextRowset())->toBeFalse();
 });
@@ -202,10 +188,9 @@ it('fetches all rows in FETCH_CLASS mode', function () {
         ['id' => 2, 'name' => 'Bob'],
     ];
 
-    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+    $result = new FakeRowResult($rows);
 
-    $stmt = new FledgePdoStatement(null, $mockResult);
+    $stmt = new FledgePdoStatement(null, $result);
 
     $result = $stmt->fetchAll(PDO::FETCH_CLASS, \stdClass::class);
 
@@ -253,10 +238,9 @@ it('setFetchMode persists across multiple fetchAll calls', function () {
     $rows1 = [['id' => 1]];
     $rows2 = [['id' => 2]];
 
-    $mockResult1 = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult1->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows1));
+    $result1 = new FakeRowResult($rows1);
 
-    $stmt = new FledgePdoStatement(null, $mockResult1);
+    $stmt = new FledgePdoStatement(null, $result1);
     $stmt->setFetchMode(PDO::FETCH_ASSOC);
 
     $result = $stmt->fetchAll();
@@ -264,13 +248,12 @@ it('setFetchMode persists across multiple fetchAll calls', function () {
     expect($result)->toBe([['id' => 1]]);
 
     // Set new result and fetch again — mode should persist
-    $mockResult2 = Mockery::mock(SqlResult::class, IteratorAggregate::class);
-    $mockResult2->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows2));
+    $result2 = new FakeRowResult($rows2);
 
     $resultProp = new ReflectionProperty($stmt, 'result');
-    $resultProp->setValue($stmt, $mockResult2);
+    $resultProp->setValue($stmt, $result2);
 
-    $result2 = $stmt->fetchAll();
+    $fetched2 = $stmt->fetchAll();
 
-    expect($result2)->toBe([['id' => 2]]);
+    expect($fetched2)->toBe([['id' => 2]]);
 });

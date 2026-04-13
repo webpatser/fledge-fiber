@@ -10,7 +10,7 @@ use Fledge\Async\Database\SqlCommandResult;
  * @psalm-import-type TFieldType from PostgresResult
  * @extends SqlCommandResult<TFieldType, PostgresResult>
  */
-final class PostgresCommandResult extends SqlCommandResult implements PostgresResult
+final readonly class PostgresCommandResult extends SqlCommandResult implements PostgresResult
 {
     /**
      * Changes return type to this library's Result type.

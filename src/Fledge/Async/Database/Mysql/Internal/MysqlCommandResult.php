@@ -11,7 +11,7 @@ use Fledge\Async\Database\SqlCommandResult;
  * @psalm-import-type TFieldType from MysqlResult
  * @extends SqlCommandResult<TFieldType, MysqlResult>
  */
-final class MysqlCommandResult extends SqlCommandResult implements MysqlResult
+final readonly class MysqlCommandResult extends SqlCommandResult implements MysqlResult
 {
     private ?int $lastInsertId;
 

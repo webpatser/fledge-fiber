@@ -1,11 +1,12 @@
 <?php
 
-use Fledge\Async\Database\Mysql\MysqlResult;
+use Fledge\Async\Database\Mysql\Internal\MysqlCommandResult;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\Mysql\MysqlTransaction;
 use Fledge\Async\Database\SqlConnectionPool;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
+use Tests\Fledge\database\Stubs\FakeRowResult;
 
 afterEach(fn () => Mockery::close());
 
@@ -24,12 +25,10 @@ it('prepares and returns FledgePdoStatement', function () {
 });
 
 it('exec returns affected row count', function () {
-    $mockResult = Mockery::mock(MysqlResult::class);
-    $mockResult->shouldReceive('getRowCount')->andReturn(3);
-    $mockResult->shouldReceive('getLastInsertId')->andReturn(null);
+    $result = new MysqlCommandResult(3, 0);
 
     $mockPool = Mockery::mock(SqlConnectionPool::class);
-    $mockPool->shouldReceive('query')->once()->andReturn($mockResult);
+    $mockPool->shouldReceive('query')->once()->andReturn($result);
 
     $pdo = new FledgeMySqlPdo($mockPool);
 
@@ -37,12 +36,10 @@ it('exec returns affected row count', function () {
 });
 
 it('tracks last insert ID from exec', function () {
-    $mockResult = Mockery::mock(MysqlResult::class);
-    $mockResult->shouldReceive('getRowCount')->andReturn(1);
-    $mockResult->shouldReceive('getLastInsertId')->andReturn(42);
+    $result = new MysqlCommandResult(1, 42);
 
     $mockPool = Mockery::mock(SqlConnectionPool::class);
-    $mockPool->shouldReceive('query')->andReturn($mockResult);
+    $mockPool->shouldReceive('query')->andReturn($result);
 
     $pdo = new FledgeMySqlPdo($mockPool);
     $pdo->exec("INSERT INTO users (name) VALUES ('test')");
@@ -51,14 +48,13 @@ it('tracks last insert ID from exec', function () {
 });
 
 it('tracks last insert ID from prepared statement execute', function () {
-    $mockResult = Mockery::mock(MysqlResult::class);
-    $mockResult->shouldReceive('getLastInsertId')->andReturn(99);
+    $result = new MysqlCommandResult(1, 99);
 
     $mockStmt = Mockery::mock(MysqlStatement::class);
     $mockStmt->shouldReceive('execute')
         ->once()
         ->with(['Alice'])
-        ->andReturn($mockResult);
+        ->andReturn($result);
 
     $mockPool = Mockery::mock(SqlConnectionPool::class);
     $mockPool->shouldReceive('prepare')
@@ -120,14 +116,13 @@ it('returns false for rollback without transaction', function () {
 });
 
 it('caches server version from SELECT VERSION()', function () {
-    $mockResult = Mockery::mock(MysqlResult::class);
-    $mockResult->shouldReceive('fetchRow')->once()->andReturn(['VERSION()' => '8.0.35']);
+    $result = new FakeRowResult([['VERSION()' => '8.0.35']]);
 
     $mockPool = Mockery::mock(SqlConnectionPool::class);
     $mockPool->shouldReceive('query')
         ->once()
         ->with('SELECT VERSION()')
-        ->andReturn($mockResult);
+        ->andReturn($result);
 
     $pdo = new FledgeMySqlPdo($mockPool);
 

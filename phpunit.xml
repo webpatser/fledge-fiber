@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache"
+>
+    <testsuites>
+        <testsuite name="Fledge">
+            <directory>tests/Fledge</directory>
+        </testsuite>
+    </testsuites>
+    <php>
+        <env name="FLEDGE_TEST_MYSQL_HOST" value="127.0.0.1"/>
+        <env name="FLEDGE_TEST_MYSQL_PORT" value="13306"/>
+        <env name="FLEDGE_TEST_MYSQL_USER" value="fledge"/>
+        <env name="FLEDGE_TEST_MYSQL_PASSWORD" value="fledge"/>
+        <env name="FLEDGE_TEST_MYSQL_DATABASE" value="fledge_test"/>
+        <env name="FLEDGE_TEST_POSTGRES_HOST" value="127.0.0.1"/>
+        <env name="FLEDGE_TEST_POSTGRES_PORT" value="15432"/>
+        <env name="FLEDGE_TEST_POSTGRES_USER" value="fledge"/>
+        <env name="FLEDGE_TEST_POSTGRES_PASSWORD" value="fledge"/>
+        <env name="FLEDGE_TEST_POSTGRES_DATABASE" value="fledge_test"/>
+        <env name="FLEDGE_TEST_REDIS_HOST" value="127.0.0.1"/>
+        <env name="FLEDGE_TEST_REDIS_PORT" value="16379"/>
+        <env name="FLEDGE_TEST_HTTPBIN_URL" value="http://127.0.0.1:18080"/>
+        <env name="FLEDGE_TEST_WEBSOCKET_URL" value="ws://127.0.0.1:18081"/>
+    </php>
+</phpunit>
