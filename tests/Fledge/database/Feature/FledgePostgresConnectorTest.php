@@ -66,3 +66,29 @@ it('uses connect_via for pgbouncer', function () {
     expect($config->getDatabase())->toBe('pgbouncer_db')
         ->and($config->getPort())->toBe(6432);
 });
+
+it('builds config with empty optional fields', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'username' => '',
+        'password' => '',
+    ]);
+
+    expect($config->getUser())->toBe('')
+        ->and($config->getPassword())->toBe('');
+});
+
+it('preserves host when using connect_via', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'primary.example.com',
+        'connect_via_port' => 6432,
+    ]);
+
+    // Host should stay as the original
+    expect($config->getHost())->toBe('primary.example.com');
+});

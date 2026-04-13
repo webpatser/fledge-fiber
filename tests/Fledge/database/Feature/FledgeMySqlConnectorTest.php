@@ -89,3 +89,43 @@ it('returns null sql mode without strict config', function () {
 
     expect($config->getSqlMode())->toBeNull();
 });
+
+it('sets only charset without collation', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['charset' => 'latin1']);
+
+    expect($config->getCharset())->toBe('latin1');
+});
+
+it('sets only collation', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['collation' => 'utf8mb4_general_ci']);
+
+    expect($config->getCollation())->toBe('utf8mb4_general_ci');
+});
+
+it('getSqlMode returns null when no strict or modes key', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'getSqlMode');
+
+    expect($method->invoke($connector, ['host' => '127.0.0.1']))->toBeNull();
+});
+
+it('builds config with all fields empty strings', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'username' => '',
+        'password' => '',
+        'database' => '',
+    ]);
+
+    expect($config->getUser())->toBe('')
+        ->and($config->getPassword())->toBe('')
+        ->and($config->getDatabase())->toBe('');
+});

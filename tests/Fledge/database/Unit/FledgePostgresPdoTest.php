@@ -100,3 +100,43 @@ it('caches server version', function () {
     expect($pdo->getAttribute(PDO::ATTR_SERVER_VERSION))
         ->toBe('PostgreSQL 16.1 on x86_64');
 });
+
+it('preserves ? inside escaped single quotes', function () {
+    $mockStmt = Mockery::mock(SqlStatement::class);
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('prepare')
+        ->once()
+        ->with("SELECT * FROM t WHERE name = 'it''s a ?' AND id = \$1")
+        ->andReturn($mockStmt);
+
+    $pdo = new FledgePostgresPdo($mockPool);
+    $pdo->prepare("SELECT * FROM t WHERE name = 'it''s a ?' AND id = ?");
+});
+
+it('convertPlaceholders handles empty string', function () {
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $pdo = new FledgePostgresPdo($mockPool);
+
+    $method = new ReflectionMethod($pdo, 'convertPlaceholders');
+
+    expect($method->invoke($pdo, ''))->toBe('');
+});
+
+it('convertPlaceholders handles consecutive placeholders', function () {
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $pdo = new FledgePostgresPdo($mockPool);
+
+    $method = new ReflectionMethod($pdo, 'convertPlaceholders');
+
+    expect($method->invoke($pdo, '(?, ?, ?)'))->toBe('($1, $2, $3)');
+});
+
+it('convertPlaceholders passes through query without ? or quotes', function () {
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $pdo = new FledgePostgresPdo($mockPool);
+
+    $method = new ReflectionMethod($pdo, 'convertPlaceholders');
+    $query = 'SELECT id, name FROM users ORDER BY id';
+
+    expect($method->invoke($pdo, $query))->toBe($query);
+});

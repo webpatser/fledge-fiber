@@ -195,3 +195,82 @@ it('sets fetch mode', function () {
     $ref = new ReflectionProperty($stmt, 'fetchMode');
     expect($ref->getValue($stmt))->toBe(PDO::FETCH_ASSOC);
 });
+
+it('fetches all rows in FETCH_CLASS mode', function () {
+    $rows = [
+        ['id' => 1, 'name' => 'Alice'],
+        ['id' => 2, 'name' => 'Bob'],
+    ];
+
+    $mockResult = Mockery::mock(SqlResult::class, IteratorAggregate::class);
+    $mockResult->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows));
+
+    $stmt = new FledgePdoStatement(null, $mockResult);
+
+    $result = $stmt->fetchAll(PDO::FETCH_CLASS, \stdClass::class);
+
+    expect($result)->toHaveCount(2)
+        ->and($result[0])->toBeObject()
+        ->and($result[0]->id)->toBe(1)
+        ->and($result[0]->name)->toBe('Alice')
+        ->and($result[1]->name)->toBe('Bob');
+});
+
+it('stores named parameters via bindValue', function () {
+    $stmt = new FledgePdoStatement;
+
+    $stmt->bindValue(':name', 'Alice');
+    $stmt->bindValue(':age', 30, PDO::PARAM_INT);
+
+    $ref = new ReflectionProperty($stmt, 'bindings');
+    $bindings = $ref->getValue($stmt);
+
+    expect($bindings[':name'])->toBe('Alice')
+        ->and($bindings[':age'])->toBe(30);
+});
+
+it('buildExecuteParams passes named params as-is', function () {
+    $stmt = new FledgePdoStatement;
+
+    $stmt->bindValue(':name', 'Alice');
+    $stmt->bindValue(':age', '30');
+
+    $method = new ReflectionMethod($stmt, 'buildExecuteParams');
+    $params = $method->invoke($stmt);
+
+    expect($params)->toBe([':name' => 'Alice', ':age' => '30']);
+});
+
+it('buildExecuteParams returns empty array when no bindings', function () {
+    $stmt = new FledgePdoStatement;
+
+    $method = new ReflectionMethod($stmt, 'buildExecuteParams');
+
+    expect($method->invoke($stmt))->toBe([]);
+});
+
+it('setFetchMode persists across multiple fetchAll calls', function () {
+    $rows1 = [['id' => 1]];
+    $rows2 = [['id' => 2]];
+
+    $mockResult1 = Mockery::mock(SqlResult::class, IteratorAggregate::class);
+    $mockResult1->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows1));
+
+    $stmt = new FledgePdoStatement(null, $mockResult1);
+    $stmt->setFetchMode(PDO::FETCH_ASSOC);
+
+    $result = $stmt->fetchAll();
+
+    expect($result)->toBe([['id' => 1]]);
+
+    // Set new result and fetch again — mode should persist
+    $mockResult2 = Mockery::mock(SqlResult::class, IteratorAggregate::class);
+    $mockResult2->shouldReceive('getIterator')->andReturn(new ArrayIterator($rows2));
+
+    $resultProp = new ReflectionProperty($stmt, 'result');
+    $resultProp->setValue($stmt, $mockResult2);
+
+    $result2 = $stmt->fetchAll();
+
+    expect($result2)->toBe([['id' => 2]]);
+});

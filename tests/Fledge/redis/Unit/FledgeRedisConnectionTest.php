@@ -53,3 +53,54 @@ it('executes pipeline callback directly', function () {
 
     expect($result)->toBe('callback_result');
 });
+
+it('prefix with empty string returns key unchanged', function () {
+    $conn = createTestConnection('');
+
+    expect($conn->_prefix('mykey'))->toBe('mykey');
+});
+
+it('flattenParameters flattens nested arrays', function () {
+    $conn = createTestConnection();
+    $method = new ReflectionMethod($conn, 'flattenParameters');
+
+    $result = $method->invoke($conn, ['key', ['a', 'b', 'c']]);
+
+    expect($result)->toBe(['key', 'a', 'b', 'c']);
+});
+
+it('flattenParameters converts booleans to ints', function () {
+    $conn = createTestConnection();
+    $method = new ReflectionMethod($conn, 'flattenParameters');
+
+    $result = $method->invoke($conn, [true, false]);
+
+    expect($result)->toBe([1, 0]);
+});
+
+it('flattenParameters emits key and value for assoc arrays', function () {
+    $conn = createTestConnection();
+    $method = new ReflectionMethod($conn, 'flattenParameters');
+
+    $result = $method->invoke($conn, [['field1' => 'val1', 'field2' => 'val2']]);
+
+    expect($result)->toBe(['field1', 'val1', 'field2', 'val2']);
+});
+
+it('pairsToAssociative converts flat pairs to assoc array', function () {
+    $conn = createTestConnection();
+    $method = new ReflectionMethod($conn, 'pairsToAssociative');
+
+    $result = $method->invoke($conn, ['key1', 'val1', 'key2', 'val2']);
+
+    expect($result)->toBe(['key1' => 'val1', 'key2' => 'val2']);
+});
+
+it('pairsToAssociative handles empty array', function () {
+    $conn = createTestConnection();
+    $method = new ReflectionMethod($conn, 'pairsToAssociative');
+
+    $result = $method->invoke($conn, []);
+
+    expect($result)->toBe([]);
+});

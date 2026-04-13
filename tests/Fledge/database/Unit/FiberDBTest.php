@@ -34,3 +34,22 @@ it('propagates exceptions', function () {
         fn () => throw new RuntimeException('test error'),
     );
 })->throws(RuntimeException::class, 'test error');
+
+it('returns empty array when no operations given', function () {
+    expect(FiberDB::concurrent())->toBe([]);
+});
+
+it('preserves key order with many operations', function () {
+    $operations = [];
+    for ($i = 0; $i < 10; $i++) {
+        $val = $i;
+        $operations[] = fn () => $val * 2;
+    }
+
+    $results = FiberDB::concurrent(...$operations);
+
+    expect($results)->toHaveCount(10);
+    for ($i = 0; $i < 10; $i++) {
+        expect($results[$i])->toBe($i * 2);
+    }
+});
