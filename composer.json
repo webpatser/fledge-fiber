@@ -1,0 +1,115 @@
+{
+    "name": "webpatser/fledge-fiber",
+    "description": "Non-blocking async drivers for the Fledge framework — PHP 8.5 only",
+    "license": "Apache-2.0",
+    "type": "library",
+    "keywords": ["async", "fiber", "non-blocking", "mysql", "redis", "http", "websocket", "postgres"],
+    "require": {
+        "php": "^8.5",
+        "revolt/event-loop": "^1.0",
+        "daverandom/libdns": "^2.1",
+        "guzzlehttp/guzzle": "^7.8",
+        "guzzlehttp/psr7": "^2.4",
+        "league/uri": "^7.0",
+        "league/uri-interfaces": "^7.0",
+        "kelunik/certificate": "^1.1",
+        "illuminate/database": "^13.0",
+        "illuminate/http": "^13.0",
+        "illuminate/redis": "^13.0",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "livewire/livewire": "^4.2",
+        "mockery/mockery": "^1.6",
+        "pestphp/pest": "^4.0",
+        "phpunit/phpunit": "^11.0 || ^12.0 || ^13.0"
+    },
+    "suggest": {
+        "livewire/livewire": "Required for concurrent Livewire component updates (^4.2)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Fledge\\Async\\": "src/Fledge/Async/",
+            "Fledge\\Async\\Stream\\": "src/Fledge/Async/Stream/",
+            "Fledge\\Async\\Database\\": "src/Fledge/Async/Database/",
+            "Fledge\\Async\\Database\\Mysql\\": "src/Fledge/Async/Database/Mysql/",
+            "Fledge\\Async\\Database\\Postgres\\": "src/Fledge/Async/Database/Postgres/",
+            "Fledge\\Async\\Http\\": "src/Fledge/Async/Http/",
+            "Fledge\\Async\\Http\\Http1\\": "src/Fledge/Async/Http/Protocol/",
+            "Fledge\\Async\\Http\\Http2\\": "src/Fledge/Async/Http/Protocol/",
+            "Fledge\\Async\\Http\\Client\\": "src/Fledge/Async/Http/Client/",
+            "Fledge\\Async\\Http\\Server\\": "src/Fledge/Async/Http/Server/",
+            "Fledge\\Async\\Http\\Server\\FormParser\\": "src/Fledge/Async/Http/Server/FormParser/",
+            "Fledge\\Async\\Http\\Server\\Router\\": "src/Fledge/Async/Http/Server/Router/",
+            "Fledge\\Async\\Http\\Server\\Session\\": "src/Fledge/Async/Http/Server/Session/",
+            "Fledge\\Async\\Http\\Server\\StaticContent\\": "src/Fledge/Async/Http/Server/StaticContent/",
+            "Fledge\\Async\\Redis\\": "src/Fledge/Async/Redis/",
+            "Fledge\\Async\\Cache\\": "src/Fledge/Async/Cache/",
+            "Fledge\\Async\\Sync\\": "src/Fledge/Async/Sync/",
+            "Fledge\\Async\\Dns\\": "src/Fledge/Async/Dns/",
+            "Fledge\\Async\\Process\\": "src/Fledge/Async/Process/",
+            "Fledge\\Async\\Serialization\\": "src/Fledge/Async/Serialization/",
+            "Fledge\\Async\\File\\": "src/Fledge/Async/File/",
+            "Fledge\\Async\\Parallel\\": "src/Fledge/Async/Parallel/",
+            "Fledge\\Async\\WebSocket\\": "src/Fledge/Async/WebSocket/",
+            "Fledge\\Async\\WebSocket\\Client\\": "src/Fledge/Async/WebSocket/Client/",
+            "Fledge\\Async\\WebSocket\\Server\\": "src/Fledge/Async/WebSocket/Server/",
+            "Fledge\\Fiber\\": "src/Fledge/Fiber/"
+        },
+        "files": [
+            "src/Fledge/Async/functions.php",
+            "src/Fledge/Async/Internal/functions.php",
+            "src/Fledge/Async/Future/functions.php",
+            "src/Fledge/Async/Stream/functions.php",
+            "src/Fledge/Async/Stream/Internal/functions.php",
+            "src/Fledge/Async/Stream/SocketAddress/functions.php",
+            "src/Fledge/Async/Database/Mysql/functions.php",
+            "src/Fledge/Async/Database/Postgres/functions.php",
+            "src/Fledge/Async/Database/Postgres/Internal/functions.php",
+            "src/Fledge/Async/Http/functions.php",
+            "src/Fledge/Async/Http/Internal/constants.php",
+            "src/Fledge/Async/Http/Client/functions.php",
+            "src/Fledge/Async/Http/Client/Internal/functions.php",
+            "src/Fledge/Async/Http/Server/functions.php",
+            "src/Fledge/Async/Http/Server/Driver/functions.php",
+            "src/Fledge/Async/Http/Server/Middleware/functions.php",
+            "src/Fledge/Async/Redis/functions.php",
+            "src/Fledge/Async/Redis/Internal/functions.php",
+            "src/Fledge/Async/Dns/functions.php",
+            "src/Fledge/Async/Process/functions.php",
+            "src/Fledge/Async/Serialization/functions.php",
+            "src/Fledge/Async/Sync/functions.php",
+            "src/Fledge/Async/File/functions.php",
+            "src/Fledge/Async/File/Internal/functions.php",
+            "src/Fledge/Async/Parallel/functions.php",
+            "src/Fledge/Async/Parallel/Context/functions.php",
+            "src/Fledge/Async/Parallel/Context/Internal/functions.php",
+            "src/Fledge/Async/Parallel/Ipc/functions.php",
+            "src/Fledge/Async/Parallel/Worker/functions.php",
+            "src/Fledge/Async/WebSocket/functions.php",
+            "src/Fledge/Async/WebSocket/Client/functions.php",
+            "src/Fledge/Async/Http/Server/StaticContent/functions.php",
+            "src/Fledge/Async/Http/Server/FormParser/functions.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Fledge\\Async\\Test\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Fledge\\Fiber\\FiberServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

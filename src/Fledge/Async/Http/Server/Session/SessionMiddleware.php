@@ -1,0 +1,80 @@
+<?php declare(strict_types=1);
+
+namespace Fledge\Async\Http\Server\Session;
+
+use Fledge\Async\Http;
+use Fledge\Async\Http\Cookie\CookieAttributes;
+use Fledge\Async\Http\Cookie\ResponseCookie;
+use Fledge\Async\Http\Server\Middleware;
+use Fledge\Async\Http\Server\Request;
+use Fledge\Async\Http\Server\RequestHandler;
+use Fledge\Async\Http\Server\Response;
+
+final class SessionMiddleware implements Middleware
+{
+    public const DEFAULT_COOKIE_NAME = 'session';
+
+    private readonly CookieAttributes $cookieAttributes;
+
+    /**
+     * @param CookieAttributes|null $cookieAttributes Attribute set for session cookies.
+     * @param non-empty-string $cookieName Name of session identifier cookie.
+     * @param non-empty-string $requestAttribute Name of the request attribute being used to store the session.
+     *      Defaults to {@see Session::class}.
+     */
+    public function __construct(
+        private readonly SessionFactory $factory = new SessionFactory(),
+        CookieAttributes|null $cookieAttributes = null,
+        private readonly string $cookieName = self::DEFAULT_COOKIE_NAME,
+        private readonly string $requestAttribute = Session::class
+    ) {
+        $this->cookieAttributes = $cookieAttributes
+            ?? CookieAttributes::default()->withSameSite(CookieAttributes::SAMESITE_LAX);
+    }
+
+    public function handleRequest(Request $request, RequestHandler $requestHandler): Response
+    {
+        $cookie = $request->getCookie($this->cookieName);
+
+        $originalId = $cookie?->getValue();
+        $session = $this->factory->create($originalId);
+
+        $request->setAttribute($this->requestAttribute, $session);
+
+        $response = $requestHandler->handleRequest($request);
+
+        $response->onDispose($session->unlockAll(...));
+
+        $id = $session->getId();
+
+        if ($id === null && $originalId === null) {
+            return $response;
+        }
+
+        if ($id === null || ($session->isRead() && $session->isEmpty())) {
+            $attributes = $this->cookieAttributes->withExpiry(
+                new \DateTimeImmutable('@0', new \DateTimeZone('UTC'))
+            );
+
+            $response->setCookie(new ResponseCookie($this->cookieName, '', $attributes));
+        } else {
+            $response->setCookie(new ResponseCookie($this->cookieName, $id, $this->cookieAttributes));
+        }
+
+        $cacheControl = \array_merge(...Http\parseMultipleHeaderFields($response, 'cache-control') ?? []);
+
+        $tokens = [];
+        foreach ($cacheControl as $key => $value) {
+            $tokens[] = match ($key) {
+                'public', 'private' => null,
+                default => $value === '' ? $key : $key . '=' . $value,
+            };
+        }
+
+        $tokens[] = 'private';
+
+        $response->setHeader('cache-control', \implode(', ', \array_filter($tokens)));
+
+        return $response;
+    }
+}

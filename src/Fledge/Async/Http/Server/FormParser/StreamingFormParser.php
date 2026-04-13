@@ -1,0 +1,294 @@
+<?php declare(strict_types=1);
+
+namespace Fledge\Async\Http\Server\FormParser;
+
+use Fledge\Async\Stream\ReadableIterableStream;
+use Fledge\Async\Stream\ReadableStream;
+use Fledge\Async\ForbidCloning;
+use Fledge\Async\ForbidSerialization;
+use Fledge\Async\Http\Http1\Rfc7230;
+use Fledge\Async\Http\HttpStatus;
+use Fledge\Async\Http\InvalidHeaderException;
+use Fledge\Async\Http\Server\HttpErrorException;
+use Fledge\Async\Http\Server\Request;
+use Fledge\Async\DisposedException;
+use Fledge\Async\Pipeline;
+use Fledge\Async\Queue;
+use Revolt\EventLoop;
+
+final class StreamingFormParser
+{
+    use ForbidCloning;
+    use ForbidSerialization;
+
+    /** @var int Prevent requests from creating arbitrary many fields causing lot of processing time */
+    private readonly int $fieldCountLimit;
+
+    public function __construct(?int $fieldCountLimit = null)
+    {
+        $this->fieldCountLimit = $fieldCountLimit ?? (int) \ini_get('max_input_vars') ?: 1000;
+    }
+
+    /**
+     * @return \Traversable<int, StreamedField> Traversable throws {@see HttpErrorException} if parsing a field fails.
+     */
+    public function parseForm(Request $request, ?int $bodySizeLimit = null): \Traversable
+    {
+        $boundary = parseContentBoundary($request->getHeader('content-type') ?? '');
+        if ($boundary === null) {
+            return Pipeline::fromIterable([])->getIterator();
+        }
+
+        $source = new Queue();
+        $pipeline = $source->pipe();
+
+        $body = $request->getBody();
+        if ($bodySizeLimit !== null) {
+            $body->increaseSizeLimit($bodySizeLimit);
+        }
+
+        EventLoop::queue(function () use ($boundary, $source, $body): void {
+            try {
+                $boundary === ''
+                    ? $this->incrementalFieldParse($source, $body)
+                    : $this->incrementalBoundaryParse($source, $body, $boundary);
+
+                $source->complete();
+            } catch (\Throwable $e) {
+                $source->error($e);
+            }
+        });
+
+        return $pipeline->getIterator();
+    }
+
+    private function incrementalBoundaryParse(Queue $source, ReadableStream $body, string $boundary): void
+    {
+        $fieldCount = 0;
+        $queue = null;
+
+        try {
+            $buffer = "";
+
+            // RFC 7578, RFC 2046 Section 5.1.1
+            $boundarySeparator = "--{$boundary}";
+            while (\strlen($buffer) < \strlen($boundarySeparator) + 4) {
+                $buffer .= $chunk = $body->read();
+
+                if ($chunk === null) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Request body ended unexpectedly");
+                }
+            }
+
+            $offset = \strlen($boundarySeparator);
+            if (\strncmp($buffer, $boundarySeparator, $offset)) {
+                throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Invalid boundary");
+            }
+
+            $boundarySeparator = "\r\n$boundarySeparator";
+            $end = 0; // For Psalm
+
+            while (\substr_compare($buffer, "--\r\n", $offset)) {
+                $offset += 2;
+
+                while (($end = \strpos($buffer, "\r\n\r\n", $offset)) === false) {
+                    $buffer .= $chunk = $body->read();
+
+                    if ($chunk === null) {
+                        throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Request body ended unexpectedly");
+                    }
+                }
+
+                if ($fieldCount++ === $this->fieldCountLimit) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
+                }
+
+                try {
+                    $headers = Rfc7230::parseHeaderPairs(\substr($buffer, $offset, $end + 2 - $offset));
+                } catch (InvalidHeaderException $e) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Invalid headers in body part", $e);
+                }
+
+                $headerMap = [];
+                foreach ($headers as [$key, $value]) {
+                    $headerMap[\strtolower($key)][] = $value;
+                }
+
+                $count = \preg_match(
+                    '#^\s*form-data(?:\s*;\s*(?:name\s*=\s*"([^"]+)"|filename\s*=\s*"([^"]+)"))+\s*$#',
+                    $headerMap["content-disposition"][0] ?? "",
+                    $matches
+                );
+
+                if (!$count || !isset($matches[1])) {
+                    throw new HttpErrorException(
+                        HttpStatus::BAD_REQUEST,
+                        "Invalid content-disposition header within multipart form",
+                    );
+                }
+
+                $fieldName = $matches[1];
+
+                // Ignore Content-Transfer-Encoding as deprecated and hence we won't support it
+
+                $queue = new Queue();
+                $stream = new ReadableIterableStream($queue->iterate());
+                $field = new StreamedField(
+                    $fieldName,
+                    $stream,
+                    $headerMap["content-type"][0] ?? "text/plain",
+                    $matches[2] ?? null,
+                    $headers
+                );
+
+                $future = $source->pushAsync($field);
+
+                $buffer = \substr($buffer, $end + 4);
+
+                while (($end = \strpos($buffer, $boundarySeparator)) === false) {
+                    if (\strlen($buffer) > \strlen($boundarySeparator)) {
+                        $position = \strlen($buffer) - \strlen($boundarySeparator);
+                        $queue->push(\substr($buffer, 0, $position));
+                        $buffer = \substr($buffer, $position);
+                    }
+
+                    $buffer .= $chunk = $body->read();
+
+                    if ($chunk === null) {
+                        throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Request body ended unexpectedly");
+                    }
+                }
+
+                $queue->push(\substr($buffer, 0, $end));
+                $queue->complete();
+                $queue = null;
+                $offset = $end + \strlen($boundarySeparator);
+
+                while (\strlen($buffer) < 4) {
+                    $buffer .= $chunk = $body->read();
+
+                    if ($chunk === null) {
+                        throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Request body ended unexpectedly");
+                    }
+                }
+
+                $future->await();
+            }
+        } catch (\Throwable $e) {
+            $queue?->error($e);
+            throw $e;
+        }
+    }
+
+    private function incrementalFieldParse(Queue $source, ReadableStream $body): void
+    {
+        $fieldCount = 0;
+        $queue = null;
+
+        try {
+            $buffer = "";
+            $nextPos = 0; // For Psalm
+
+            while (null !== $chunk = $body->read()) {
+                if ($chunk === "") {
+                    continue;
+                }
+
+                $buffer .= $chunk;
+
+                parse_parameter:
+
+                $equalPos = \strpos($buffer, "=");
+                if ($equalPos !== false) {
+                    $fieldName = \urldecode(\substr($buffer, 0, $equalPos));
+                    $buffer = \substr($buffer, $equalPos + 1);
+
+                    $queue = new Queue();
+
+                    if ($fieldCount++ === $this->fieldCountLimit) {
+                        throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
+                    }
+
+                    $future = $source->pushAsync(new StreamedField(
+                        $fieldName,
+                        new ReadableIterableStream($queue->iterate())
+                    ));
+
+                    while (false === ($nextPos = \strpos($buffer, "&"))) {
+                        $chunk = $body->read();
+
+                        if ($chunk === null) {
+                            try {
+                                $queue->push(\urldecode($buffer));
+                            } catch (DisposedException) {
+                                // Ignore, we've now completed anyway.
+                            }
+                            $queue->complete();
+                            $queue = null;
+
+                            return;
+                        }
+
+                        $buffer .= $chunk;
+
+                        $lastEncodedPos = \strrpos($buffer, "%", -2);
+                        $chunk = $buffer;
+
+                        if ($lastEncodedPos !== false) {
+                            $chunk = \substr($chunk, 0, $lastEncodedPos);
+                            $buffer = \substr($buffer, $lastEncodedPos);
+                        } else {
+                            $buffer = "";
+                        }
+
+                        try {
+                            $queue->push(\urldecode($chunk));
+                        } catch (DisposedException) {
+                            // Ignore and continue consuming this field.
+                        }
+                    }
+
+                    try {
+                        $queue->push(\urldecode(\substr($buffer, 0, $nextPos)));
+                    } catch (DisposedException) {
+                        // Ignore, we need to keep consuming data until the next field.
+                    }
+                    $queue->complete();
+                    $queue = null;
+
+                    $buffer = \substr($buffer, $nextPos + 1);
+
+                    $future->await();
+                    goto parse_parameter;
+                }
+
+                $nextPos = \strpos($buffer, "&");
+                if ($nextPos === false) {
+                    continue;
+                }
+
+                $fieldName = \urldecode(\substr($buffer, 0, $nextPos));
+                $buffer = \substr($buffer, $nextPos + 1);
+
+                if ($fieldCount++ === $this->fieldCountLimit) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
+                }
+
+                $source->push(new StreamedField($fieldName));
+
+                goto parse_parameter;
+            }
+
+            if ($buffer) {
+                if ($fieldCount + 1 === $this->fieldCountLimit) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
+                }
+
+                $source->push(new StreamedField(\urldecode($buffer)));
+            }
+        } catch (\Throwable $e) {
+            $queue?->error($e);
+            throw $e;
+        }
+    }
+}

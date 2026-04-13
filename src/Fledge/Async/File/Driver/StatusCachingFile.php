@@ -1,0 +1,145 @@
+<?php declare(strict_types=1);
+
+namespace Fledge\Async\File\Driver;
+
+use Fledge\Async\Stream\ReadableStreamIteratorAggregate;
+use Fledge\Async\Cancellation;
+use Fledge\Async\File\File;
+use Fledge\Async\File\LockType;
+use Fledge\Async\File\Whence;
+
+/**
+ * @implements \IteratorAggregate<int, string>
+ */
+final class StatusCachingFile implements File, \IteratorAggregate
+{
+    use ReadableStreamIteratorAggregate;
+
+    private readonly File $file;
+
+    private readonly \Closure $invalidateCallback;
+
+    /**
+     * @param File $file Decorated instance.
+     * @param \Closure $invalidateCallback Invalidation callback.
+     *
+     * @internal
+     */
+    public function __construct(File $file, \Closure $invalidateCallback)
+    {
+        $this->file = $file;
+        $this->invalidateCallback = $invalidateCallback;
+    }
+
+    public function read(?Cancellation $cancellation = null, int $length = self::DEFAULT_READ_LENGTH): ?string
+    {
+        return $this->file->read($cancellation, $length);
+    }
+
+    public function write(string $bytes): void
+    {
+        try {
+            $this->file->write($bytes);
+        } finally {
+            $this->invalidate();
+        }
+    }
+
+    public function end(): void
+    {
+        try {
+            $this->file->end();
+        } finally {
+            $this->invalidate();
+        }
+    }
+
+    public function lock(LockType $type, ?Cancellation $cancellation = null): void
+    {
+        $this->file->lock($type, $cancellation);
+    }
+
+    public function tryLock(LockType $type): bool
+    {
+        return $this->file->tryLock($type);
+    }
+
+    public function unlock(): void
+    {
+        $this->file->unlock();
+    }
+
+    public function getLockType(): ?LockType
+    {
+        return $this->file->getLockType();
+    }
+
+    public function close(): void
+    {
+        $this->file->close();
+    }
+
+    public function isClosed(): bool
+    {
+        return $this->file->isClosed();
+    }
+
+    public function onClose(\Closure $onClose): void
+    {
+        $this->file->onClose($onClose);
+    }
+
+    public function seek(int $position, Whence $whence = Whence::Start): int
+    {
+        return $this->file->seek($position, $whence);
+    }
+
+    public function tell(): int
+    {
+        return $this->file->tell();
+    }
+
+    public function eof(): bool
+    {
+        return $this->file->eof();
+    }
+
+    public function getPath(): string
+    {
+        return $this->file->getPath();
+    }
+
+    public function getMode(): string
+    {
+        return $this->file->getMode();
+    }
+
+    public function truncate(int $size): void
+    {
+        try {
+            $this->file->truncate($size);
+        } finally {
+            $this->invalidate();
+        }
+    }
+
+    public function isReadable(): bool
+    {
+        return $this->file->isReadable();
+    }
+
+    public function isSeekable(): bool
+    {
+        return $this->file->isSeekable();
+    }
+
+    public function isWritable(): bool
+    {
+        return $this->file->isWritable();
+    }
+
+    private function invalidate(): void
+    {
+        ($this->invalidateCallback)();
+    }
+}
