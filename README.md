@@ -1,6 +1,6 @@
 # Fledge Fiber
 
-Non-blocking async drivers for the [Fledge framework](https://github.com/webpatser/fledge) — PHP 8.5 only.
+Non-blocking async drivers for the [Fledge framework](https://github.com/webpatser/fledge). PHP 8.5 only.
 
 Provides fiber-based database (MySQL, MariaDB, PostgreSQL), Redis, HTTP, WebSocket, filesystem, and parallel processing drivers that integrate seamlessly with Laravel's service container.
 

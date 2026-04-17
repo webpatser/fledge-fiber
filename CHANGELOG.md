@@ -1,22 +1,22 @@
 # Changelog
 
-## v13.4.0.1 — 2026-04-13
+## v13.4.0.1 - 2026-04-13
 
 ### Bug Fixes
-- **Database**: Fix `lastInsertId` not propagated for prepared statements — `FledgePdoStatement::execute()` now calls `trackLastInsertId()` on the parent PDO shim, so Eloquent models with auto-increment IDs receive the correct ID after `save()`.
-- **Async**: Fix 28 `#[\NoDiscard]` violations on `Future::finally()` — all fire-and-forget `onClose`/`onCommit`/`onRollback` subscriptions now call `->ignore()` to suppress PHP 8.5 warnings.
+- **Database**: Fix `lastInsertId` not propagated for prepared statements. `FledgePdoStatement::execute()` now calls `trackLastInsertId()` on the parent PDO shim, so Eloquent models with auto-increment IDs receive the correct ID after `save()`.
+- **Async**: Fix 28 `#[\NoDiscard]` violations on `Future::finally()`. All fire-and-forget `onClose`/`onCommit`/`onRollback` subscriptions now call `->ignore()` to suppress PHP 8.5 warnings.
 
 ### Refactor
 - Fix 27 PSR-4 namespace mismatches across Database, WebSocket, Http, Parallel, and Internal modules.
 - Rename base PDO class to `FledgePdo` to match filename and Fledge naming convention.
-- Remove all remaining `Amp`/`amphp` references from source code — renamed aliases, error messages, user-agent strings, cache prefixes, temp file paths, FFI scope, HAR attributes, and process titles.
+- Remove all remaining `Amp`/`amphp` references from source code: renamed aliases, error messages, user-agent strings, cache prefixes, temp file paths, FFI scope, HAR attributes, and process titles.
 - Rename `amp-hpack.h` to `fledge-hpack.h`.
 - Rename test files from `Amphp*` to `Fledge*` prefix and fix class references.
 
 ### Removed
-- Delete 251 dead test files in `tests/Amp/` — used old `Amp\*` namespaces, never tested fledge-fiber code.
+- Delete 251 dead test files in `tests/Amp/` (used old `Amp\*` namespaces, never tested fledge-fiber code).
 
-## v13.3.0.1 — 2026-04-10
+## v13.3.0.1 - 2026-04-10
 
 Initial release of Fledge Fiber as a standalone async library for the Fledge framework.
 
