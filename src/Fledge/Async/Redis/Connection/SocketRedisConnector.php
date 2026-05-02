@@ -6,6 +6,8 @@ use Fledge\Async\Cancellation;
 use Fledge\Async\CancelledException;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
+use Fledge\Async\Redis\Protocol\ParserInterface;
+use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\Stream;
 use Fledge\Async\Stream\ConnectContext;
@@ -18,10 +20,16 @@ final readonly class SocketRedisConnector implements RedisConnector
 
     private ConnectContext $connectContext;
 
+    /**
+     * @param (\Closure(\Closure(RedisResponse):void):ParserInterface)|null $parserFactory
+     *     Optional factory threaded through to each new SocketRedisConnection.
+     *     Defaults to RespParser when null.
+     */
     public function __construct(
         private string $uri,
         ConnectContext $connectContext,
         private ?SocketConnector $socketConnector = null,
+        private ?\Closure $parserFactory = null,
     ) {
         $this->connectContext = $connectContext;
     }
@@ -47,6 +55,6 @@ final readonly class SocketRedisConnector implements RedisConnector
             );
         }
 
-        return new SocketRedisConnection($socket);
+        return new SocketRedisConnection($socket, $this->parserFactory);
     }
 }

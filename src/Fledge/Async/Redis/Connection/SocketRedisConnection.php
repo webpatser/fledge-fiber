@@ -8,6 +8,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\Queue;
+use Fledge\Async\Redis\Protocol\ParserInterface;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RespParser;
 use Fledge\Async\Redis\RedisException;
@@ -25,7 +26,14 @@ final readonly class SocketRedisConnection implements RedisConnection
 
     private ConcurrentIterator $iterator;
 
-    public function __construct(Socket $socket)
+    /**
+     * @param (\Closure(\Closure(RedisResponse):void):ParserInterface)|null $parserFactory
+     *     Optional factory for the wire-protocol parser. Receives the push closure
+     *     that delivers each parsed reply to the connection's response queue. Defaults
+     *     to constructing a RespParser. Pass an alternative factory to plug in a
+     *     different parser implementation per connection (no shared global state).
+     */
+    public function __construct(Socket $socket, ?\Closure $parserFactory = null)
     {
         $this->socket = $socket;
         $this->name = $socket->getRemoteAddress()->toString();
@@ -33,9 +41,11 @@ final readonly class SocketRedisConnection implements RedisConnection
         $queue = new Queue();
         $this->iterator = $queue->iterate();
 
-        EventLoop::queue(static function () use ($socket, $queue): void {
+        $factory = $parserFactory ?? static fn (\Closure $push): ParserInterface => new RespParser($push);
+
+        EventLoop::queue(static function () use ($socket, $queue, $factory): void {
             /** @psalm-suppress InvalidArgument */
-            $parser = new RespParser($queue->push(...));
+            $parser = $factory($queue->push(...));
 
             try {
                 while (null !== $chunk = $socket->read()) {
