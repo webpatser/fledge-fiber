@@ -1,5 +1,6 @@
 <?php
 
+use Fledge\Fiber\Redis\FledgeRedisClusterConnection;
 use Fledge\Fiber\Redis\FledgeRedisConnector;
 
 it('builds tcp uri from config', function () {
@@ -92,7 +93,43 @@ it('builds uri with password and database and timeout', function () {
         ->and($uri)->toContain('timeout=5');
 });
 
-it('throws on cluster connections', function () {
+it('builds a cluster connection without contacting any node', function () {
     $connector = new FledgeRedisConnector;
-    $connector->connectToCluster([], [], []);
-})->throws(InvalidArgumentException::class, 'does not support Redis Cluster');
+
+    $connection = $connector->connectToCluster(
+        [
+            ['host' => '127.0.0.1', 'port' => 17000],
+            ['host' => '127.0.0.1', 'port' => 17001],
+        ],
+        [],
+        ['prefix' => 'app:'],
+    );
+
+    expect($connection)->toBeInstanceOf(FledgeRedisClusterConnection::class)
+        ->and($connection->getPrefix())->toBe('app:')
+        ->and($connection->isCluster())->toBeTrue();
+});
+
+it('rejects SELECT to a non-zero database on a cluster connection', function () {
+    $connector = new FledgeRedisConnector;
+
+    $connection = $connector->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        [],
+        [],
+    );
+
+    $connection->select(3);
+})->throws(InvalidArgumentException::class, 'Redis Cluster does not support SELECT');
+
+it('allows SELECT 0 on a cluster connection as a no-op', function () {
+    $connector = new FledgeRedisConnector;
+
+    $connection = $connector->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        [],
+        [],
+    );
+
+    expect($connection->select(0))->toBeNull();
+});
