@@ -102,6 +102,9 @@
         ]
     },
     "extra": {
+        "branch-alias": {
+            "dev-main": "13.7.x-dev"
+        },
         "laravel": {
             "providers": [
                 "Fledge\\Fiber\\FiberServiceProvider"
