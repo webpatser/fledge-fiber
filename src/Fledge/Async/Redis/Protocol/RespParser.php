@@ -9,7 +9,7 @@ use Fledge\Async\Stream\Parser;
 /**
  * @psalm-type ParserGeneratorType = \Generator<int, int|string, string, RedisResponse>
  */
-final class RespParser
+final class RespParser implements ParserInterface
 {
     use ForbidCloning;
     use ForbidSerialization;
