@@ -10,6 +10,7 @@ use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\Queue;
 use Fledge\Async\Redis\Protocol\ParserInterface;
 use Fledge\Async\Redis\Protocol\RedisResponse;
+use Fledge\Async\Redis\Protocol\Resp3ExtensionParser;
 use Fledge\Async\Redis\Protocol\RespParser;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\Stream\Socket;
@@ -41,7 +42,10 @@ final readonly class SocketRedisConnection implements RedisConnection
         $queue = new Queue();
         $this->iterator = $queue->iterate();
 
-        $factory = $parserFactory ?? static fn (\Closure $push): ParserInterface => new RespParser($push);
+        $factory = $parserFactory ?? static fn (\Closure $push): ParserInterface =>
+            \extension_loaded('resp3') && \class_exists(\Resp3\Parser::class, false)
+                ? new Resp3ExtensionParser($push)
+                : new RespParser($push);
 
         EventLoop::queue(static function () use ($socket, $queue, $factory): void {
             /** @psalm-suppress InvalidArgument */
