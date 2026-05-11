@@ -505,24 +505,17 @@ enum MysqlDataType: int
 
     public static function encodeInt(int $int): string
     {
-        if ($int < 0xfb) {
-            return self::encodeInt8($int);
-        }
-
-        if ($int < (1 << 16)) {
-            return "\xfc" . self::encodeInt16($int);
-        }
-
-        if ($int < (1 << 24)) {
-            return "\xfd" . self::encodeInt24($int);
-        }
-
-        return "\xfe" . self::encodeInt64($int);
+        return match (true) {
+            $int < 0xfb      => self::encodeInt8($int),
+            $int < (1 << 16) => "\xfc" . self::encodeInt16($int),
+            $int < (1 << 24) => "\xfd" . self::encodeInt24($int),
+            default          => "\xfe" . self::encodeInt64($int),
+        };
     }
 
     public static function encodeInt8(int $int): string
     {
-        return \chr($int);
+        return \pack("C", $int);
     }
 
     public static function encodeInt16(int $int): string
