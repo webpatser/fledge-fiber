@@ -80,13 +80,15 @@ final class Lock
 
     /**
      * Releases the lock when there are no more references to it.
+     *
+     * Delegates to {@see release()} so the implicit-release path goes through
+     * the same dual-mode logic (synchronous in-fiber, attached to
+     * $pendingOperations when force-closed). Avoids dropping the Future
+     * returned by async().
      */
     public function __destruct()
     {
-        if ($this->release) {
-            async($this->release);
-            $this->release = null;
-        }
+        $this->release();
     }
 
     private function isForceClosed(): bool
