@@ -23,8 +23,11 @@ if (\function_exists("cli_set_process_title")) {
 
 (function (): void {
     $paths = [
+        // Installed as a dependency: vendor/webpatser/fledge-fiber/src/Fledge/Async/Parallel/Context/Internal
         \dirname(__DIR__, 5) . "/autoload.php",
         \dirname(__DIR__, 3) . "/vendor/autoload.php",
+        // Running from the fledge-fiber repository root.
+        \dirname(__DIR__, 6) . "/vendor/autoload.php",
     ];
 
     foreach ($paths as $path) {
@@ -35,10 +38,8 @@ if (\function_exists("cli_set_process_title")) {
     }
 
     if (!isset($autoloadPath)) {
-        \trigger_error(
-            "Could not locate autoload.php in any of the following files: " . \implode(", ", $paths),
-            E_USER_ERROR,
-        );
+        \file_put_contents('php://stderr', "Could not locate autoload.php in any of the following files: " . \implode(", ", $paths), \FILE_APPEND);
+        exit(255);
     }
 
     /** @psalm-suppress UnresolvableInclude */
@@ -58,15 +59,18 @@ if (\function_exists("cli_set_process_title")) {
     /** @var list<string> $argv */
 
     if (!isset($argv[1])) {
-        \trigger_error("No socket path provided", E_USER_ERROR);
+        \file_put_contents('php://stderr', "No socket path provided", \FILE_APPEND);
+        exit(255);
     }
 
     if (!isset($argv[2]) || !\is_numeric($argv[2])) {
-        \trigger_error("No key length provided", E_USER_ERROR);
+        \file_put_contents('php://stderr', "No key length provided", \FILE_APPEND);
+        exit(255);
     }
 
     if (!isset($argv[3]) || !\is_numeric($argv[3])) {
-        \trigger_error("No timeout provided", E_USER_ERROR);
+        \file_put_contents('php://stderr', "No timeout provided", \FILE_APPEND);
+        exit(255);
     }
 
     [, $uri, $length, $timeout] = $argv;
@@ -80,9 +84,10 @@ if (\function_exists("cli_set_process_title")) {
 
     try {
         $cancellation = new TimeoutCancellation($timeout);
-        $key = Ipc\readKey(ByteStream\getStdin(), $cancellation, $length);
+        $key = Ipc\readKey(new Stream\ReadableResourceStream(\STDIN), $cancellation, $length);
     } catch (\Throwable $exception) {
-        \trigger_error($exception->getMessage(), E_USER_ERROR);
+        \file_put_contents('php://stderr', $exception->getMessage(), \FILE_APPEND);
+        exit(255);
     }
 
     runContext($uri, $key, $cancellation, $argv);
