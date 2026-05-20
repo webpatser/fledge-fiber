@@ -16,6 +16,11 @@
         <env name="FLEDGE_TEST_MYSQL_USER" value="fledge"/>
         <env name="FLEDGE_TEST_MYSQL_PASSWORD" value="fledge"/>
         <env name="FLEDGE_TEST_MYSQL_DATABASE" value="fledge_test"/>
+        <env name="FLEDGE_TEST_MARIADB_HOST" value="127.0.0.1"/>
+        <env name="FLEDGE_TEST_MARIADB_PORT" value="13307"/>
+        <env name="FLEDGE_TEST_MARIADB_USER" value="fledge"/>
+        <env name="FLEDGE_TEST_MARIADB_PASSWORD" value="fledge"/>
+        <env name="FLEDGE_TEST_MARIADB_DATABASE" value="fledge_test"/>
         <env name="FLEDGE_TEST_POSTGRES_HOST" value="127.0.0.1"/>
         <env name="FLEDGE_TEST_POSTGRES_PORT" value="15432"/>
         <env name="FLEDGE_TEST_POSTGRES_USER" value="fledge"/>

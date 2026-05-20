@@ -28,6 +28,21 @@ jobs:
           --health-timeout=5s
           --health-retries=10
 
+      mariadb:
+        image: mariadb:11
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: fledge_test
+          MYSQL_USER: fledge
+          MYSQL_PASSWORD: fledge
+        ports:
+          - 13307:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
       postgres:
         image: postgres:16-alpine
         env:
@@ -106,6 +121,11 @@ jobs:
           FLEDGE_TEST_MYSQL_USER: fledge
           FLEDGE_TEST_MYSQL_PASSWORD: fledge
           FLEDGE_TEST_MYSQL_DATABASE: fledge_test
+          FLEDGE_TEST_MARIADB_HOST: 127.0.0.1
+          FLEDGE_TEST_MARIADB_PORT: 13307
+          FLEDGE_TEST_MARIADB_USER: fledge
+          FLEDGE_TEST_MARIADB_PASSWORD: fledge
+          FLEDGE_TEST_MARIADB_DATABASE: fledge_test
           FLEDGE_TEST_POSTGRES_HOST: 127.0.0.1
           FLEDGE_TEST_POSTGRES_PORT: 15432
           FLEDGE_TEST_POSTGRES_USER: fledge
