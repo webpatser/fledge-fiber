@@ -27,9 +27,10 @@ final readonly class AllowedMethodsMiddleware implements Middleware
         "OPTIONS" => true,
         "TRACE" => true,
         "CONNECT" => true,
+        "QUERY" => true,
     ];
 
-    public const DEFAULT_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "HEAD", "OPTIONS", "DELETE"];
+    public const DEFAULT_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "HEAD", "OPTIONS", "DELETE", "QUERY"];
 
     /**
      * @param array<non-empty-string> $allowedMethods
