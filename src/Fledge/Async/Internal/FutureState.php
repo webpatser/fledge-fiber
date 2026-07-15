@@ -3,7 +3,6 @@
 namespace Fledge\Async\Internal;
 
 use Fledge\Async\Future;
-use Fledge\Async\Future\UnhandledFutureError;
 use Revolt\EventLoop;
 
 /**
