@@ -53,13 +53,35 @@ final readonly class SocketRedisConnection implements RedisConnection
 
             try {
                 while (null !== $chunk = $socket->read()) {
-                    $parser->push($chunk);
+                    try {
+                        $parser->push($chunk);
+                    } catch (\Throwable $e) {
+                        /* A wire parse failure is not a Fledge RedisException: the
+                         * resp3 extension parser throws \Resp3\RedisException, and a
+                         * pure-PHP parser bug would throw Error. Anything escaping
+                         * this loop kills the event-loop callback (Revolt rethrows it
+                         * as UncaughtThrowable), stranding every pending future on
+                         * this connection with no error and leaving the socket open.
+                         * Wrap it, keep a hex head of the offending chunk so a
+                         * recurrence identifies the actual bytes on the wire, and
+                         * fall through to the RedisException path below. */
+                        throw new RedisException(
+                            'Redis wire parse failed: ' . $e->getMessage()
+                            . ' (chunk head: ' . \bin2hex(\substr($chunk, 0, 64)) . ')',
+                            0,
+                            $e,
+                        );
+                    }
                 }
 
                 $parser->cancel();
                 $queue->complete();
             } catch (RedisException $e) {
                 $queue->error($e);
+            } catch (\Throwable $e) {
+                /* Socket/stream failures outside the parser (e.g. a StreamException
+                 * from read()) must also error the queue rather than escape. */
+                $queue->error(new RedisException('Redis connection failed: ' . $e->getMessage(), 0, $e));
             }
 
             $socket->close();
