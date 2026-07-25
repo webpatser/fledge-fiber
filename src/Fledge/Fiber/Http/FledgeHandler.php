@@ -101,12 +101,17 @@ class FledgeHandler
             $asyncRequest->setTlsHandshakeTimeout((float) $options['connect_timeout']);
         }
 
-        // Protocol version
-        $version = $request->getProtocolVersion();
-
-        if ($version) {
-            $asyncRequest->setProtocolVersions([$version]);
-        }
+        // Protocol version. Guzzle stamps every PSR-7 request "1.1" unless the
+        // caller passes the 'version' request option, where HTTP/2 arrives as
+        // "2" or "2.0" depending on how the option was written. Map an explicit
+        // HTTP/2 choice to h2-only ALPN negotiation (setProtocolVersions only
+        // accepts "2"); everything else stays on its literal version, keeping
+        // default traffic on HTTP/1.1.
+        $asyncRequest->setProtocolVersions(match ((string) $request->getProtocolVersion()) {
+            '2', '2.0' => ['2'],
+            '1.0' => ['1.0'],
+            default => ['1.1'],
+        });
 
         // Body size limit (for large responses)
         if (isset($options['max_body_size'])) {

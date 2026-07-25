@@ -1070,7 +1070,7 @@ final class Http2ConnectionProcessor implements Http2Processor
             }
 
             $this->releaseStream($http2stream->id, $exception, false);
-        });
+        })->ignore();
 
         return $responseFuture->await();
     }

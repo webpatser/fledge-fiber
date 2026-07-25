@@ -52,6 +52,29 @@ it('creates async request with protocol version', function () {
     expect($asyncRequest->getProtocolVersions())->toBe(['1.0']);
 });
 
+it('pins the guzzle default protocol version to http/1.1', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    // Guzzle stamps PSR-7 requests "1.1" when no 'version' option is given.
+    $psr7Request = new Request('GET', 'https://example.com');
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, []);
+
+    expect($asyncRequest->getProtocolVersions())->toBe(['1.1']);
+});
+
+it('maps an explicit http/2 protocol version to h2-only', function (string $version) {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $psr7Request = new Request('GET', 'https://example.com', [], null, $version);
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, []);
+
+    expect($asyncRequest->getProtocolVersions())->toBe(['2']);
+})->with(['2', '2.0']);
+
 it('returns guzzle promise from invocation', function () {
     $handler = new FledgeHandler;
     $request = new Request('GET', 'https://example.com');
