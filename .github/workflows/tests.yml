@@ -11,6 +11,10 @@ env:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    # The suite finishes in well under a minute locally. Without a cap, a test
+    # that blocks on a service (the database integration suite has done this
+    # twice) holds the runner for GitHub's full six hour default before failing.
+    timeout-minutes: 15
 
     services:
       mysql:
