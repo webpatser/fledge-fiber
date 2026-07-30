@@ -12,9 +12,13 @@ final readonly class Authenticator implements RedisConnector
     use ForbidCloning;
     use ForbidSerialization;
 
+    /**
+     * @param string $username Optional ACL username. When set, the two-argument form of AUTH is used.
+     */
     public function __construct(
         #[\SensitiveParameter] private string $password,
-        private RedisConnector $connector
+        private RedisConnector $connector,
+        private string $username = '',
     ) {
     }
 
@@ -22,7 +26,11 @@ final readonly class Authenticator implements RedisConnector
     {
         $connection = $this->connector->connect($cancellation);
 
-        $connection->send('AUTH', $this->password);
+        if ($this->username !== '') {
+            $connection->send('AUTH', $this->username, $this->password);
+        } else {
+            $connection->send('AUTH', $this->password);
+        }
 
         if (!($connection->receive()?->unwrap())) {
             throw new RedisException('Failed to authenticate to redis instance: ' . $connection->getName());

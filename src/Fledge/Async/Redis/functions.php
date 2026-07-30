@@ -9,6 +9,7 @@ use Fledge\Async\Redis\Connection\RedisConnector;
 use Fledge\Async\Redis\Connection\SocketRedisConnector;
 use Fledge\Async\Redis\Protocol\ParserInterface;
 use Fledge\Async\Redis\Protocol\RedisResponse;
+use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 
 /**
@@ -25,14 +26,20 @@ function createRedisConnector(
         $config = RedisConfig::fromUri($config);
     }
 
+    $connectContext = (new ConnectContext())->withConnectTimeout($config->getTimeout());
+
+    if ($config->usesTls()) {
+        $connectContext = $connectContext->withTlsContext(new ClientTlsContext($config->getHost()));
+    }
+
     $connector ??= new SocketRedisConnector(
         $config->getConnectUri(),
-        (new ConnectContext())->withConnectTimeout($config->getTimeout()),
+        $connectContext,
         parserFactory: $parserFactory,
     );
 
     if ($config->hasPassword()) {
-        $connector = new Authenticator($config->getPassword(), $connector);
+        $connector = new Authenticator($config->getPassword(), $connector, $config->getUsername());
     }
 
     if ($config->getDatabase() !== 0) {
