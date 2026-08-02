@@ -117,6 +117,20 @@ jobs:
             done
           '
 
+      # Diagnostic: the HTTP/2 loopback suite hangs on this runner but passes
+      # locally, and because it stalls before printing a file result the main
+      # run says only that the job timed out. Running it alone with per-test
+      # output names the case and the stage. Remove once the hang is fixed.
+      - name: Probe the HTTP/2 loopback suite
+        continue-on-error: true
+        run: |
+          openssl version
+          php -r 'echo "openssl ext: ", phpversion("openssl") ?: "none", PHP_EOL;'
+          php -r 'echo "alpn: ", defined("STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT") ? "tls1.3 ok" : "no tls1.3", PHP_EOL;'
+          timeout --verbose 90 vendor/bin/pest --no-coverage --testdox \
+            tests/Fledge/http/Integration/Http2LoopbackTest.php \
+            || echo "PROBE EXIT: $?"
+
       - name: Run tests
         run: vendor/bin/pest --no-coverage
         env:
