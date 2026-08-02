@@ -50,6 +50,17 @@ function makeSelfSignedCertificate(): array
     return [$certPath, $keyPath];
 }
 
+/**
+ * Every request below is bounded.
+ *
+ * The loopback is in-process and answers in milliseconds, so any of these
+ * firing means the handshake or ALPN negotiation did not complete. Without
+ * them a stalled negotiation waits forever: the suite then holds the CI runner
+ * until the job timeout with no output naming the test, which is exactly how
+ * this file went undiagnosed.
+ */
+const LOOPBACK_TIMEOUT = 10.0;
+
 /** @return array{SocketHttpServer, int} [server, port] */
 function startHttp2LoopbackServer(string $certPath, string $keyPath): array
 {
@@ -88,6 +99,9 @@ it('speaks http/2 to its own server over the async client', function () {
     try {
         $request = new ClientRequest("https://127.0.0.1:{$port}/");
         $request->setProtocolVersions(['2']);
+        $request->setTcpConnectTimeout(LOOPBACK_TIMEOUT);
+        $request->setTlsHandshakeTimeout(LOOPBACK_TIMEOUT);
+        $request->setTransferTimeout(LOOPBACK_TIMEOUT);
 
         $response = buildLoopbackClient()->request($request);
 
@@ -110,7 +124,11 @@ it('speaks http/2 through the guzzle bridge with the version option', function (
             'handler' => \GuzzleHttp\HandlerStack::create(new FledgeHandler(buildLoopbackClient())),
         ]);
 
-        $response = $guzzle->get("https://127.0.0.1:{$port}/", ['version' => 2.0]);
+        $response = $guzzle->get("https://127.0.0.1:{$port}/", [
+            'version' => 2.0,
+            'connect_timeout' => LOOPBACK_TIMEOUT,
+            'timeout' => LOOPBACK_TIMEOUT,
+        ]);
 
         expect($response->getProtocolVersion())->toBe('2')
             ->and($response->getStatusCode())->toBe(200)
@@ -133,7 +151,10 @@ it('stays on http/1.1 through the guzzle bridge by default', function () {
 
         // No 'version' option: the server offers h2 in ALPN, but the bridge
         // must keep pinning default traffic to HTTP/1.1.
-        $response = $guzzle->get("https://127.0.0.1:{$port}/");
+        $response = $guzzle->get("https://127.0.0.1:{$port}/", [
+            'connect_timeout' => LOOPBACK_TIMEOUT,
+            'timeout' => LOOPBACK_TIMEOUT,
+        ]);
 
         expect($response->getProtocolVersion())->toBe('1.1')
             ->and($response->getStatusCode())->toBe(200);
