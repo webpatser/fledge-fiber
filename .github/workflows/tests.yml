@@ -127,9 +127,7 @@ jobs:
           openssl version
           php -r 'echo "openssl ext: ", phpversion("openssl") ?: "none", PHP_EOL;'
           php -r 'echo "alpn: ", defined("STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT") ? "tls1.3 ok" : "no tls1.3", PHP_EOL;'
-          timeout --verbose 90 vendor/bin/pest --no-coverage --testdox \
-            tests/Fledge/http/Integration/Http2LoopbackTest.php \
-            || echo "PROBE EXIT: $?"
+          timeout --verbose 60 php tests/probe-h2.php || echo "PROBE EXIT: $?"
 
       - name: Run tests
         run: vendor/bin/pest --no-coverage
