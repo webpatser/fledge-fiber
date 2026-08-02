@@ -34,7 +34,28 @@ function mark(string $step): void
     fflush(STDERR);
 }
 
-mark('start');
+/**
+ * PROBE_STRICT=1 mimics PHPUnit, which promotes any diagnostic to an exception.
+ * That is the one thing the test harness does that a plain script does not, and
+ * a warning raised inside a fiber becomes an exception that can strand the
+ * suspension and hang the loop.
+ *
+ * Unset, the handler only reports, which surfaces a diagnostic that this
+ * platform emits and the developer's machine does not.
+ */
+$strict = getenv('PROBE_STRICT') === '1';
+
+set_error_handler(function (int $no, string $msg, string $file, int $line) use ($strict) {
+    mark(sprintf('DIAGNOSTIC [%d] %s at %s:%d', $no, $msg, basename($file), $line));
+
+    if ($strict) {
+        throw new ErrorException($msg, 0, $no, $file, $line);
+    }
+
+    return true;
+});
+
+mark('start (strict='.var_export($strict, true).')');
 
 $key = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_EC, 'curve_name' => 'prime256v1']);
 mark('pkey_new: '.var_export($key !== false, true));

@@ -127,17 +127,11 @@ jobs:
           openssl version
           php -r 'echo "openssl ext: ", phpversion("openssl") ?: "none", PHP_EOL;'
           php -r 'echo "alpn: ", defined("STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT") ? "tls1.3 ok" : "no tls1.3", PHP_EOL;'
-          echo "== A: standalone script =="
+          echo "== A: script, diagnostics reported =="
           timeout --verbose 60 php tests/probe-h2.php || echo "A EXIT: $?"
 
-          echo "== B: loopback alone under pest =="
-          timeout --verbose 60 vendor/bin/pest --no-coverage \
-            tests/Fledge/http/Integration/Http2LoopbackTest.php || echo "B EXIT: $?"
-
-          echo "== C: database integration first, then loopback =="
-          timeout --verbose 90 vendor/bin/pest --no-coverage \
-            tests/Fledge/database/Integration tests/Fledge/http/Integration/Http2LoopbackTest.php \
-            || echo "C EXIT: $?"
+          echo "== B: script, diagnostics promoted to exceptions (PHPUnit behaviour) =="
+          PROBE_STRICT=1 timeout --verbose 60 php tests/probe-h2.php || echo "B EXIT: $?"
 
       - name: Run tests
         run: vendor/bin/pest --no-coverage
