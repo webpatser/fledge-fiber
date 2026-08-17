@@ -43,7 +43,7 @@ final readonly class SocketRedisConnection implements RedisConnection
         $this->iterator = $queue->iterate();
 
         $factory = $parserFactory ?? static fn (\Closure $push): ParserInterface =>
-            \extension_loaded('resp3') && \class_exists(\Resp3\Parser::class, false)
+            Resp3ExtensionParser::isUsable()
                 ? new Resp3ExtensionParser($push)
                 : new RespParser($push);
 
