@@ -89,7 +89,18 @@ final class ReconnectingRedisLink implements RedisLink
 
         EventLoop::queue(static function () use (&$connection, &$running, &$database, $queue, $connector): void {
             try {
+                $failures = 0;
+
                 while ($running) {
+                    if ($failures > 0) {
+                        /* Back off before reconnecting: without this, a failure
+                         * that recurs immediately (e.g. a deterministic parse
+                         * error) turns the loop into a connect storm that can
+                         * exhaust the local ephemeral port range within
+                         * seconds. Exponential, capped at one second. */
+                        \Fledge\Async\delay(\min(0.05 * (2 ** \min($failures, 5)), 1.0));
+                    }
+
                     if ($database !== null) {
                         $connection = (new DatabaseSelector($database, $connector))->connect();
                     } else {
@@ -105,6 +116,8 @@ final class ReconnectingRedisLink implements RedisLink
                         }
 
                         while ($response = $connection->receive()) {
+                            $failures = 0;
+
                             /** @var DeferredFuture $deferred */
                             [$deferred] = $queue->shift();
                             if ($queue->isEmpty()) {
@@ -113,8 +126,21 @@ final class ReconnectingRedisLink implements RedisLink
 
                             $deferred->complete($response);
                         }
+                    } catch (RedisWireException $exception) {
+                        /* A corrupt wire stream is not transient for the
+                         * commands in flight: resending them would corrupt the
+                         * same way and loop forever. Fail them and reconnect
+                         * with a clean queue. */
+                        $failures++;
+
+                        while (!$queue->isEmpty()) {
+                            /** @var DeferredFuture $deferred */
+                            [$deferred] = $queue->shift();
+                            $deferred->error($exception);
+                        }
                     } catch (RedisException) {
                         // Attempt to reconnect after failure.
+                        $failures++;
                     } finally {
                         $connection = null;
                     }

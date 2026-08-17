@@ -64,8 +64,11 @@ final readonly class SocketRedisConnection implements RedisConnection
                          * this connection with no error and leaving the socket open.
                          * Wrap it, keep a hex head of the offending chunk so a
                          * recurrence identifies the actual bytes on the wire, and
-                         * fall through to the RedisException path below. */
-                        throw new RedisException(
+                         * fall through to the RedisException path below. The typed
+                         * RedisWireException lets ReconnectingRedisLink fail the
+                         * pending commands instead of resending them onto a stream
+                         * that would corrupt the same way. */
+                        throw new RedisWireException(
                             'Redis wire parse failed: ' . $e->getMessage()
                             . ' (chunk head: ' . \bin2hex(\substr($chunk, 0, 64)) . ')',
                             0,
