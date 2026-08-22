@@ -87,7 +87,23 @@ final class ConnectionLimitingPool implements ConnectionPool
         foreach ($this->connections as $connectionFutures) {
             foreach ($connectionFutures as $connectionFuture) {
                 (void) $connectionFuture->map(static function (Connection $connection): void {
-                    $connection->close();
+                    if ($connection->isIdle()) {
+                        $connection->close();
+
+                        return;
+                    }
+
+                    // A response body may still be streaming on this connection; closing now
+                    // would abort it. The connection exposes no idle callback, so poll with an
+                    // unreferenced timer and close once the in-flight streams have finished.
+                    $callbackId = EventLoop::repeat(0.1, static function (string $callbackId) use ($connection): void {
+                        if ($connection->isIdle()) {
+                            EventLoop::cancel($callbackId);
+                            $connection->close();
+                        }
+                    });
+                    EventLoop::unreference($callbackId);
+                    $connection->onClose(static fn () => EventLoop::cancel($callbackId));
                 });
             }
         }
