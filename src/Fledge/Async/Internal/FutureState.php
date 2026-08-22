@@ -2,6 +2,8 @@
 
 namespace Fledge\Async\Internal;
 
+use Fledge\Async\ForbidCloning;
+use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Revolt\EventLoop;
 
@@ -12,6 +14,9 @@ use Revolt\EventLoop;
  */
 final class FutureState
 {
+    use ForbidCloning;
+    use ForbidSerialization;
+
     // Static so they can be used as array keys
     private static string $nextId = 'a';
 

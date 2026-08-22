@@ -65,7 +65,7 @@ final class Pipeline implements \IteratorAggregate
      *
      * @return self<Ts>
      */
-    public static function generate(\Closure $supplier): Pipeline
+    public static function generate(\Closure $supplier): self
     {
         return new self(new ConcurrentClosureIterator($supplier));
     }
@@ -193,11 +193,14 @@ final class Pipeline implements \IteratorAggregate
         return $this;
     }
 
+    /**
+     * @psalm-suppress PossiblyUnusedReturnValue
+     */
     public function count(): int
     {
         $count = 0;
 
-        foreach ($this as $ignored) {
+        foreach ($this as $_) {
             $count++;
         }
 
@@ -329,13 +332,9 @@ final class Pipeline implements \IteratorAggregate
     /**
      * Sorts values, requires buffering all values.
      *
-     * @template R
-     *
      * @param null|\Closure(T, T):int $compare
-     *
-     * @return self<R>
      */
-    public function sorted(?\Closure $compare = null): self
+    public function sorted(?\Closure $compare = null): static
     {
         if ($this->used) {
             throw new \Error('Pipeline consumption has already been started');
@@ -391,10 +390,8 @@ final class Pipeline implements \IteratorAggregate
      * Filters values.
      *
      * @param \Closure(T):bool $filter Keep value if {@code $filter} returns {@code true}.
-     *
-     * @return self<T>
      */
-    public function filter(\Closure $filter): self
+    public function filter(\Closure $filter): static
     {
         return $this->flatMap(static fn (mixed $value) => $filter($value) ? [$value] : []);
     }
@@ -403,12 +400,10 @@ final class Pipeline implements \IteratorAggregate
      * Invokes the given function each time a value is streamed through the pipeline to perform side effects.
      *
      * @param \Closure(T):void $tap
-     *
-     * @return self<T>
      */
-    public function tap(\Closure $tap): self
+    public function tap(\Closure $tap): static
     {
-        return $this->flatMap(static function (mixed $value) use ($tap) {
+        return $this->flatMap(static function (mixed $value) use ($tap): array {
             $tap($value);
 
             return [$value];
@@ -423,7 +418,7 @@ final class Pipeline implements \IteratorAggregate
      *
      * @return R
      */
-    public function reduce(\Closure $accumulator, mixed $initial = null)
+    public function reduce(\Closure $accumulator, mixed $initial = null): mixed
     {
         $result = $initial;
 
@@ -436,23 +431,18 @@ final class Pipeline implements \IteratorAggregate
 
     /**
      * Delays each item by $delay seconds.
-     *
-     *
-     * @return self<T>
      */
-    public function delay(float $delay): self
+    public function delay(float $delay): static
     {
         return $this->tap(static fn () => delay($delay));
     }
 
     /**
      * Skip the first N items of the pipeline.
-     *
-     * @return self<T>
      */
-    public function skip(int $count): self
+    public function skip(int $count): static
     {
-        return $this->flatMap(static function (mixed $value) use ($count) {
+        return $this->flatMap(static function (mixed $value) use ($count): array {
             static $i = 0;
 
             if ($i++ < $count) {
@@ -469,32 +459,28 @@ final class Pipeline implements \IteratorAggregate
      * All values are emitted afterwards without invoking {@code $predicate}.
      *
      * @param \Closure(T):bool $predicate
-     *
-     * @return self<T>
      */
-    public function skipWhile(\Closure $predicate): self
+    public function skipWhile(\Closure $predicate): static
     {
-        $sequence = new Sequence;
-        $skipping = true;
-
         return $this->flatMap(
-            static function (mixed $value, int $position) use ($sequence, $predicate, &$skipping) {
+            static function (mixed $value, int $position) use ($predicate): array {
+                static $sequence = new Sequence();
+                static $skipping = true;
+
                 if (!$skipping) {
                     return [$value];
                 }
 
                 $predicateResult = $predicate($value);
 
-                $sequence->await($position);
+                $sequence->barrier($position);
 
-                /** @psalm-suppress RedundantCondition */
+                /** @psalm-suppress RedundantCondition $skipping may be modified by a concurrent call */
                 if ($skipping && $predicateResult) {
-                    $sequence->resume($position);
                     return [];
                 }
 
                 $skipping = false;
-                $sequence->resume($position);
 
                 return [$value];
             }
@@ -503,12 +489,10 @@ final class Pipeline implements \IteratorAggregate
 
     /**
      * Take only the first N items of the pipeline.
-     *
-     * @return self<T>
      */
-    public function take(int $count): self
+    public function take(int $count): static
     {
-        return $this->flatMap(static function (mixed $value) use ($count) {
+        return $this->flatMap(static function (mixed $value) use ($count): array {
             static $i = 0;
 
             if (++$i < $count) {
@@ -530,32 +514,28 @@ final class Pipeline implements \IteratorAggregate
      * Takes values on the pipeline until {@code $predicate} returns {@code false}.
      *
      * @param \Closure(T):bool $predicate
-     *
-     * @return self<T>
      */
-    public function takeWhile(\Closure $predicate): self
+    public function takeWhile(\Closure $predicate): static
     {
-        $sequence = new Sequence;
-        $taking = true;
-
         return $this->flatMap(
-            static function (mixed $value, int $position) use ($sequence, $predicate, &$taking) {
+            static function (mixed $value, int $position) use ($predicate): array {
+                static $sequence = new Sequence();
+                static $taking = true;
+
                 if (!$taking) {
-                    return [];
+                    return [FlatMapOperation::getStopMarker()];
                 }
 
                 $predicateResult = $predicate($value);
 
-                $sequence->await($position);
+                $sequence->barrier($position);
 
-                /** @psalm-suppress RedundantCondition */
+                /** @psalm-suppress RedundantCondition $taking may be modified by a concurrent call */
                 if ($taking && $predicateResult) {
-                    $sequence->resume($position);
                     return [$value];
                 }
 
                 $taking = false;
-                $sequence->resume($position);
 
                 /** @var T[] */
                 return [FlatMapOperation::getStopMarker()];
@@ -566,6 +546,7 @@ final class Pipeline implements \IteratorAggregate
     /**
      * @return ConcurrentIterator<T>
      */
+    #[\Override]
     public function getIterator(): ConcurrentIterator
     {
         if ($this->used) {
@@ -583,6 +564,10 @@ final class Pipeline implements \IteratorAggregate
         return $source;
     }
 
+    /**
+     * Disposes the source of the pipeline, indicating the consumer is no longer interested in the pipeline output.
+     * Producers pushing to the source will receive a {@see DisposedException}.
+     */
     public function dispose(): void
     {
         $this->source->dispose();

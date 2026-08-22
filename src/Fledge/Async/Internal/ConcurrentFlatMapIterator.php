@@ -3,9 +3,9 @@
 namespace Fledge\Async\Internal;
 
 use Fledge\Async\Cancellation;
+use Fledge\Async\Future;
 use Fledge\Async\ConcurrentIterator;
 use function Fledge\Async\async;
-use function Fledge\Async\Future\await;
 
 /**
  * @internal
@@ -33,74 +33,109 @@ final class ConcurrentFlatMapIterator implements ConcurrentIterator
     ) {
         $queue = new QueueState($bufferSize);
         $this->iterator = new ConcurrentQueueIterator($queue);
-        $order = $ordered ? new Sequence : null;
+
+        $preOrder = $ordered ? new Sequence() : null;
+        $postOrder = $ordered ? new Sequence() : null;
 
         $stop = FlatMapOperation::getStopMarker();
 
         $futures = [];
 
         for ($i = 0; $i < $concurrency; $i++) {
-            $futures[] = async(static function () use ($queue, $iterator, $flatMap, $order, $stop): void {
+            $futures[] = async(static function () use (
+                $queue,
+                $iterator,
+                $flatMap,
+                $preOrder,
+                $postOrder,
+                $stop,
+            ): void {
                 foreach ($iterator as $position => $value) {
+                    // Force ordering of concurrent coroutines regardless of the emitted order of the source iterator.
+                    $preOrder?->barrier($position);
+
                     try {
-                        // The operation runs concurrently, but the emits are at the correct position
                         $iterable = $flatMap($value, $position);
                     } catch (\Throwable $exception) {
-                        $order?->await($position);
+                        $postOrder?->await($position);
+
+                        $preOrder?->dispose();
+                        $postOrder?->dispose();
+
                         throw $exception;
                     }
 
-                    $order?->await($position);
+                    $postOrder?->await($position);
 
                     foreach ($iterable as $item) {
+                        // Another concurrent coroutine already completed the queue
+                        if ($queue->isComplete()) {
+                            return;
+                        }
+
                         if ($item === $stop) {
                             $queue->complete();
-                            break 2;
+
+                            $preOrder?->dispose();
+                            $postOrder?->dispose();
+
+                            return;
                         }
 
                         $queue->push($item);
                     }
 
-                    $order?->resume($position);
+                    $postOrder?->resume($position);
                 }
             });
         }
 
         async(static function () use ($futures, $queue): void {
             try {
-                await($futures);
-                $queue->complete();
+                Future\await($futures);
+
+                if (!$queue->isComplete()) {
+                    $queue->complete();
+                }
             } catch (\Throwable $e) {
-                $queue->error($e);
+                if (!$queue->isComplete()) {
+                    $queue->error($e);
+                }
             }
-        });
+        })->ignore();
     }
 
+    #[\Override]
     public function continue(?Cancellation $cancellation = null): bool
     {
         return $this->iterator->continue($cancellation);
     }
 
+    #[\Override]
     public function getValue(): mixed
     {
         return $this->iterator->getValue();
     }
 
+    #[\Override]
     public function getPosition(): int
     {
         return $this->iterator->getPosition();
     }
 
+    #[\Override]
     public function dispose(): void
     {
         $this->iterator->dispose();
     }
 
+    #[\Override]
     public function isComplete(): bool
     {
         return $this->iterator->isComplete();
     }
 
+    #[\Override]
     public function getIterator(): \Traversable
     {
         while ($this->continue()) {

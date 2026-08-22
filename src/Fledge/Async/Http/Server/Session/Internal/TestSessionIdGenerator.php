@@ -11,7 +11,10 @@ final class TestSessionIdGenerator implements SessionIdGenerator
 
     public function generate(): string
     {
-        return $this->nextId++;
+        $id = $this->nextId;
+        $this->nextId = \str_increment($id);
+
+        return $id;
     }
 
     public function validate(string $id): bool

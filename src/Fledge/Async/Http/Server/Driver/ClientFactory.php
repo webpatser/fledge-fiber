@@ -2,8 +2,8 @@
 
 namespace Fledge\Async\Http\Server\Driver;
 
-use Fledge\Async\Http\Client\SocketException;
 use Fledge\Async\Stream\Socket;
+use Fledge\Async\Stream\SocketException;
 
 interface ClientFactory
 {

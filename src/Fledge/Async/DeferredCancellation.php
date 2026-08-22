@@ -41,11 +41,12 @@ final readonly class DeferredCancellation
     use ForbidSerialization;
 
     private Internal\Cancellable $source;
+
     private Cancellation $cancellation;
 
     public function __construct()
     {
-        $this->source = new Internal\Cancellable;
+        $this->source = new Internal\Cancellable();
         $this->cancellation = new Internal\WrappedCancellation($this->source);
     }
 

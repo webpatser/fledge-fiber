@@ -32,10 +32,10 @@ final class QueueState implements \IteratorAggregate
     /** @var array<int, T> */
     private array $emittedValues = [];
 
-    /** @var array<int, DeferredFuture<null>|Suspension> */
+    /** @var array<int, DeferredFuture<null>|Suspension<null>> */
     private array $backpressure = [];
 
-    /** @var Suspension[] */
+    /** @var array<int, Suspension<array{int, T}|FiberLocal>> */
     private array $waiting = [];
 
     private int $consumePosition = 0;
@@ -125,15 +125,17 @@ final class QueueState implements \IteratorAggregate
         }
 
         try {
-            $value = $suspension->suspend();
+            $emitted = $suspension->suspend();
 
             // This is just a marker, because we can't set fiber locals from other fibers
-            if ($value === $this->currentPosition) {
+            if ($emitted === $this->currentPosition) {
                 $this->currentPosition->set(null);
                 $this->currentValue->set(null);
 
                 return false;
             }
+
+            [$position, $value] = $emitted;
 
             $this->currentPosition->set($position - $this->positionOffset);
             $this->currentValue->set($value);
@@ -183,12 +185,11 @@ final class QueueState implements \IteratorAggregate
 
         if ($this->completed) {
             $this->disposed = true;
-            $this->exception = new DisposedException;
-            $this->triggerDisposal();
+            $this->relieveBackPressure(new DisposedException());
             return;
         }
 
-        $this->finalize(new DisposedException, true);
+        $this->finalize(new DisposedException(), true);
     }
 
     /**
@@ -208,7 +209,7 @@ final class QueueState implements \IteratorAggregate
             $key = \array_key_first($this->waiting);
             $suspension = $this->waiting[$key];
             unset($this->waiting[$key]);
-            $suspension->resume($value);
+            $suspension->resume([$position, $value]);
 
             if ($this->disposed && empty($this->waiting)) {
                 $this->triggerDisposal();
@@ -424,17 +425,11 @@ final class QueueState implements \IteratorAggregate
     {
         \assert($this->disposed && $this->exception, "Pipeline was not disposed on triggering disposal");
 
-        /** @psalm-suppress RedundantCondition */
-        if (isset($this->backpressure)) {
-            $this->relieveBackPressure($this->exception);
-        }
-
-        /** @psalm-suppress RedundantCondition */
-        if (isset($this->waiting)) {
-            $this->resolvePending();
-        }
+        $this->relieveBackPressure($this->exception);
+        $this->resolvePending();
     }
 
+    #[\Override]
     public function getIterator(): \Traversable
     {
         while ($this->continue()) {

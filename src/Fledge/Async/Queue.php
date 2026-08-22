@@ -99,6 +99,9 @@ final class Queue
 
     /**
      * Completes the queue.
+     *
+     * Values remaining in the buffer will still be delivered to consumers. Producers awaiting backpressure
+     * continue to wait until their value is consumed or the queue is disposed.
      */
     public function complete(): void
     {
@@ -107,6 +110,10 @@ final class Queue
 
     /**
      * Errors the queue with the given reason.
+     *
+     * Values remaining in the buffer will still be delivered to consumers before the given reason is thrown
+     * from the iterator. Producers awaiting backpressure continue to wait until their value is consumed or
+     * the queue is disposed.
      */
     public function error(\Throwable $reason): void
     {

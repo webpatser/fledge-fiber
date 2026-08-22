@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## v13.26.1.1 - 2026-08-22
+
+### Async
+- **Upstream sync (amphp/amp v3.1.2 + v3.1.3)**: `Interval` now forbids cloning and serialization, preventing cancellation of the original event-loop callback through a clone or execution of arbitrary callbacks on deserialization. `Future::iterate()` holds the internal iterator through a `WeakReference`, so abandoning the returned iterable stops consumption of the source; previously iteration continued even after the iterable was destroyed. `CompositeCancellation::isRequested()` / `throwIfRequested()` now also check the wrapped cancellations directly, because the callback setting the internal exception runs asynchronously and could report a cancelled composite as not-yet-requested for a tick.
+- **Upstream sync (amphp/pipeline v1.2.4 through v1.2.7)**: fixed early disposal of iterators created with `Pipeline::generate()`; fixed the inverted `isComplete()` return value on iterators from `Pipeline::concat()`; fixed pipeline termination with concurrency greater than one when the source throws while another coroutine already completed the pipeline; fixed the call ordering of the initial pipeline operator over an async source; fixed the position reported by a `Queue` concurrent iterator when a waiting consumer in the middle of the waiting list is cancelled; fixed consuming a value from a `Pipeline::generate()` iterator when consumption of the prior value was cancelled in the same event-loop tick; disposal of a queue iterator now relieves producer back-pressure; improved garbage-collection speed of early-terminated concurrent pipelines. `#[\Override]` attributes added throughout the concurrent iterator internals.
+
+### HTTP
+- **Bug fix (from upstream http-server v3.4.6)**: `Driver\ClientFactory` imported the HTTP client's `SocketException` instead of `Fledge\Async\Stream\SocketException`, the exception `SocketClientFactory` actually throws.
+- **Bug fix (from upstream hpack v3.2.2)**: the native HPack Huffman code table masks `chr()` input to one byte, avoiding a PHP 8.5 deprecation warning during header encoding.
+- The HTTP/2 client ping counter and the test session id generator use `str_increment()` instead of the deprecated string increment operator (PHP 8.5).
+
+### Parallel
+- **Hardening (from upstream parallel v2.3.4)**: `ProcessContext` throws a `ContextException` when the runner script cannot be read, and `ThreadContext` when the parent PID cannot be determined, instead of continuing with a corrupt state.
+
+### Dependencies
+- `revolt/event-loop` updated to v1.0.9 (fixes a fiber-destruction-order segmentation fault) and `guzzlehttp/guzzle`, `guzzlehttp/psr7`, and the Symfony HTTP packages moved past all open security advisories (`composer audit` is clean).
+
+## v13.26.1.0 / v13.25.0.2 - 2026-08-17
 
 ### Redis
 - **Hardening**: The resp3 extension parser is only selected when the loaded extension is at least `0.1.4` (`Resp3ExtensionParser::MINIMUM_VERSION`). Versions before that corrupt the parser state machine on RESP2 nulls nested inside aggregates (XPENDING summaries, MGET with missing keys), so an app on an outdated extension was silently unstable regardless of its fledge-fiber version. An outdated extension now falls back to the pure-PHP `RespParser` (correct, just slower) and emits a once-per-process `E_USER_WARNING` pointing at `pie install webpatser/php-resp3`. New `Resp3ExtensionParser::isUsable()` / `versionIsSupported()` back the gate.
