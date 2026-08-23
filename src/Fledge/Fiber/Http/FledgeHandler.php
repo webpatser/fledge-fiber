@@ -14,7 +14,6 @@ use GuzzleHttp\TransferStats;
 use Psr\Http\Message\RequestInterface;
 
 use function Fledge\Async\async;
-use function GuzzleHttp\Psr7\stream_for;
 
 /**
  * Guzzle handler backed by Fledge Async HTTP client for non-blocking I/O.
