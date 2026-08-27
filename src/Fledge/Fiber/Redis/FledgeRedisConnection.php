@@ -2,6 +2,7 @@
 
 namespace Fledge\Fiber\Redis;
 
+use Fledge\Async\Redis\Connection\RetryableCommands;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisException as AsyncRedisException;
 use Fledge\Async\Redis\RedisSubscriber;
@@ -20,6 +21,11 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      * The key prefix for this connection.
      */
     protected string $prefix;
+
+    /**
+     * Applies the key prefix with phpredis OPT_PREFIX semantics.
+     */
+    protected KeyPrefixer $keyPrefixer;
 
     /**
      * The connection creation callback.
@@ -56,36 +62,63 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         $this->connector = $connector;
         $this->config = $config;
         $this->prefix = $prefix;
+        $this->keyPrefixer = new KeyPrefixer($prefix);
     }
 
     /**
-     * Run a command against the Redis database.
+     * The exception message fragments that mark a transient connection error
+     * worth retrying, mirroring the upstream PhpRedisConnection list plus the
+     * phpredis read timeout marker.
+     */
+    protected const array TRANSIENT_ERROR_MARKERS = [
+        'went away', 'socket', 'connection', 'Connection', 'read error on connection',
+    ];
+
+    /**
+     * Run a command against the Redis database, mirroring the upstream
+     * PhpRedisConnection retry loop: safely retryable commands get one free
+     * retry, command_retries raises the bound for every command, and the
+     * client is rebuilt between attempts on transient connection errors.
      */
     public function command($method, array $parameters = [])
     {
-        $start = microtime(true);
+        $retries = max(
+            RetryableCommands::isRetryable($method, $parameters) ? 1 : 0,
+            (int) ($this->config['command_retries'] ?? 0),
+        );
 
-        try {
-            $result = $this->executeCommand($method, $parameters);
-        } catch (Throwable $e) {
-            $this->events?->dispatch(new CommandFailed(
-                $method, $this->parseParametersForEvent($parameters), $e, $this
-            ));
+        while (true) {
+            $start = microtime(true);
 
-            if ($e instanceof AsyncRedisException && $this->connector && Str::contains($e->getMessage(), ['went away', 'socket', 'connection', 'Connection'])) {
-                $this->client = call_user_func($this->connector);
+            try {
+                $result = $this->executeCommand($method, $parameters);
+            } catch (Throwable $e) {
+                $this->events?->dispatch(new CommandFailed(
+                    $method, $this->parseParametersForEvent($parameters), $e, $this
+                ));
+
+                $transient = $e instanceof AsyncRedisException
+                    && Str::contains($e->getMessage(), static::TRANSIENT_ERROR_MARKERS);
+
+                if ($transient && $this->connector) {
+                    $this->client = call_user_func($this->connector);
+                }
+
+                if (! $transient || $retries-- === 0) {
+                    throw $e;
+                }
+
+                continue;
             }
 
-            throw $e;
+            $time = round((microtime(true) - $start) * 1000, 2);
+
+            $this->events?->dispatch(new CommandExecuted(
+                $method, $this->parseParametersForEvent($parameters), $time, $this
+            ));
+
+            return $result;
         }
-
-        $time = round((microtime(true) - $start) * 1000, 2);
-
-        $this->events?->dispatch(new CommandExecuted(
-            $method, $this->parseParametersForEvent($parameters), $time, $this
-        ));
-
-        return $result;
     }
 
     /**
@@ -93,9 +126,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     protected function executeCommand(string $method, array $parameters): mixed
     {
-        $args = $this->flattenParameters($parameters);
+        $command = strtoupper($method);
+        $args = $this->keyPrefixer->apply($command, $this->flattenParameters($parameters));
 
-        return $this->client->execute(strtoupper($method), ...$args);
+        return $this->client->execute($command, ...$args);
     }
 
     /**
@@ -583,7 +617,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function eval($script, $numberOfKeys, ...$arguments)
     {
-        $keys = array_slice($arguments, 0, $numberOfKeys);
+        $keys = $this->keyPrefixer->prefixKeys(array_slice($arguments, 0, $numberOfKeys));
         $args = array_slice($arguments, $numberOfKeys);
 
         $start = microtime(true);
@@ -625,6 +659,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         foreach ((array) $channels as $channel) {
+            // phpredis OPT_PREFIX prefixes channel names, and subscribe
+            // callbacks receive the prefixed name as sent by the server.
+            $channel = $this->keyPrefixer->prefixChannel((string) $channel);
+
             $subscription = $this->subscriber->subscribe($channel);
 
             foreach ($subscription as $message) {
@@ -643,6 +681,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         foreach ((array) $channels as $pattern) {
+            $pattern = $this->keyPrefixer->prefixChannel((string) $pattern);
+
             $subscription = $this->subscriber->subscribeToPattern($pattern);
 
             foreach ($subscription as $message) {

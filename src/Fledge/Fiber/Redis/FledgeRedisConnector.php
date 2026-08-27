@@ -4,7 +4,9 @@ namespace Fledge\Fiber\Redis;
 
 use Fledge\Async\Redis\Cluster\ClusteringRedisLink;
 use Fledge\Async\Redis\RedisClient;
+use Fledge\Async\Redis\RedisConfig;
 use Fledge\Async\Redis\RedisSubscriber;
+use Fledge\Async\Redis\Connection\BackoffStrategy;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
 use Illuminate\Contracts\Redis\Connector;
 use Illuminate\Support\Arr;
@@ -26,12 +28,23 @@ class FledgeRedisConnector implements Connector
 
         $merged = array_merge($config, $options, $formattedOptions);
 
+        $this->rejectUnsupportedOptions($merged);
+
         $prefix = $merged['prefix'] ?? '';
-        $uri = $this->buildUri($merged);
+        $redisConfig = $this->buildConfig($merged);
 
-        $connector = createRedisConnector($uri);
+        $connector = createRedisConnector($redisConfig);
 
-        $connectorCallback = fn () => new RedisClient(new ReconnectingRedisLink($connector));
+        $policy = $redisConfig->getRetryPolicy();
+        $readTimeout = $redisConfig->getReadTimeout();
+        $backoff = BackoffStrategy::fromRetryPolicy($policy);
+
+        $connectorCallback = fn () => new RedisClient(new ReconnectingRedisLink(
+            $connector,
+            $readTimeout,
+            $backoff,
+            $policy->maxRetries,
+        ));
 
         $client = $connectorCallback();
         $subscriber = new RedisSubscriber($connector);
@@ -45,17 +58,22 @@ class FledgeRedisConnector implements Connector
     public function connectToCluster(array $config, array $clusterOptions, array $options): FledgeRedisClusterConnection
     {
         $shared = array_merge($options, $clusterOptions);
+        $this->rejectUnsupportedOptions($shared, cluster: true);
+
         $prefix = $shared['prefix'] ?? '';
 
-        $seedUris = array_map(fn (array $node) => $this->buildUri(array_merge($shared, $node)), $config);
+        $seedConfigs = array_map(
+            fn (array $node) => $this->buildConfig(array_merge($shared, $node)),
+            array_values($config),
+        );
 
-        $uriForEndpoint = function (string $endpoint) use ($shared): string {
+        $configForEndpoint = function (string $endpoint) use ($shared): RedisConfig {
             [$host, $port] = self::splitEndpoint($endpoint);
 
-            return $this->buildUri(array_merge($shared, ['host' => $host, 'port' => $port]));
+            return $this->buildConfig(array_merge($shared, ['host' => $host, 'port' => $port]));
         };
 
-        $linkFactory = fn () => new ClusteringRedisLink($seedUris, $uriForEndpoint);
+        $linkFactory = fn () => new ClusteringRedisLink($seedConfigs, $configForEndpoint);
 
         $link = $linkFactory();
         $client = new RedisClient($link);
@@ -70,8 +88,80 @@ class FledgeRedisConnector implements Connector
             $reconnect,
             $shared,
             $prefix,
-            $uriForEndpoint,
+            $configForEndpoint,
         );
+    }
+
+    /**
+     * Reject configuration options that would silently change data or
+     * routing semantics if ignored. Options without semantic impact (scan,
+     * persistent, persistent_id, compression_level without compression) are
+     * tolerated silently.
+     *
+     * The failover and cluster driver checks only apply to cluster
+     * connections ($cluster = true); upstream ignores both options on single
+     * connections even when the global options array carries them.
+     *
+     * @throws UnsupportedRedisOptionException
+     */
+    protected function rejectUnsupportedOptions(array $options, bool $cluster = false): void
+    {
+        // Redis::SERIALIZER_NONE = 0: values would be transparently
+        // (un)serialized by phpredis; ignoring the option corrupts reads.
+        $serializer = $options['serializer'] ?? null;
+
+        if ($serializer !== null && $serializer !== 0 && $serializer !== 'none') {
+            throw new UnsupportedRedisOptionException(sprintf(
+                'The serializer option [%s] is not supported by the Fledge Redis driver; values are stored raw. Remove the option or use serializer=none.',
+                is_scalar($serializer) ? (string) $serializer : gettype($serializer),
+            ));
+        }
+
+        // Redis::COMPRESSION_NONE = 0.
+        $compression = $options['compression'] ?? null;
+
+        if ($compression !== null && $compression !== 0 && $compression !== 'none') {
+            throw new UnsupportedRedisOptionException(sprintf(
+                'The compression option [%s] is not supported by the Fledge Redis driver; values are stored raw. Remove the option or use compression=none.',
+                is_scalar($compression) ? (string) $compression : gettype($compression),
+            ));
+        }
+
+        if (! empty($options['pack_ignore_numbers'])) {
+            throw new UnsupportedRedisOptionException(
+                'The pack_ignore_numbers option is not supported by the Fledge Redis driver; it only changes behavior together with a serializer, which is unsupported.',
+            );
+        }
+
+        if (($options['replication'] ?? null) === 'sentinel') {
+            throw new UnsupportedRedisOptionException(
+                'Redis Sentinel (replication=sentinel) is not supported by the Fledge Redis driver; use a direct connection or predis.',
+            );
+        }
+
+        if (! $cluster) {
+            return;
+        }
+
+        $failover = $options['failover'] ?? null;
+        $normalized = is_string($failover) ? strtolower($failover) : $failover;
+
+        // RedisCluster::FAILOVER_DISTRIBUTE = 2, FAILOVER_DISTRIBUTE_SLAVES = 3.
+        if (in_array($normalized, ['distribute', 'distribute_slaves', 2, 3], true)) {
+            throw new UnsupportedRedisOptionException(sprintf(
+                'Replica read routing (failover=%s) is not supported by the Fledge Redis driver; use failover=none or failover=error.',
+                is_string($failover) ? $failover : (string) $failover,
+            ));
+        }
+
+        $cluster = $options['cluster'] ?? 'redis';
+
+        if ($cluster !== 'redis') {
+            throw new UnsupportedRedisOptionException(sprintf(
+                'Cluster driver [%s] is not supported by the Fledge Redis driver: predis-style client-side sharding is unavailable, only options.cluster = "redis" (Redis Cluster) is supported.',
+                is_scalar($cluster) ? (string) $cluster : gettype($cluster),
+            ));
+        }
     }
 
     /**
@@ -97,43 +187,35 @@ class FledgeRedisConnector implements Connector
     }
 
     /**
-     * Build a Redis URI from the given configuration array.
+     * Build a structured RedisConfig from a merged Laravel configuration
+     * array, preserving options that do not survive a round-trip through a
+     * URI (read_timeout, TLS context, client name, retry policy, keepalive).
      */
-    protected function buildUri(array $config): string
+    protected function buildConfig(array $merged): RedisConfig
     {
-        $scheme = $config['scheme'] ?? 'tcp';
-        $host = $config['host'] ?? '127.0.0.1';
-        $port = (int) ($config['port'] ?? 6379);
-
-        // Handle unix sockets
-        if (($scheme === 'unix' || isset($config['path'])) && ! isset($config['host'])) {
-            $path = $config['path'] ?? $host;
-
-            return "unix://{$path}";
+        if (isset($merged['context'])) {
+            $merged['context'] = $this->normalizeContext((array) $merged['context']);
         }
 
-        // Build the base URI
-        $uri = "tcp://{$host}:{$port}";
-
-        // Add query params for auth and database
-        $query = [];
-
-        if (! empty($config['password'])) {
-            $query['password'] = $config['password'];
-        }
-
-        if (isset($config['database']) && (int) $config['database'] !== 0) {
-            $query['database'] = (int) $config['database'];
-        }
-
-        if (isset($config['timeout'])) {
-            $query['timeout'] = (float) $config['timeout'];
-        }
-
-        if (! empty($query)) {
-            $uri .= '?'.http_build_query($query);
-        }
-
-        return $uri;
+        return RedisConfig::fromParameters($merged);
     }
+
+    /**
+     * Normalize the SSL context options to a flat ssl option array, accepting
+     * the same shapes as upstream PhpRedisConnector::normalizeContext():
+     * ['stream' => [...]], ['ssl' => [...]], or already-flat options.
+     */
+    protected function normalizeContext(array $context): array
+    {
+        if (isset($context['stream']) && \is_array($context['stream'])) {
+            return $context['stream'];
+        }
+
+        if (isset($context['ssl']) && \is_array($context['ssl'])) {
+            return $context['ssl'];
+        }
+
+        return $context;
+    }
+
 }

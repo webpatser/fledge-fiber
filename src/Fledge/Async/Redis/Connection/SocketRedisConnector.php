@@ -30,6 +30,7 @@ final readonly class SocketRedisConnector implements RedisConnector
         ConnectContext $connectContext,
         private ?SocketConnector $socketConnector = null,
         private ?\Closure $parserFactory = null,
+        private bool $tcpKeepalive = false,
     ) {
         $this->connectContext = $connectContext;
     }
@@ -55,6 +56,33 @@ final readonly class SocketRedisConnector implements RedisConnector
             );
         }
 
+        if ($this->tcpKeepalive) {
+            self::enableTcpKeepalive($socket);
+        }
+
         return new SocketRedisConnection($socket, $this->parserFactory);
+    }
+
+    /**
+     * Best-effort SO_KEEPALIVE, mirroring the phpredis tcp_keepalive option.
+     * Requires ext-sockets; silently skipped when unavailable.
+     */
+    private static function enableTcpKeepalive(Stream\Socket $socket): void
+    {
+        if (!\extension_loaded('sockets') || !$socket instanceof Stream\ResourceStream) {
+            return;
+        }
+
+        $resource = $socket->getResource();
+
+        if (!\is_resource($resource)) {
+            return;
+        }
+
+        $imported = @\socket_import_stream($resource);
+
+        if ($imported !== false && $imported !== null) {
+            @\socket_set_option($imported, \SOL_SOCKET, \SO_KEEPALIVE, 1);
+        }
     }
 }

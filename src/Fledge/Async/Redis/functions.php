@@ -3,13 +3,13 @@
 namespace Fledge\Async\Redis;
 
 use Fledge\Async\Redis\Connection\Authenticator;
+use Fledge\Async\Redis\Connection\ClientNameSetter;
 use Fledge\Async\Redis\Connection\DatabaseSelector;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
 use Fledge\Async\Redis\Connection\RedisConnector;
 use Fledge\Async\Redis\Connection\SocketRedisConnector;
 use Fledge\Async\Redis\Protocol\ParserInterface;
 use Fledge\Async\Redis\Protocol\RedisResponse;
-use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 
 /**
@@ -28,14 +28,15 @@ function createRedisConnector(
 
     $connectContext = (new ConnectContext())->withConnectTimeout($config->getTimeout());
 
-    if ($config->usesTls()) {
-        $connectContext = $connectContext->withTlsContext(new ClientTlsContext($config->getHost()));
+    if (($tlsContext = $config->getTlsContext()) !== null) {
+        $connectContext = $connectContext->withTlsContext($tlsContext);
     }
 
     $connector ??= new SocketRedisConnector(
         $config->getConnectUri(),
         $connectContext,
         parserFactory: $parserFactory,
+        tcpKeepalive: $config->usesTcpKeepalive(),
     );
 
     if ($config->hasPassword()) {
@@ -44,6 +45,10 @@ function createRedisConnector(
 
     if ($config->getDatabase() !== 0) {
         $connector = new DatabaseSelector($config->getDatabase(), $connector);
+    }
+
+    if (($clientName = $config->getClientName()) !== null) {
+        $connector = new ClientNameSetter($clientName, $connector);
     }
 
     return $connector;

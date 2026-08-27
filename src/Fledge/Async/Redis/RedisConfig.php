@@ -2,6 +2,9 @@
 
 namespace Fledge\Async\Redis;
 
+use Fledge\Async\Redis\Connection\RetryPolicy;
+use Fledge\Async\Stream\Certificate;
+use Fledge\Async\Stream\ClientTlsContext;
 use League\Uri\Uri;
 
 final class RedisConfig
@@ -15,24 +18,92 @@ final class RedisConfig
      */
     public static function fromUri(string $uri, float $timeout = self::DEFAULT_TIMEOUT): self
     {
-        return new self($uri, $timeout);
+        $config = new self();
+        $config->timeout = $timeout;
+        $config->applyUri($uri);
+
+        return $config;
     }
 
-    private string $uri;
-    private string $host;
-    private string $username;
-    private string $password;
-    private int $database;
-    private float $timeout;
-    private bool $tls;
-
     /**
+     * Build a config from a Laravel-style redis connection parameter array,
+     * preserving options that do not survive a round-trip through a URI.
+     *
+     * Connect-URI derivation:
+     * - unix socket when the scheme is "unix", a "path" key is present
+     *   (predis style), the host starts with "/" (phpredis style), or the
+     *   port is 0 and the host looks like a filesystem path
+     * - TLS when the scheme is "tls" or "rediss"
+     * - plain tcp://host:port otherwise
+     *
      * @throws RedisException
      */
-    private function __construct(string $uri, float $timeout)
+    public static function fromParameters(array $params): self
     {
-        $this->applyUri($uri);
-        $this->timeout = $timeout;
+        $config = new self();
+
+        $scheme = \strtolower((string) ($params['scheme'] ?? 'tcp'));
+        $host = (string) ($params['host'] ?? '127.0.0.1');
+        $port = (int) ($params['port'] ?? self::DEFAULT_PORT);
+
+        $config->host = $host;
+        $config->port = $port;
+        $config->username = (string) ($params['username'] ?? '');
+        $config->password = (string) ($params['password'] ?? '');
+        $config->database = (int) ($params['database'] ?? 0);
+
+        $timeout = (float) ($params['timeout'] ?? self::DEFAULT_TIMEOUT);
+        $config->timeout = $timeout > 0 ? $timeout : self::DEFAULT_TIMEOUT;
+
+        // phpredis semantics: a read_timeout of zero or less means "wait forever".
+        $readTimeout = isset($params['read_timeout']) ? (float) $params['read_timeout'] : null;
+        $config->readTimeout = ($readTimeout !== null && $readTimeout > 0) ? $readTimeout : null;
+
+        $config->tlsOptions = \is_array($params['context'] ?? null) ? $params['context'] : [];
+        $config->clientName = isset($params['name']) && (string) $params['name'] !== ''
+            ? (string) $params['name']
+            : null;
+        $config->tcpKeepalive = !empty($params['tcp_keepalive']);
+        $config->retryPolicy = RetryPolicy::fromParameters($params);
+
+        $unixPath = match (true) {
+            $scheme === 'unix' => (string) ($params['path'] ?? $host),
+            isset($params['path']) => (string) $params['path'],
+            \str_starts_with($host, '/') => $host,
+            $port === 0 && \str_contains($host, '/') => $host,
+            default => null,
+        };
+
+        if ($unixPath !== null) {
+            $config->uri = 'unix://' . $unixPath;
+
+            return $config;
+        }
+
+        $config->tls = $scheme === 'tls' || $scheme === 'rediss';
+        $config->uri = \sprintf('tcp://%s:%d', $host, $port);
+
+        return $config;
+    }
+
+    private string $uri = 'tcp://' . self::DEFAULT_HOST . ':' . self::DEFAULT_PORT;
+    private string $host = self::DEFAULT_HOST;
+    private int $port = self::DEFAULT_PORT;
+    private string $username = '';
+    private string $password = '';
+    private int $database = 0;
+    private float $timeout = self::DEFAULT_TIMEOUT;
+    private ?float $readTimeout = null;
+    private bool $tls = false;
+    private array $tlsOptions = [];
+    private ?string $clientName = null;
+    private RetryPolicy $retryPolicy;
+    private bool $tcpKeepalive = false;
+    private ?ClientTlsContext $tlsContext = null;
+
+    private function __construct()
+    {
+        $this->retryPolicy = RetryPolicy::default();
     }
 
     public function getConnectUri(): string
@@ -43,6 +114,16 @@ final class RedisConfig
     public function getTimeout(): float
     {
         return $this->timeout;
+    }
+
+    /**
+     * Maximum time to wait for a single command response, or null to wait
+     * forever (phpredis read_timeout semantics: zero or negative means
+     * no limit and is normalized to null).
+     */
+    public function getReadTimeout(): ?float
+    {
+        return $this->readTimeout;
     }
 
     public function getPassword(): string
@@ -73,12 +154,107 @@ final class RedisConfig
         return $this->host;
     }
 
+    public function getPort(): int
+    {
+        return $this->port;
+    }
+
     /**
-     * True when the URI requested a TLS connection via the "rediss" scheme.
+     * True when the configuration requested a TLS connection via the
+     * "rediss" or "tls" scheme.
      */
     public function usesTls(): bool
     {
         return $this->tls;
+    }
+
+    /**
+     * Raw stream context ssl options as configured (already normalized to a
+     * flat option array by the connector).
+     */
+    public function getTlsOptions(): array
+    {
+        return $this->tlsOptions;
+    }
+
+    /**
+     * The TLS context for this connection, lazily built from the configured
+     * stream context ssl options. The peer name defaults to the host and can
+     * be overridden with a peer_name option. Returns null when the
+     * configuration does not request TLS.
+     */
+    public function getTlsContext(): ?ClientTlsContext
+    {
+        if (!$this->tls) {
+            return null;
+        }
+
+        return $this->tlsContext ??= $this->buildTlsContext();
+    }
+
+    private function buildTlsContext(): ClientTlsContext
+    {
+        $options = $this->tlsOptions;
+
+        $context = new ClientTlsContext((string) ($options['peer_name'] ?? $this->host));
+
+        $verifyPeer = (bool) ($options['verify_peer'] ?? true);
+        $verifyPeerName = (bool) ($options['verify_peer_name'] ?? true);
+
+        if (!$verifyPeer || !$verifyPeerName) {
+            $context = $context->withoutPeerVerification();
+        }
+
+        if (isset($options['cafile'])) {
+            $context = $context->withCaFile((string) $options['cafile']);
+        }
+
+        if (isset($options['capath'])) {
+            $context = $context->withCaPath((string) $options['capath']);
+        }
+
+        if (isset($options['verify_depth'])) {
+            $context = $context->withVerificationDepth((int) $options['verify_depth']);
+        }
+
+        if (isset($options['ciphers'])) {
+            $context = $context->withCiphers((string) $options['ciphers']);
+        }
+
+        if (isset($options['local_cert'])) {
+            $context = $context->withCertificate(new Certificate(
+                (string) $options['local_cert'],
+                isset($options['local_pk']) ? (string) $options['local_pk'] : null,
+                isset($options['passphrase']) ? (string) $options['passphrase'] : null,
+            ));
+        }
+
+        if (isset($options['security_level'])) {
+            $context = $context->withSecurityLevel((int) $options['security_level']);
+        }
+
+        if (isset($options['peer_fingerprint'])) {
+            $context = \is_array($options['peer_fingerprint'])
+                ? $context->withPeerFingerprints($options['peer_fingerprint'])
+                : $context->withPeerFingerprint((string) $options['peer_fingerprint']);
+        }
+
+        return $context;
+    }
+
+    public function getClientName(): ?string
+    {
+        return $this->clientName;
+    }
+
+    public function getRetryPolicy(): RetryPolicy
+    {
+        return $this->retryPolicy;
+    }
+
+    public function usesTcpKeepalive(): bool
+    {
+        return $this->tcpKeepalive;
     }
 
     public function getDatabase(): int
@@ -164,6 +340,10 @@ final class RedisConfig
 
         $this->database = (int) ($query['database'] ?? $query['db'] ?? 0);
 
+        if (isset($query['timeout']) && \is_numeric($query['timeout'])) {
+            $this->timeout = (float) $query['timeout'];
+        }
+
         $this->host = $uri->getHost() ?: self::DEFAULT_HOST;
 
         if ($scheme === 'unix') {
@@ -176,10 +356,12 @@ final class RedisConfig
             $this->database = (int) $path;
         }
 
+        $this->port = $uri->getPort() ?: self::DEFAULT_PORT;
+
         $this->uri = \sprintf(
             'tcp://%s:%d',
             $this->host,
-            $uri->getPort() ?: self::DEFAULT_PORT,
+            $this->port,
         );
     }
 }
