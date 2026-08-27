@@ -26,6 +26,9 @@ final class PostgresConfig extends SqlConfig
         'keepalivesIdle' => 'keepalives_idle',
         'keepalivesInterval' => 'keepalives_interval',
         'keepalivesCount' => 'keepalives_count',
+        'sslCert' => 'sslcert',
+        'sslKey' => 'sslkey',
+        'sslRootCert' => 'sslrootcert',
     ];
 
     private ?string $connectionString = null;
@@ -51,6 +54,9 @@ final class PostgresConfig extends SqlConfig
             isset($parts["keepalives_idle"]) ? (int) $parts["keepalives_idle"] : null,
             isset($parts["keepalives_interval"]) ? (int) $parts["keepalives_interval"] : null,
             isset($parts["keepalives_count"]) ? (int) $parts["keepalives_count"] : null,
+            $parts["sslcert"] ?? null,
+            $parts["sslkey"] ?? null,
+            $parts["sslrootcert"] ?? null,
         );
     }
 
@@ -67,6 +73,9 @@ final class PostgresConfig extends SqlConfig
         private ?int $keepalivesIdle = null,
         private ?int $keepalivesInterval = null,
         private ?int $keepalivesCount = null,
+        private ?string $sslCert = null,
+        private ?string $sslKey = null,
+        private ?string $sslRootCert = null,
     ) {
         self::assertValidSslMode($sslMode);
 
@@ -196,6 +205,51 @@ final class PostgresConfig extends SqlConfig
         return clone($this, ['keepalivesCount' => null]);
     }
 
+    public function getSslCert(): ?string
+    {
+        return $this->sslCert;
+    }
+
+    public function withSslCert(string $path): self
+    {
+        return clone($this, ['sslCert' => $path]);
+    }
+
+    public function withoutSslCert(): self
+    {
+        return clone($this, ['sslCert' => null]);
+    }
+
+    public function getSslKey(): ?string
+    {
+        return $this->sslKey;
+    }
+
+    public function withSslKey(string $path): self
+    {
+        return clone($this, ['sslKey' => $path]);
+    }
+
+    public function withoutSslKey(): self
+    {
+        return clone($this, ['sslKey' => null]);
+    }
+
+    public function getSslRootCert(): ?string
+    {
+        return $this->sslRootCert;
+    }
+
+    public function withSslRootCert(string $path): self
+    {
+        return clone($this, ['sslRootCert' => $path]);
+    }
+
+    public function withoutSslRootCert(): self
+    {
+        return clone($this, ['sslRootCert' => null]);
+    }
+
     /**
      * @return string Connection string used with ext-pgsql and pecl-pq.
      */
@@ -251,6 +305,18 @@ final class PostgresConfig extends SqlConfig
 
         if ($this->keepalivesCount !== null) {
             $chunks[] = "keepalives_count=" . $this->keepalivesCount;
+        }
+
+        if ($this->sslCert !== null) {
+            $chunks[] = \sprintf("sslcert='%s'", \addslashes($this->sslCert));
+        }
+
+        if ($this->sslKey !== null) {
+            $chunks[] = \sprintf("sslkey='%s'", \addslashes($this->sslKey));
+        }
+
+        if ($this->sslRootCert !== null) {
+            $chunks[] = \sprintf("sslrootcert='%s'", \addslashes($this->sslRootCert));
         }
 
         return $this->connectionString = \implode(" ", $chunks);

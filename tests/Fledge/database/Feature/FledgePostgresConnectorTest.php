@@ -118,6 +118,32 @@ it('preserves keepalives disabled as zero', function () {
     expect($config->getKeepalives())->toBe(0);
 });
 
+it('applies ssl certificate options', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'sslcert' => '/certs/client.crt',
+        'sslkey' => '/certs/client.key',
+        'sslrootcert' => '/certs/root.crt',
+    ]);
+
+    expect($config->getSslCert())->toBe('/certs/client.crt')
+        ->and($config->getSslKey())->toBe('/certs/client.key')
+        ->and($config->getSslRootCert())->toBe('/certs/root.crt');
+});
+
+it('omits ssl certificate options when not configured', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, []);
+
+    expect($config->getSslCert())->toBeNull()
+        ->and($config->getSslKey())->toBeNull()
+        ->and($config->getSslRootCert())->toBeNull();
+});
+
 it('preserves host when using connect_via', function () {
     $connector = new FledgePostgresConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');

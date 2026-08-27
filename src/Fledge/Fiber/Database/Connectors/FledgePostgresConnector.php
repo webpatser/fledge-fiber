@@ -49,6 +49,9 @@ class FledgePostgresConnector implements ConnectorInterface
             keepalivesIdle: isset($config['keepalives_idle']) ? (int) $config['keepalives_idle'] : null,
             keepalivesInterval: isset($config['keepalives_interval']) ? (int) $config['keepalives_interval'] : null,
             keepalivesCount: isset($config['keepalives_count']) ? (int) $config['keepalives_count'] : null,
+            sslCert: $config['sslcert'] ?? null,
+            sslKey: $config['sslkey'] ?? null,
+            sslRootCert: $config['sslrootcert'] ?? null,
         );
     }
 
