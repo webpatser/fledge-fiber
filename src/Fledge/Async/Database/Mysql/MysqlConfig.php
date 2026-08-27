@@ -8,7 +8,7 @@ use Fledge\Async\Database\SqlConfig;
 final class MysqlConfig extends SqlConfig
 {
     public const DEFAULT_PORT = 3306;
-    public const BIN_CHARSET = 255; // utf8mb4_0900_ai_ci
+    public const BIN_CHARSET = 45; // utf8mb4_general_ci, understood by MySQL 5.7+ and MariaDB (255 is MySQL 8 only)
 
     public const KEY_MAP = [
         ...parent::KEY_MAP,
@@ -39,7 +39,7 @@ final class MysqlConfig extends SqlConfig
             database: $parts['db'] ?? null,
             context: $context,
             charset: $parts['charset'] ?? self::DEFAULT_CHARSET,
-            collate: $parts['collate'] ?? self::DEFAULT_COLLATE,
+            collate: $parts['collate'] ?? '',
             useCompression: ($parts['compression'] ?? '') === 'on',
             useLocalInfile: ($parts['local-infile'] ?? '') === 'on'
         );
@@ -75,7 +75,7 @@ final class MysqlConfig extends SqlConfig
         ?string $database = null,
         ?ConnectContext $context = null,
         private string $charset = self::DEFAULT_CHARSET,
-        private string $collate = self::DEFAULT_COLLATE,
+        private string $collate = '',
         private ?string $sqlMode = null,
         private bool $useCompression = false,
         private string $key = '',

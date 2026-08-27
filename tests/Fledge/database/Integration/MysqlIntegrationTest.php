@@ -146,6 +146,19 @@ it('rolls back a transaction', function () {
     $pdo->close();
 });
 
+it('applies a charset without a collation', function () {
+    $connector = new FledgeMySqlConnector;
+    $pdo = $connector->connect(['charset' => 'latin1'] + mysqlConfig());
+
+    $stmt = $pdo->prepare('SELECT @@session.character_set_client AS cs');
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    expect($rows[0]['cs'])->toBe('latin1');
+
+    $pdo->close();
+});
+
 it('negotiates tls when ssl options are configured', function () {
     $connector = new FledgeMySqlConnector;
 

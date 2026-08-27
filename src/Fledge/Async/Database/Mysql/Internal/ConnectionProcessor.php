@@ -225,10 +225,9 @@ class ConnectionProcessor implements SqlTransientResource
             $future = $future->finally(static fn () => $cancellation?->unsubscribe($id));
         }
 
-        // if a charset is specified, we need to set before any query
-        if ($this->config->getCharset() !== MysqlConfig::DEFAULT_CHARSET
-            || $this->config->getCollation() !== MysqlConfig::DEFAULT_COLLATE
-        ) {
+        // if a charset is specified, we need to set it before any query, since the
+        // handshake charset only covers the connection, not the session defaults
+        if ($this->config->getCharset() !== '') {
             $future = $future->map(function (): void {
                 $charset = $this->config->getCharset();
                 $collate = $this->config->getCollation();

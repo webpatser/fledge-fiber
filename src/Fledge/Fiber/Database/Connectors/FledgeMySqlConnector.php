@@ -34,8 +34,8 @@ class FledgeMySqlConnector implements ConnectorInterface
     {
         $host = ! empty($config['unix_socket']) ? $config['unix_socket'] : ($config['host'] ?? '127.0.0.1');
         $port = (int) ($config['port'] ?? 3306);
-        $charset = $config['charset'] ?? MysqlConfig::DEFAULT_CHARSET;
-        $collation = $config['collation'] ?? MysqlConfig::DEFAULT_COLLATE;
+        $charset = $config['charset'] ?? '';
+        $collation = $config['collation'] ?? '';
 
         $mysqlConfig = new MysqlConfig(
             host: $host,

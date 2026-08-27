@@ -35,8 +35,8 @@ it('uses sensible defaults', function () {
 
     expect($config->getHost())->toBe('127.0.0.1')
         ->and($config->getPort())->toBe(3306)
-        ->and($config->getCharset())->toBe(MysqlConfig::DEFAULT_CHARSET)
-        ->and($config->getCollation())->toBe(MysqlConfig::DEFAULT_COLLATE);
+        ->and($config->getCharset())->toBe('')
+        ->and($config->getCollation())->toBe('');
 });
 
 it('uses unix socket as host', function () {
@@ -96,7 +96,8 @@ it('sets only charset without collation', function () {
 
     $config = $method->invoke($connector, ['charset' => 'latin1']);
 
-    expect($config->getCharset())->toBe('latin1');
+    expect($config->getCharset())->toBe('latin1')
+        ->and($config->getCollation())->toBe('');
 });
 
 it('sets only collation', function () {
