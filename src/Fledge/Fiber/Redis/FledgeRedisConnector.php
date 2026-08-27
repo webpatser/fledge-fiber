@@ -4,6 +4,7 @@ namespace Fledge\Fiber\Redis;
 
 use Fledge\Async\Redis\Cluster\ClusteringRedisLink;
 use Fledge\Async\Redis\RedisClient;
+use Fledge\Async\Redis\RedisConfig;
 use Fledge\Async\Redis\RedisSubscriber;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
 use Illuminate\Contracts\Redis\Connector;
@@ -27,9 +28,9 @@ class FledgeRedisConnector implements Connector
         $merged = array_merge($config, $options, $formattedOptions);
 
         $prefix = $merged['prefix'] ?? '';
-        $uri = $this->buildUri($merged);
+        $redisConfig = $this->buildConfig($merged);
 
-        $connector = createRedisConnector($uri);
+        $connector = createRedisConnector($redisConfig);
 
         $connectorCallback = fn () => new RedisClient(new ReconnectingRedisLink($connector));
 
@@ -97,7 +98,42 @@ class FledgeRedisConnector implements Connector
     }
 
     /**
+     * Build a structured RedisConfig from a merged Laravel configuration
+     * array, preserving options that do not survive a round-trip through a
+     * URI (read_timeout, TLS context, client name, retry policy, keepalive).
+     */
+    protected function buildConfig(array $merged): RedisConfig
+    {
+        if (isset($merged['context'])) {
+            $merged['context'] = $this->normalizeContext((array) $merged['context']);
+        }
+
+        return RedisConfig::fromParameters($merged);
+    }
+
+    /**
+     * Normalize the SSL context options to a flat ssl option array, accepting
+     * the same shapes as upstream PhpRedisConnector::normalizeContext():
+     * ['stream' => [...]], ['ssl' => [...]], or already-flat options.
+     */
+    protected function normalizeContext(array $context): array
+    {
+        if (isset($context['stream']) && \is_array($context['stream'])) {
+            return $context['stream'];
+        }
+
+        if (isset($context['ssl']) && \is_array($context['ssl'])) {
+            return $context['ssl'];
+        }
+
+        return $context;
+    }
+
+    /**
      * Build a Redis URI from the given configuration array.
+     *
+     * Only used for cluster seed URIs; single connections go through
+     * buildConfig() so no options are lost in URI form.
      */
     protected function buildUri(array $config): string
     {

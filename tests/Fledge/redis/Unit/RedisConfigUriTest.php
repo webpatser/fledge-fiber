@@ -71,6 +71,23 @@ it('keeps parsing database and host as before', function () {
         ->and($config->getConnectUri())->toBe('tcp://localhost:6379');
 });
 
+it('parses a timeout query parameter', function () {
+    expect(RedisConfig::fromUri('redis://localhost:6379?timeout=2.5')->getTimeout())->toBe(2.5);
+});
+
+it('prefers the timeout query parameter over the argument', function () {
+    expect(RedisConfig::fromUri('redis://localhost:6379?timeout=1.5', 10.0)->getTimeout())->toBe(1.5);
+});
+
+it('keeps the timeout argument without a query parameter', function () {
+    expect(RedisConfig::fromUri('redis://localhost:6379', 10.0)->getTimeout())->toBe(10.0);
+});
+
+it('exposes the port parsed from the uri', function () {
+    expect(RedisConfig::fromUri('redis://localhost:6380')->getPort())->toBe(6380)
+        ->and(RedisConfig::fromUri('redis://localhost')->getPort())->toBe(6379);
+});
+
 it('supports unix sockets without credentials', function () {
     $config = RedisConfig::fromUri('unix:///tmp/redis.sock');
 
