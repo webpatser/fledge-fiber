@@ -3,6 +3,8 @@
 namespace Fledge\Async\Redis;
 
 use Fledge\Async\Redis\Connection\RetryPolicy;
+use Fledge\Async\Stream\Certificate;
+use Fledge\Async\Stream\ClientTlsContext;
 use League\Uri\Uri;
 
 final class RedisConfig
@@ -97,6 +99,7 @@ final class RedisConfig
     private ?string $clientName = null;
     private RetryPolicy $retryPolicy;
     private bool $tcpKeepalive = false;
+    private ?ClientTlsContext $tlsContext = null;
 
     private function __construct()
     {
@@ -172,6 +175,71 @@ final class RedisConfig
     public function getTlsOptions(): array
     {
         return $this->tlsOptions;
+    }
+
+    /**
+     * The TLS context for this connection, lazily built from the configured
+     * stream context ssl options. The peer name defaults to the host and can
+     * be overridden with a peer_name option. Returns null when the
+     * configuration does not request TLS.
+     */
+    public function getTlsContext(): ?ClientTlsContext
+    {
+        if (!$this->tls) {
+            return null;
+        }
+
+        return $this->tlsContext ??= $this->buildTlsContext();
+    }
+
+    private function buildTlsContext(): ClientTlsContext
+    {
+        $options = $this->tlsOptions;
+
+        $context = new ClientTlsContext((string) ($options['peer_name'] ?? $this->host));
+
+        $verifyPeer = (bool) ($options['verify_peer'] ?? true);
+        $verifyPeerName = (bool) ($options['verify_peer_name'] ?? true);
+
+        if (!$verifyPeer || !$verifyPeerName) {
+            $context = $context->withoutPeerVerification();
+        }
+
+        if (isset($options['cafile'])) {
+            $context = $context->withCaFile((string) $options['cafile']);
+        }
+
+        if (isset($options['capath'])) {
+            $context = $context->withCaPath((string) $options['capath']);
+        }
+
+        if (isset($options['verify_depth'])) {
+            $context = $context->withVerificationDepth((int) $options['verify_depth']);
+        }
+
+        if (isset($options['ciphers'])) {
+            $context = $context->withCiphers((string) $options['ciphers']);
+        }
+
+        if (isset($options['local_cert'])) {
+            $context = $context->withCertificate(new Certificate(
+                (string) $options['local_cert'],
+                isset($options['local_pk']) ? (string) $options['local_pk'] : null,
+                isset($options['passphrase']) ? (string) $options['passphrase'] : null,
+            ));
+        }
+
+        if (isset($options['security_level'])) {
+            $context = $context->withSecurityLevel((int) $options['security_level']);
+        }
+
+        if (isset($options['peer_fingerprint'])) {
+            $context = \is_array($options['peer_fingerprint'])
+                ? $context->withPeerFingerprints($options['peer_fingerprint'])
+                : $context->withPeerFingerprint((string) $options['peer_fingerprint']);
+        }
+
+        return $context;
     }
 
     public function getClientName(): ?string

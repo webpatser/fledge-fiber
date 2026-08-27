@@ -9,7 +9,6 @@ use Fledge\Async\Redis\Connection\RedisConnector;
 use Fledge\Async\Redis\Connection\SocketRedisConnector;
 use Fledge\Async\Redis\Protocol\ParserInterface;
 use Fledge\Async\Redis\Protocol\RedisResponse;
-use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 
 /**
@@ -28,8 +27,8 @@ function createRedisConnector(
 
     $connectContext = (new ConnectContext())->withConnectTimeout($config->getTimeout());
 
-    if ($config->usesTls()) {
-        $connectContext = $connectContext->withTlsContext(new ClientTlsContext($config->getHost()));
+    if (($tlsContext = $config->getTlsContext()) !== null) {
+        $connectContext = $connectContext->withTlsContext($tlsContext);
     }
 
     $connector ??= new SocketRedisConnector(
