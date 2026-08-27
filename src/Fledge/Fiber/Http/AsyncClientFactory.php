@@ -9,6 +9,7 @@ use Fledge\Async\Http\Client\HttpClientBuilder;
 use Fledge\Async\Stream\Certificate;
 use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
+use Fledge\Async\Stream\DnsSocketConnector;
 use Fledge\Async\Stream\HttpConnectSocketConnector;
 use Fledge\Async\Stream\SocketConnector;
 use Fledge\Async\Stream\Socks5SocketConnector;
@@ -48,9 +49,25 @@ class AsyncClientFactory
     public function default(): HttpClient
     {
         return $this->default ??= (new HttpClientBuilder)
+            ->usingPool(new UnlimitedConnectionPool(new DefaultConnectionFactory($this->baseConnector())))
             ->followRedirects(0)
             ->retry(0)
             ->build();
+    }
+
+    /**
+     * The socket connector underneath every client this factory builds.
+     *
+     * curl makes a single connect attempt; the global socketConnector()
+     * wraps DnsSocketConnector in a RetrySocketConnector with 3 attempts
+     * and exponential backoff, which turns an instant connection refusal
+     * into a 6 second stall and stacks hidden attempts under Laravel's
+     * Http::retry. Connect retries belong to the caller, like transfer
+     * retries.
+     */
+    protected function baseConnector(): SocketConnector
+    {
+        return new DnsSocketConnector;
     }
 
     /**
@@ -253,13 +270,13 @@ class AsyncClientFactory
     }
 
     /**
-     * Build the socket connector for the resolved proxy URI, or null for a
-     * direct connection.
+     * Build the socket connector for the resolved proxy URI, or the direct
+     * single-attempt connector without one.
      */
-    protected function connectorFor(?string $proxy): ?SocketConnector
+    protected function connectorFor(?string $proxy): SocketConnector
     {
         if ($proxy === null) {
-            return null;
+            return $this->baseConnector();
         }
 
         $parts = \parse_url($proxy);
@@ -285,8 +302,8 @@ class AsyncClientFactory
         $password = isset($parts['pass']) ? \rawurldecode($parts['pass']) : null;
 
         return match ($scheme) {
-            'socks5', 'socks5h' => new Socks5SocketConnector($authority, $username, $password),
-            'http' => new HttpConnectSocketConnector($authority, $username, $password),
+            'socks5', 'socks5h' => new Socks5SocketConnector($authority, $username, $password, $this->baseConnector()),
+            'http' => new HttpConnectSocketConnector($authority, $username, $password, $this->baseConnector()),
             default => throw new \InvalidArgumentException("Unsupported proxy scheme '{$scheme}' in '{$proxy}', use http:// or socks5://"),
         };
     }

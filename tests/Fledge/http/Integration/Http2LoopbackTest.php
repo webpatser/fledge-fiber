@@ -17,49 +17,17 @@ use Fledge\Async\Stream\ServerTlsContext;
 use Fledge\Fiber\Http\FledgeHandler;
 use Psr\Log\NullLogger;
 
+require_once __DIR__.'/../Fixtures/loopback.php';
+
 /**
  * Full in-process HTTP/2 loopback: the package's own HTTP server (Http2Driver
  * via ALPN) terminates TLS with a throwaway self-signed certificate, and the
  * async client (and the Guzzle bridge on top of it) talks h2 to it. No
  * external services involved.
- */
-
-/** @return array{string, string} [certPath, keyPath] */
-function makeSelfSignedCertificate(): array
-{
-    $key = openssl_pkey_new([
-        'private_key_type' => OPENSSL_KEYTYPE_EC,
-        'curve_name' => 'prime256v1',
-    ]);
-    assert($key !== false);
-
-    $csr = openssl_csr_new(['commonName' => '127.0.0.1'], $key, ['digest_alg' => 'sha256']);
-    assert($csr !== false);
-
-    $cert = openssl_csr_sign($csr, null, $key, 1, ['digest_alg' => 'sha256']);
-    assert($cert !== false);
-
-    openssl_x509_export($cert, $certPem);
-    openssl_pkey_export($key, $keyPem);
-
-    $certPath = tempnam(sys_get_temp_dir(), 'fledge-h2-cert-');
-    $keyPath = tempnam(sys_get_temp_dir(), 'fledge-h2-key-');
-    file_put_contents($certPath, $certPem);
-    file_put_contents($keyPath, $keyPem);
-
-    return [$certPath, $keyPath];
-}
-
-/**
- * Every request below is bounded.
  *
- * The loopback is in-process and answers in milliseconds, so any of these
- * firing means the handshake or ALPN negotiation did not complete. Without
- * them a stalled negotiation waits forever: the suite then holds the CI runner
- * until the job timeout with no output naming the test, which is exactly how
- * this file went undiagnosed.
+ * Every request below is bounded with LOOPBACK_TIMEOUT; the fixtures file
+ * explains why unbounded awaits are forbidden in this suite.
  */
-const LOOPBACK_TIMEOUT = 10.0;
 
 /** @return array{SocketHttpServer, int} [server, port] */
 function startHttp2LoopbackServer(string $certPath, string $keyPath): array
