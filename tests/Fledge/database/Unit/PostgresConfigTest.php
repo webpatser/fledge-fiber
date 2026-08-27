@@ -67,6 +67,20 @@ it('supports keepalive withers with connection string cache invalidation', funct
     expect($config->getConnectionString())->not->toContain('keepalives');
 });
 
+it('omits the host chunk from the connection string when the host is empty', function () {
+    $config = new PostgresConfig(host: '', user: 'postgres', database: 'mydb');
+
+    expect($config->getConnectionString())
+        ->not->toContain('host=')
+        ->toContain('port=5432');
+});
+
+it('keeps the host chunk when a host is set', function () {
+    $config = new PostgresConfig(host: 'localhost');
+
+    expect($config->getConnectionString())->toContain('host=localhost');
+});
+
 it('emits ssl certificate options in the connection string', function () {
     $config = new PostgresConfig(
         host: 'localhost',

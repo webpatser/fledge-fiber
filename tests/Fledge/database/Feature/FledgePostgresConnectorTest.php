@@ -29,7 +29,7 @@ it('uses sensible defaults', function () {
 
     $config = $method->invoke($connector, []);
 
-    expect($config->getHost())->toBe('127.0.0.1')
+    expect($config->getHost())->toBe('')
         ->and($config->getPort())->toBe(5432);
 });
 

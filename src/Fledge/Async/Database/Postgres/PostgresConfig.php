@@ -259,10 +259,15 @@ final class PostgresConfig extends SqlConfig
             return $this->connectionString;
         }
 
-        $chunks = [
-            "host=" . $this->getHost(),
-            "port=" . $this->getPort(),
-        ];
+        $chunks = [];
+
+        // An empty host lets libpq fall back to its default (unix socket or
+        // localhost), matching how the pgsql driver treats an omitted host.
+        if ($this->getHost() !== '') {
+            $chunks[] = "host=" . $this->getHost();
+        }
+
+        $chunks[] = "port=" . $this->getPort();
 
         $user = $this->getUser();
         if ($user !== null) {

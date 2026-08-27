@@ -28,7 +28,7 @@ class FledgePostgresConnector implements ConnectorInterface
 
     protected function buildConfig(array $config): PostgresConfig
     {
-        $host = $config['host'] ?? '127.0.0.1';
+        $host = $config['host'] ?? '';
         $port = (int) ($config['port'] ?? 5432);
         $database = $config['connect_via_database'] ?? $config['database'] ?? null;
         $actualPort = $config['connect_via_port'] ?? $port;
