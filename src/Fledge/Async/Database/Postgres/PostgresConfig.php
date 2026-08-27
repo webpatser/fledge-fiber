@@ -23,6 +23,9 @@ final class PostgresConfig extends SqlConfig
         'sslMode' => 'sslmode',
         'applicationName' => 'application_name',
         'options' => 'options',
+        'keepalivesIdle' => 'keepalives_idle',
+        'keepalivesInterval' => 'keepalives_interval',
+        'keepalivesCount' => 'keepalives_count',
     ];
 
     private ?string $connectionString = null;
@@ -44,6 +47,10 @@ final class PostgresConfig extends SqlConfig
             $parts["application_name"] ?? null,
             $parts["sslmode"] ?? null,
             $parts["options"] ?? null,
+            isset($parts["keepalives"]) ? (int) $parts["keepalives"] : null,
+            isset($parts["keepalives_idle"]) ? (int) $parts["keepalives_idle"] : null,
+            isset($parts["keepalives_interval"]) ? (int) $parts["keepalives_interval"] : null,
+            isset($parts["keepalives_count"]) ? (int) $parts["keepalives_count"] : null,
         );
     }
 
@@ -56,6 +63,10 @@ final class PostgresConfig extends SqlConfig
         private ?string $applicationName = null,
         private ?string $sslMode = null,
         private ?string $options = null,
+        private ?int $keepalives = null,
+        private ?int $keepalivesIdle = null,
+        private ?int $keepalivesInterval = null,
+        private ?int $keepalivesCount = null,
     ) {
         self::assertValidSslMode($sslMode);
 
@@ -125,6 +136,66 @@ final class PostgresConfig extends SqlConfig
         return clone($this, ['options' => null]);
     }
 
+    public function getKeepalives(): ?int
+    {
+        return $this->keepalives;
+    }
+
+    public function withKeepalives(int $keepalives): self
+    {
+        return clone($this, ['keepalives' => $keepalives]);
+    }
+
+    public function withoutKeepalives(): self
+    {
+        return clone($this, ['keepalives' => null]);
+    }
+
+    public function getKeepalivesIdle(): ?int
+    {
+        return $this->keepalivesIdle;
+    }
+
+    public function withKeepalivesIdle(int $seconds): self
+    {
+        return clone($this, ['keepalivesIdle' => $seconds]);
+    }
+
+    public function withoutKeepalivesIdle(): self
+    {
+        return clone($this, ['keepalivesIdle' => null]);
+    }
+
+    public function getKeepalivesInterval(): ?int
+    {
+        return $this->keepalivesInterval;
+    }
+
+    public function withKeepalivesInterval(int $seconds): self
+    {
+        return clone($this, ['keepalivesInterval' => $seconds]);
+    }
+
+    public function withoutKeepalivesInterval(): self
+    {
+        return clone($this, ['keepalivesInterval' => null]);
+    }
+
+    public function getKeepalivesCount(): ?int
+    {
+        return $this->keepalivesCount;
+    }
+
+    public function withKeepalivesCount(int $count): self
+    {
+        return clone($this, ['keepalivesCount' => $count]);
+    }
+
+    public function withoutKeepalivesCount(): self
+    {
+        return clone($this, ['keepalivesCount' => null]);
+    }
+
     /**
      * @return string Connection string used with ext-pgsql and pecl-pq.
      */
@@ -164,6 +235,22 @@ final class PostgresConfig extends SqlConfig
 
         if ($this->options !== null) {
             $chunks[] = \sprintf("options='%s'", \addslashes($this->options));
+        }
+
+        if ($this->keepalives !== null) {
+            $chunks[] = "keepalives=" . $this->keepalives;
+        }
+
+        if ($this->keepalivesIdle !== null) {
+            $chunks[] = "keepalives_idle=" . $this->keepalivesIdle;
+        }
+
+        if ($this->keepalivesInterval !== null) {
+            $chunks[] = "keepalives_interval=" . $this->keepalivesInterval;
+        }
+
+        if ($this->keepalivesCount !== null) {
+            $chunks[] = "keepalives_count=" . $this->keepalivesCount;
         }
 
         return $this->connectionString = \implode(" ", $chunks);

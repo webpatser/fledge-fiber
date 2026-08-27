@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.29.0.1 - 2026-08-27
+
+### Database
+- **Postgres keepalive options (parity with Laravel v13.29.0)**: the async Postgres driver now honors the `keepalives`, `keepalives_idle`, `keepalives_interval`, and `keepalives_count` database config keys, matching the upstream PDO `PostgresConnector`. `FledgePostgresConnector` forwards them into `PostgresConfig`, which emits them as libpq connection-string options (the driver connects through pecl-pq or ext-pgsql, so libpq applies the TCP keepalive behavior itself). Unset keys are omitted; `keepalives => 0` is passed through to disable keepalives explicitly. `PostgresConfig` gains matching getters, `with*`/`without*` withers, and `fromString()` parsing support.
+
 ## v13.26.1.1 - 2026-08-22
 
 ### Async

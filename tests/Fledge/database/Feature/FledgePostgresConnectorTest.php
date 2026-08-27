@@ -80,6 +80,44 @@ it('builds config with empty optional fields', function () {
         ->and($config->getPassword())->toBe('');
 });
 
+it('applies keepalive options', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'keepalives' => 1,
+        'keepalives_idle' => 30,
+        'keepalives_interval' => 10,
+        'keepalives_count' => 3,
+    ]);
+
+    expect($config->getKeepalives())->toBe(1)
+        ->and($config->getKeepalivesIdle())->toBe(30)
+        ->and($config->getKeepalivesInterval())->toBe(10)
+        ->and($config->getKeepalivesCount())->toBe(3);
+});
+
+it('omits keepalive options when not configured', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, []);
+
+    expect($config->getKeepalives())->toBeNull()
+        ->and($config->getKeepalivesIdle())->toBeNull()
+        ->and($config->getKeepalivesInterval())->toBeNull()
+        ->and($config->getKeepalivesCount())->toBeNull();
+});
+
+it('preserves keepalives disabled as zero', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['keepalives' => 0]);
+
+    expect($config->getKeepalives())->toBe(0);
+});
+
 it('preserves host when using connect_via', function () {
     $connector = new FledgePostgresConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');
