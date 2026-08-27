@@ -146,6 +146,26 @@ it('rolls back a transaction', function () {
     $pdo->close();
 });
 
+it('applies session settings to pooled connections across checkouts', function () {
+    $connector = new FledgeMySqlConnector;
+    $pdo = $connector->connect([
+        'pool_size' => 2,
+        'isolation_level' => 'READ COMMITTED',
+        'timezone' => '+05:00',
+    ] + mysqlConfig());
+
+    foreach (range(1, 3) as $checkout) {
+        $stmt = $pdo->prepare('SELECT @@session.transaction_isolation AS iso, @@session.time_zone AS tz');
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        expect($rows[0]['iso'])->toBe('READ-COMMITTED')
+            ->and($rows[0]['tz'])->toBe('+05:00');
+    }
+
+    $pdo->close();
+});
+
 it('applies a charset without a collation', function () {
     $connector = new FledgeMySqlConnector;
     $pdo = $connector->connect(['charset' => 'latin1'] + mysqlConfig());

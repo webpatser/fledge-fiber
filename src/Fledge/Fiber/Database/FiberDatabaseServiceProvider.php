@@ -5,6 +5,7 @@ namespace Fledge\Fiber\Database;
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
 use Fledge\Fiber\Database\Connections\FledgeMySqlConnection;
 use Fledge\Fiber\Database\Connections\FledgePostgresConnection;
+use Fledge\Fiber\Database\Connectors\FledgeMariaDbConnector;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Connectors\FledgePostgresConnector;
 use Illuminate\Database\Connection;
@@ -28,7 +29,7 @@ class FiberDatabaseServiceProvider extends ServiceProvider
     protected function registerConnectors(): void
     {
         $this->app->bind('db.connector.fledge-mysql', fn () => new FledgeMySqlConnector);
-        $this->app->bind('db.connector.fledge-mariadb', fn () => new FledgeMySqlConnector);
+        $this->app->bind('db.connector.fledge-mariadb', fn () => new FledgeMariaDbConnector);
         $this->app->bind('db.connector.fledge-pgsql', fn () => new FledgePostgresConnector);
     }
 

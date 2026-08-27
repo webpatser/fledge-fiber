@@ -116,6 +116,64 @@ it('getSqlMode returns null when no strict or modes key', function () {
     expect($method->invoke($connector, ['host' => '127.0.0.1']))->toBeNull();
 });
 
+it('getSqlMode includes NO_AUTO_CREATE_USER for strict mode on MySQL before 8.0.11', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'getSqlMode');
+
+    expect($method->invoke($connector, ['strict' => true, 'version' => '5.7.44']))->toBe(
+        'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'
+    );
+});
+
+it('getSqlMode omits NO_AUTO_CREATE_USER for strict mode on MySQL 8.0.11 and later', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'getSqlMode');
+
+    $modern = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
+
+    expect($method->invoke($connector, ['strict' => true, 'version' => '8.0.11']))->toBe($modern)
+        ->and($method->invoke($connector, ['strict' => true, 'version' => '8.4.0']))->toBe($modern)
+        ->and($method->invoke($connector, ['strict' => true]))->toBe($modern);
+});
+
+it('getSqlMode ignores version when strict is false', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'getSqlMode');
+
+    expect($method->invoke($connector, ['strict' => false, 'version' => '5.7.44']))->toBe('NO_ENGINE_SUBSTITUTION');
+});
+
+it('composes session statements in order', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'sessionStatements');
+
+    $statements = $method->invoke($connector, [
+        'isolation_level' => 'READ COMMITTED',
+        'timezone' => '+01:00',
+        'options' => [Pdo\Mysql::ATTR_INIT_COMMAND => "SET @app='fledge'"],
+    ]);
+
+    expect($statements)->toBe([
+        'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED',
+        "SET time_zone='+01:00'",
+        "SET @app='fledge'",
+    ]);
+});
+
+it('composes no session statements for a bare config', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'sessionStatements');
+
+    expect($method->invoke($connector, ['host' => '127.0.0.1']))->toBe([]);
+});
+
+it('composes only the configured session statements', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'sessionStatements');
+
+    expect($method->invoke($connector, ['timezone' => 'UTC']))->toBe(["SET time_zone='UTC'"]);
+});
+
 it('leaves the connect context without tls when no ssl options are configured', function () {
     $connector = new FledgeMySqlConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');

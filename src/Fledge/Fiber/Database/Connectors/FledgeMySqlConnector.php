@@ -10,6 +10,8 @@ use Fledge\Async\Stream\ConnectContext;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Illuminate\Database\Connectors\ConnectorInterface;
 
+use function Fledge\Async\Database\Mysql\mysqlConnector;
+
 /**
  * Connector for Fledge-based non-blocking MySQL connections.
  *
@@ -23,11 +25,7 @@ class FledgeMySqlConnector implements ConnectorInterface
         $mysqlConfig = $this->buildConfig($config);
         $pool = $this->createPool($mysqlConfig, $config);
 
-        $pdo = new FledgeMySqlPdo($pool);
-
-        $this->configureConnection($pool, $config);
-
-        return $pdo;
+        return new FledgeMySqlPdo($pool);
     }
 
     protected function buildConfig(array $config): MysqlConfig
@@ -119,21 +117,45 @@ class FledgeMySqlConnector implements ConnectorInterface
         $maxConnections = (int) ($appConfig['pool_size'] ?? MysqlConnectionPool::DEFAULT_MAX_CONNECTIONS);
         $idleTimeout = (int) ($appConfig['pool_idle_timeout'] ?? MysqlConnectionPool::DEFAULT_IDLE_TIMEOUT);
 
-        return new MysqlConnectionPool($config, $maxConnections, $idleTimeout);
+        $statements = $this->sessionStatements($appConfig);
+
+        if ($statements === []) {
+            return new MysqlConnectionPool($config, $maxConnections, $idleTimeout);
+        }
+
+        return new MysqlConnectionPool(
+            $config,
+            $maxConnections,
+            $idleTimeout,
+            new SessionInitializingConnector(mysqlConnector(), $statements),
+        );
     }
 
-    protected function configureConnection(MysqlConnectionPool $pool, array $config): void
+    /**
+     * Session statements to run on every new physical connection in the pool.
+     *
+     * @return list<string>
+     */
+    protected function sessionStatements(array $config): array
     {
+        $statements = [];
+
         if (isset($config['isolation_level'])) {
-            $pool->query(sprintf(
+            $statements[] = sprintf(
                 'SET SESSION TRANSACTION ISOLATION LEVEL %s',
                 $config['isolation_level']
-            ));
+            );
         }
 
         if (isset($config['timezone'])) {
-            $pool->query(sprintf("SET time_zone='%s'", $config['timezone']));
+            $statements[] = sprintf("SET time_zone='%s'", $config['timezone']);
         }
+
+        if (isset($config['options'][\Pdo\Mysql::ATTR_INIT_COMMAND])) {
+            $statements[] = $config['options'][\Pdo\Mysql::ATTR_INIT_COMMAND];
+        }
+
+        return $statements;
     }
 
     protected function getSqlMode(array $config): ?string
@@ -148,6 +170,12 @@ class FledgeMySqlConnector implements ConnectorInterface
 
         if (! $config['strict']) {
             return 'NO_ENGINE_SUBSTITUTION';
+        }
+
+        $version = $config['version'] ?? null;
+
+        if ($version !== null && version_compare($version, '8.0.11', '<')) {
+            return 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION';
         }
 
         return 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
