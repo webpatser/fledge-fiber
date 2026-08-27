@@ -22,6 +22,11 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     protected string $prefix;
 
     /**
+     * Applies the key prefix with phpredis OPT_PREFIX semantics.
+     */
+    protected KeyPrefixer $keyPrefixer;
+
+    /**
      * The connection creation callback.
      */
     protected $connector;
@@ -56,6 +61,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         $this->connector = $connector;
         $this->config = $config;
         $this->prefix = $prefix;
+        $this->keyPrefixer = new KeyPrefixer($prefix);
     }
 
     /**
@@ -93,9 +99,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     protected function executeCommand(string $method, array $parameters): mixed
     {
-        $args = $this->flattenParameters($parameters);
+        $command = strtoupper($method);
+        $args = $this->keyPrefixer->apply($command, $this->flattenParameters($parameters));
 
-        return $this->client->execute(strtoupper($method), ...$args);
+        return $this->client->execute($command, ...$args);
     }
 
     /**
@@ -583,7 +590,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function eval($script, $numberOfKeys, ...$arguments)
     {
-        $keys = array_slice($arguments, 0, $numberOfKeys);
+        $keys = $this->keyPrefixer->prefixKeys(array_slice($arguments, 0, $numberOfKeys));
         $args = array_slice($arguments, $numberOfKeys);
 
         $start = microtime(true);
@@ -625,6 +632,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         foreach ((array) $channels as $channel) {
+            // phpredis OPT_PREFIX prefixes channel names, and subscribe
+            // callbacks receive the prefixed name as sent by the server.
+            $channel = $this->keyPrefixer->prefixChannel((string) $channel);
+
             $subscription = $this->subscriber->subscribe($channel);
 
             foreach ($subscription as $message) {
@@ -643,6 +654,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         foreach ((array) $channels as $pattern) {
+            $pattern = $this->keyPrefixer->prefixChannel((string) $pattern);
+
             $subscription = $this->subscriber->subscribeToPattern($pattern);
 
             foreach ($subscription as $message) {

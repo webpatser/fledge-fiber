@@ -171,9 +171,13 @@ class FledgeRedisClusterConnection extends FledgeRedisConnection
 
     protected function commandOn(string $endpoint, string $method, array $parameters): mixed
     {
-        $args = $this->flattenParameters($parameters);
+        $command = strtoupper($method);
 
-        return $this->clusterLink()->executeOn($endpoint, strtoupper($method), $args)->unwrap();
+        // The per-node fan-out bypasses executeCommand(), so the prefix is
+        // applied here: patterns of keys()/scan() are prefixed exactly once.
+        $args = $this->keyPrefixer->apply($command, $this->flattenParameters($parameters));
+
+        return $this->clusterLink()->executeOn($endpoint, $command, $args)->unwrap();
     }
 
     protected function clusterLink(): ClusteringRedisLink
