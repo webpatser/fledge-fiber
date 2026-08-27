@@ -6,6 +6,7 @@ use Fledge\Async\Redis\Cluster\ClusteringRedisLink;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisConfig;
 use Fledge\Async\Redis\RedisSubscriber;
+use Fledge\Async\Redis\Connection\BackoffStrategy;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
 use Illuminate\Contracts\Redis\Connector;
 use Illuminate\Support\Arr;
@@ -32,7 +33,16 @@ class FledgeRedisConnector implements Connector
 
         $connector = createRedisConnector($redisConfig);
 
-        $connectorCallback = fn () => new RedisClient(new ReconnectingRedisLink($connector));
+        $policy = $redisConfig->getRetryPolicy();
+        $readTimeout = $redisConfig->getReadTimeout();
+        $backoff = BackoffStrategy::fromRetryPolicy($policy);
+
+        $connectorCallback = fn () => new RedisClient(new ReconnectingRedisLink(
+            $connector,
+            $readTimeout,
+            $backoff,
+            $policy->maxRetries,
+        ));
 
         $client = $connectorCallback();
         $subscriber = new RedisSubscriber($connector);

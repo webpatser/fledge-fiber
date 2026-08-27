@@ -2,6 +2,7 @@
 
 namespace Fledge\Fiber\Redis;
 
+use Fledge\Async\Redis\Connection\RetryableCommands;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisException as AsyncRedisException;
 use Fledge\Async\Redis\RedisSubscriber;
@@ -65,33 +66,59 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     }
 
     /**
-     * Run a command against the Redis database.
+     * The exception message fragments that mark a transient connection error
+     * worth retrying, mirroring the upstream PhpRedisConnection list plus the
+     * phpredis read timeout marker.
+     */
+    protected const array TRANSIENT_ERROR_MARKERS = [
+        'went away', 'socket', 'connection', 'Connection', 'read error on connection',
+    ];
+
+    /**
+     * Run a command against the Redis database, mirroring the upstream
+     * PhpRedisConnection retry loop: safely retryable commands get one free
+     * retry, command_retries raises the bound for every command, and the
+     * client is rebuilt between attempts on transient connection errors.
      */
     public function command($method, array $parameters = [])
     {
-        $start = microtime(true);
+        $retries = max(
+            RetryableCommands::isRetryable($method, $parameters) ? 1 : 0,
+            (int) ($this->config['command_retries'] ?? 0),
+        );
 
-        try {
-            $result = $this->executeCommand($method, $parameters);
-        } catch (Throwable $e) {
-            $this->events?->dispatch(new CommandFailed(
-                $method, $this->parseParametersForEvent($parameters), $e, $this
-            ));
+        while (true) {
+            $start = microtime(true);
 
-            if ($e instanceof AsyncRedisException && $this->connector && Str::contains($e->getMessage(), ['went away', 'socket', 'connection', 'Connection'])) {
-                $this->client = call_user_func($this->connector);
+            try {
+                $result = $this->executeCommand($method, $parameters);
+            } catch (Throwable $e) {
+                $this->events?->dispatch(new CommandFailed(
+                    $method, $this->parseParametersForEvent($parameters), $e, $this
+                ));
+
+                $transient = $e instanceof AsyncRedisException
+                    && Str::contains($e->getMessage(), static::TRANSIENT_ERROR_MARKERS);
+
+                if ($transient && $this->connector) {
+                    $this->client = call_user_func($this->connector);
+                }
+
+                if (! $transient || $retries-- === 0) {
+                    throw $e;
+                }
+
+                continue;
             }
 
-            throw $e;
+            $time = round((microtime(true) - $start) * 1000, 2);
+
+            $this->events?->dispatch(new CommandExecuted(
+                $method, $this->parseParametersForEvent($parameters), $time, $this
+            ));
+
+            return $result;
         }
-
-        $time = round((microtime(true) - $start) * 1000, 2);
-
-        $this->events?->dispatch(new CommandExecuted(
-            $method, $this->parseParametersForEvent($parameters), $time, $this
-        ));
-
-        return $result;
     }
 
     /**
