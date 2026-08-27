@@ -6,12 +6,16 @@ use Fledge\Async\Http\Client\BufferedContent;
 use Fledge\Async\Http\Client\HttpClient;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
+use Fledge\Async\Stream\Payload;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\LazyOpenStream;
 use GuzzleHttp\Psr7\Response as Psr7Response;
+use GuzzleHttp\Psr7\Utils;
 use GuzzleHttp\TransferStats;
 use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\StreamInterface;
 
 use function Fledge\Async\async;
 
@@ -66,7 +70,7 @@ class FledgeHandler
 
             try {
                 $asyncResponse = $future->await();
-                $response = $this->createPsr7Response($asyncResponse);
+                $response = $this->createPsr7Response($asyncResponse, $request, $options);
 
                 $this->invokeStats($request, $options, $response, $startTime);
 
@@ -146,18 +150,80 @@ class FledgeHandler
 
     /**
      * Convert a Fledge Async response to a PSR-7 response.
+     *
+     * The response is built from the headers first so on_headers callbacks
+     * run before the body is drained, matching Guzzle's curl handler. The
+     * body then honors the stream and sink options: stream=true wraps the
+     * payload in a lazy AsyncBodyStream, a sink drains into the caller's
+     * target, and the default buffers in memory.
      */
-    protected function createPsr7Response(AsyncResponse $asyncResponse): Psr7Response
+    protected function createPsr7Response(AsyncResponse $asyncResponse, RequestInterface $request, array $options): Psr7Response
     {
-        $body = $asyncResponse->getBody()->buffer();
-
-        return new Psr7Response(
+        $response = new Psr7Response(
             $asyncResponse->getStatus(),
             $asyncResponse->getHeaders(),
-            $body,
+            null,
             $asyncResponse->getProtocolVersion(),
             $asyncResponse->getReason(),
         );
+
+        if (isset($options['on_headers'])) {
+            try {
+                ($options['on_headers'])($response);
+            } catch (\Throwable $e) {
+                throw GuzzleExceptionMapper::onHeadersException($e, $request, $response);
+            }
+        }
+
+        $payload = $asyncResponse->getBody();
+        $sink = $options['sink'] ?? null;
+
+        if ($sink !== null) {
+            return $response->withBody($this->drainToSink($payload, $sink));
+        }
+
+        if ($options['stream'] ?? false) {
+            $contentLength = $asyncResponse->getHeader('content-length');
+
+            return $response->withBody(new AsyncBodyStream(
+                $payload,
+                is_numeric($contentLength) ? (int) $contentLength : null,
+            ));
+        }
+
+        return $response->withBody(Utils::streamFor($payload->buffer()));
+    }
+
+    /**
+     * Stream the response payload into the caller's sink and return the
+     * stream backing the response body.
+     */
+    protected function drainToSink(Payload $payload, mixed $sink): StreamInterface
+    {
+        if (\is_string($sink)) {
+            $target = Utils::streamFor(Utils::tryFopen($sink, 'w+b'));
+
+            while (($chunk = $payload->read()) !== null) {
+                $target->write($chunk);
+            }
+
+            $target->close();
+
+            // Back the response with a fresh handle like Guzzle's CurlFactory.
+            return new LazyOpenStream($sink, 'r+');
+        }
+
+        $target = $sink instanceof StreamInterface ? $sink : Utils::streamFor($sink);
+
+        while (($chunk = $payload->read()) !== null) {
+            $target->write($chunk);
+        }
+
+        if ($target->isSeekable()) {
+            $target->rewind();
+        }
+
+        return $target;
     }
 
     /**

@@ -46,6 +46,20 @@ class GuzzleExceptionMapper
     }
 
     /**
+     * Wrap an exception thrown by an on_headers callback, using the same
+     * message Guzzle's curl handler produces.
+     */
+    public static function onHeadersException(\Throwable $e, RequestInterface $request, ResponseInterface $response): RequestException
+    {
+        return static::toRequestException(
+            'An error was encountered during the on_headers event',
+            $request,
+            $response,
+            $e,
+        );
+    }
+
+    /**
      * Whether the exception represents a failure to establish the connection.
      *
      * Notes on the hierarchy: the client TlsException extends the client
