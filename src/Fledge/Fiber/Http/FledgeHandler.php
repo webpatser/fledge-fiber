@@ -63,22 +63,31 @@ class FledgeHandler
             return Create::rejectionFor(GuzzleExceptionMapper::map($e, $request));
         }
 
+        // Capture the start before dispatching: the request begins on the
+        // event loop immediately, so starting the clock inside the wait
+        // callback would report near-zero timings under Http::pool().
+        $startTime = microtime(true);
+        $listener = null;
+
+        if (isset($options['on_stats'])) {
+            $listener = new TransferStatsListener($startTime);
+            $asyncRequest->addEventListener($listener);
+        }
+
         $future = async(fn () => $client->request($asyncRequest));
 
-        $promise = new Promise(function () use (&$promise, $future, $request, $options) {
-            $startTime = microtime(true);
-
+        $promise = new Promise(function () use (&$promise, $future, $request, $options, $startTime, $listener) {
             try {
                 $asyncResponse = $future->await();
-                $response = $this->createPsr7Response($asyncResponse, $request, $options);
+                $response = $this->createPsr7Response($asyncResponse, $request, $options, $listener);
 
-                $this->invokeStats($request, $options, $response, $startTime);
+                $this->invokeStats($request, $options, $response, $startTime, null, $listener);
 
                 $promise->resolve($response);
             } catch (\Throwable $e) {
                 $e = GuzzleExceptionMapper::map($e, $request);
 
-                $this->invokeStats($request, $options, null, $startTime, $e);
+                $this->invokeStats($request, $options, null, $startTime, $e, $listener);
 
                 $promise->reject($e);
             }
@@ -157,8 +166,12 @@ class FledgeHandler
      * payload in a lazy AsyncBodyStream, a sink drains into the caller's
      * target, and the default buffers in memory.
      */
-    protected function createPsr7Response(AsyncResponse $asyncResponse, RequestInterface $request, array $options): Psr7Response
-    {
+    protected function createPsr7Response(
+        AsyncResponse $asyncResponse,
+        RequestInterface $request,
+        array $options,
+        ?TransferStatsListener $listener = null,
+    ): Psr7Response {
         $response = new Psr7Response(
             $asyncResponse->getStatus(),
             $asyncResponse->getHeaders(),
@@ -179,7 +192,7 @@ class FledgeHandler
         $sink = $options['sink'] ?? null;
 
         if ($sink !== null) {
-            return $response->withBody($this->drainToSink($payload, $sink));
+            return $response->withBody($this->drainToSink($payload, $sink, $listener));
         }
 
         if ($options['stream'] ?? false) {
@@ -191,23 +204,35 @@ class FledgeHandler
             ));
         }
 
-        return $response->withBody(Utils::streamFor($payload->buffer()));
+        $body = $payload->buffer();
+
+        if ($listener !== null) {
+            $listener->sizeDownload = strlen($body);
+        }
+
+        return $response->withBody(Utils::streamFor($body));
     }
 
     /**
      * Stream the response payload into the caller's sink and return the
      * stream backing the response body.
      */
-    protected function drainToSink(Payload $payload, mixed $sink): StreamInterface
+    protected function drainToSink(Payload $payload, mixed $sink, ?TransferStatsListener $listener = null): StreamInterface
     {
+        $bytes = 0;
+
         if (\is_string($sink)) {
             $target = Utils::streamFor(Utils::tryFopen($sink, 'w+b'));
 
             while (($chunk = $payload->read()) !== null) {
-                $target->write($chunk);
+                $bytes += $target->write($chunk);
             }
 
             $target->close();
+
+            if ($listener !== null) {
+                $listener->sizeDownload = $bytes;
+            }
 
             // Back the response with a fresh handle like Guzzle's CurlFactory.
             return new LazyOpenStream($sink, 'r+');
@@ -216,7 +241,11 @@ class FledgeHandler
         $target = $sink instanceof StreamInterface ? $sink : Utils::streamFor($sink);
 
         while (($chunk = $payload->read()) !== null) {
-            $target->write($chunk);
+            $bytes += $target->write($chunk);
+        }
+
+        if ($listener !== null) {
+            $listener->sizeDownload = $bytes;
         }
 
         if ($target->isSeekable()) {
@@ -235,6 +264,7 @@ class FledgeHandler
         ?Psr7Response $response,
         float $startTime,
         ?\Throwable $error = null,
+        ?TransferStatsListener $listener = null,
     ): void {
         if (isset($options['on_stats'])) {
             $transferTime = microtime(true) - $startTime;
@@ -246,7 +276,16 @@ class FledgeHandler
                 $error,
                 [
                     'total_time' => $transferTime,
+                    'namelookup_time' => 0.0,
+                    'connect_time' => $listener?->connectTime ?? 0.0,
+                    'appconnect_time' => $listener?->appconnectTime ?? 0.0,
+                    'pretransfer_time' => $listener?->pretransferTime ?? 0.0,
+                    'starttransfer_time' => $listener?->starttransferTime ?? 0.0,
+                    'primary_ip' => $listener?->primaryIp ?? '',
+                    'primary_port' => $listener?->primaryPort ?? 0,
+                    'size_download' => $listener?->sizeDownload ?? 0,
                     'http_code' => $response?->getStatusCode() ?? 0,
+                    'url' => (string) $request->getUri(),
                     'handler' => 'fledge',
                 ],
             );
