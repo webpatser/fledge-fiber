@@ -4,7 +4,6 @@ namespace Fledge\Fiber\Http;
 
 use Fledge\Async\Http\Client\BufferedContent;
 use Fledge\Async\Http\Client\HttpClient;
-use Fledge\Async\Http\Client\HttpClientBuilder;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
 use GuzzleHttp\Promise\Promise;
@@ -30,11 +29,20 @@ use function Fledge\Async\async;
  */
 class FledgeHandler
 {
-    protected HttpClient $client;
+    protected ?HttpClient $client;
 
-    public function __construct(?HttpClient $client = null)
+    protected AsyncClientFactory $factory;
+
+    /**
+     * @param HttpClient|AsyncClientFactory|null $client A fixed client to send every request
+     *                                                   through, a factory to build clients from
+     *                                                   request options, or null for the default
+     *                                                   factory.
+     */
+    public function __construct(HttpClient|AsyncClientFactory|null $client = null)
     {
-        $this->client = $client ?? HttpClientBuilder::buildDefault();
+        $this->client = $client instanceof HttpClient ? $client : null;
+        $this->factory = $client instanceof AsyncClientFactory ? $client : new AsyncClientFactory;
     }
 
     /**
@@ -44,7 +52,9 @@ class FledgeHandler
     {
         $asyncRequest = $this->createAsyncRequest($request, $options);
 
-        $future = async(fn () => $this->client->request($asyncRequest));
+        $client = $this->client ?? $this->factory->default();
+
+        $future = async(fn () => $client->request($asyncRequest));
 
         $promise = new Promise(function () use (&$promise, $future, $request, $options) {
             $startTime = microtime(true);
