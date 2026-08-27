@@ -1,6 +1,7 @@
 <?php
 
 use Fledge\Async\Redis\RedisConfig;
+use Fledge\Async\Redis\RedisException;
 use Fledge\Fiber\Redis\FledgeRedisClusterConnection;
 use Fledge\Fiber\Redis\FledgeRedisConnector;
 
@@ -173,6 +174,76 @@ it('builds a cluster connection without contacting any node', function () {
     expect($connection)->toBeInstanceOf(FledgeRedisClusterConnection::class)
         ->and($connection->getPrefix())->toBe('app:')
         ->and($connection->isCluster())->toBeTrue();
+});
+
+it('builds endpoint configs that inherit shared cluster options', function () {
+    $connector = new FledgeRedisConnector;
+
+    $connection = $connector->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        [],
+        ['password' => 'secret', 'timeout' => 2.5, 'read_timeout' => 1.5],
+    );
+
+    $property = new ReflectionProperty($connection, 'configForEndpoint');
+    $configForEndpoint = $property->getValue($connection);
+
+    $config = $configForEndpoint('10.0.0.5:17005');
+
+    expect($config)->toBeInstanceOf(RedisConfig::class)
+        ->and($config->getConnectUri())->toBe('tcp://10.0.0.5:17005')
+        ->and($config->getPassword())->toBe('secret')
+        ->and($config->getTimeout())->toBe(2.5)
+        ->and($config->getReadTimeout())->toBe(1.5);
+});
+
+it('rejects replica read routing failover modes', function (string|int $failover) {
+    (new FledgeRedisConnector)->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        ['failover' => $failover],
+        [],
+    );
+})->with([
+    'distribute' => ['distribute'],
+    'distribute_slaves' => ['distribute_slaves'],
+    'FAILOVER_DISTRIBUTE constant' => [2],
+    'FAILOVER_DISTRIBUTE_SLAVES constant' => [3],
+])->throws(RedisException::class, 'Replica read routing');
+
+it('accepts non-distributing failover modes', function (string|int|null $failover) {
+    $clusterOptions = $failover === null ? [] : ['failover' => $failover];
+
+    $connection = (new FledgeRedisConnector)->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        $clusterOptions,
+        [],
+    );
+
+    expect($connection)->toBeInstanceOf(FledgeRedisClusterConnection::class);
+})->with([
+    'absent' => [null],
+    'none' => ['none'],
+    'error' => ['error'],
+    'FAILOVER_NONE constant' => [0],
+    'FAILOVER_ERROR constant' => [1],
+]);
+
+it('rejects predis-style client-side sharding', function () {
+    (new FledgeRedisConnector)->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        [],
+        ['cluster' => 'predis'],
+    );
+})->throws(RedisException::class, 'client-side sharding');
+
+it('accepts the redis cluster driver option', function () {
+    $connection = (new FledgeRedisConnector)->connectToCluster(
+        [['host' => '127.0.0.1', 'port' => 17000]],
+        [],
+        ['cluster' => 'redis'],
+    );
+
+    expect($connection)->toBeInstanceOf(FledgeRedisClusterConnection::class);
 });
 
 it('rejects SELECT to a non-zero database on a cluster connection', function () {

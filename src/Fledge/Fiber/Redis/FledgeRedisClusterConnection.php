@@ -15,9 +15,10 @@ use function Fledge\Async\Redis\createRedisConnector;
 class FledgeRedisClusterConnection extends FledgeRedisConnection
 {
     /**
-     * Build a URI for an arbitrary cluster node endpoint, applying shared auth/timeout options.
+     * Build a RedisConfig for an arbitrary cluster node endpoint, applying
+     * shared auth/TLS/timeout options.
      */
-    protected Closure $uriForEndpoint;
+    protected Closure $configForEndpoint;
 
     protected ClusteringRedisLink $link;
 
@@ -28,12 +29,12 @@ class FledgeRedisClusterConnection extends FledgeRedisConnection
         ?callable $connector,
         array $config,
         string $prefix,
-        Closure $uriForEndpoint,
+        Closure $configForEndpoint,
     ) {
         parent::__construct($client, $subscriber, $connector, $config, $prefix);
 
         $this->link = $link;
-        $this->uriForEndpoint = $uriForEndpoint;
+        $this->configForEndpoint = $configForEndpoint;
     }
 
     public function select($database)
@@ -193,8 +194,8 @@ class FledgeRedisClusterConnection extends FledgeRedisConnection
 
         $masters = $this->clusterLink()->masters();
         $endpoint = $masters[array_rand($masters)];
-        $uri = ($this->uriForEndpoint)($endpoint);
+        $config = ($this->configForEndpoint)($endpoint);
 
-        $this->subscriber = new RedisSubscriber(createRedisConnector($uri));
+        $this->subscriber = new RedisSubscriber(createRedisConnector($config));
     }
 }

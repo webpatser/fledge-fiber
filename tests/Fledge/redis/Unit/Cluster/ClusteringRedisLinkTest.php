@@ -6,6 +6,7 @@ use Fledge\Async\Redis\Connection\RedisLink;
 use Fledge\Async\Redis\Protocol\RedisError;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
+use Fledge\Async\Redis\RedisConfig;
 
 final class StubRedisLink implements RedisLink
 {
@@ -170,6 +171,58 @@ it('pins a node for the duration of MULTI/EXEC', function () {
 
     expect($exec)->toBeArray()
         ->and(count($stubs['127.0.0.1:17000']->log))->toBe(5);
+});
+
+it('accepts RedisConfig seeds and a config-returning endpoint factory', function () {
+    $stubs = [
+        '127.0.0.1:17000' => new StubRedisLink('127.0.0.1:17000'),
+        '127.0.0.1:17002' => new StubRedisLink('127.0.0.1:17002'),
+    ];
+
+    $configFor = fn (string $host, int $port) => RedisConfig::fromParameters([
+        'host' => $host,
+        'port' => $port,
+        'password' => 'secret',
+    ]);
+
+    $seeds = [$configFor('127.0.0.1', 17000)];
+
+    $endpointFactory = function (string $endpoint) use ($configFor): RedisConfig {
+        [$host, $port] = explode(':', $endpoint);
+
+        return $configFor($host, (int) $port);
+    };
+
+    $factory = function (RedisConfig|string $config) use ($stubs): RedisLink {
+        expect($config)->toBeInstanceOf(RedisConfig::class)
+            ->and($config->getPassword())->toBe('secret');
+
+        $endpoint = ClusteringRedisLink::endpointFromConfig($config);
+
+        if (! isset($stubs[$endpoint])) {
+            throw new RuntimeException("No stub configured for {$endpoint}");
+        }
+
+        return $stubs[$endpoint];
+    };
+
+    $link = new ClusteringRedisLink($seeds, $endpointFactory, $factory);
+
+    $stubs['127.0.0.1:17000']->responses[] = clusterSlotsResponse();
+    // foo (slot 12182) belongs to 17002; that link is created via the endpoint factory.
+    $stubs['127.0.0.1:17002']->responses[] = new RedisValue('value-from-config-seeded-link');
+
+    expect($link->execute('GET', ['foo'])->unwrap())->toBe('value-from-config-seeded-link');
+});
+
+it('derives endpoints from configs including ipv6 hosts', function () {
+    expect(ClusteringRedisLink::endpointFromConfig(
+        RedisConfig::fromParameters(['host' => '10.0.0.1', 'port' => 17000])
+    ))->toBe('10.0.0.1:17000');
+
+    expect(ClusteringRedisLink::endpointFromConfig(
+        RedisConfig::fromParameters(['host' => '::1', 'port' => 17000])
+    ))->toBe('[::1]:17000');
 });
 
 it('routes topology commands to a random master', function () {

@@ -5,6 +5,7 @@ namespace Fledge\Fiber\Redis;
 use Fledge\Async\Redis\Cluster\ClusteringRedisLink;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisConfig;
+use Fledge\Async\Redis\RedisException;
 use Fledge\Async\Redis\RedisSubscriber;
 use Fledge\Async\Redis\Connection\BackoffStrategy;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
@@ -56,17 +57,22 @@ class FledgeRedisConnector implements Connector
     public function connectToCluster(array $config, array $clusterOptions, array $options): FledgeRedisClusterConnection
     {
         $shared = array_merge($options, $clusterOptions);
+        $this->assertSupportedClusterOptions($shared);
+
         $prefix = $shared['prefix'] ?? '';
 
-        $seedUris = array_map(fn (array $node) => $this->buildUri(array_merge($shared, $node)), $config);
+        $seedConfigs = array_map(
+            fn (array $node) => $this->buildConfig(array_merge($shared, $node)),
+            array_values($config),
+        );
 
-        $uriForEndpoint = function (string $endpoint) use ($shared): string {
+        $configForEndpoint = function (string $endpoint) use ($shared): RedisConfig {
             [$host, $port] = self::splitEndpoint($endpoint);
 
-            return $this->buildUri(array_merge($shared, ['host' => $host, 'port' => $port]));
+            return $this->buildConfig(array_merge($shared, ['host' => $host, 'port' => $port]));
         };
 
-        $linkFactory = fn () => new ClusteringRedisLink($seedUris, $uriForEndpoint);
+        $linkFactory = fn () => new ClusteringRedisLink($seedConfigs, $configForEndpoint);
 
         $link = $linkFactory();
         $client = new RedisClient($link);
@@ -81,8 +87,38 @@ class FledgeRedisConnector implements Connector
             $reconnect,
             $shared,
             $prefix,
-            $uriForEndpoint,
+            $configForEndpoint,
         );
+    }
+
+    /**
+     * Reject cluster options that would silently change semantics: replica
+     * read routing is not implemented (every read goes to a master), and
+     * predis-style client-side sharding is not a real Redis Cluster.
+     *
+     * @throws RedisException
+     */
+    protected function assertSupportedClusterOptions(array $shared): void
+    {
+        $failover = $shared['failover'] ?? null;
+        $normalized = is_string($failover) ? strtolower($failover) : $failover;
+
+        // RedisCluster::FAILOVER_DISTRIBUTE = 2, FAILOVER_DISTRIBUTE_SLAVES = 3.
+        if (in_array($normalized, ['distribute', 'distribute_slaves', 2, 3], true)) {
+            throw new RedisException(sprintf(
+                'Replica read routing (failover=%s) is not supported by the Fledge Redis driver; use failover=none or failover=error.',
+                is_string($failover) ? $failover : (string) $failover,
+            ));
+        }
+
+        $cluster = $shared['cluster'] ?? 'redis';
+
+        if ($cluster !== 'redis') {
+            throw new RedisException(sprintf(
+                'Cluster driver [%s] is not supported by the Fledge Redis driver: predis-style client-side sharding is unavailable, only options.cluster = "redis" (Redis Cluster) is supported.',
+                is_scalar($cluster) ? (string) $cluster : gettype($cluster),
+            ));
+        }
     }
 
     /**
@@ -139,47 +175,4 @@ class FledgeRedisConnector implements Connector
         return $context;
     }
 
-    /**
-     * Build a Redis URI from the given configuration array.
-     *
-     * Only used for cluster seed URIs; single connections go through
-     * buildConfig() so no options are lost in URI form.
-     */
-    protected function buildUri(array $config): string
-    {
-        $scheme = $config['scheme'] ?? 'tcp';
-        $host = $config['host'] ?? '127.0.0.1';
-        $port = (int) ($config['port'] ?? 6379);
-
-        // Handle unix sockets
-        if (($scheme === 'unix' || isset($config['path'])) && ! isset($config['host'])) {
-            $path = $config['path'] ?? $host;
-
-            return "unix://{$path}";
-        }
-
-        // Build the base URI
-        $uri = "tcp://{$host}:{$port}";
-
-        // Add query params for auth and database
-        $query = [];
-
-        if (! empty($config['password'])) {
-            $query['password'] = $config['password'];
-        }
-
-        if (isset($config['database']) && (int) $config['database'] !== 0) {
-            $query['database'] = (int) $config['database'];
-        }
-
-        if (isset($config['timeout'])) {
-            $query['timeout'] = (float) $config['timeout'];
-        }
-
-        if (! empty($query)) {
-            $uri .= '?'.http_build_query($query);
-        }
-
-        return $uri;
-    }
 }

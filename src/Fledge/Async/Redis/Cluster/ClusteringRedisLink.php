@@ -3,11 +3,13 @@
 namespace Fledge\Async\Redis\Cluster;
 
 use Closure;
+use Fledge\Async\Redis\Connection\BackoffStrategy;
 use Fledge\Async\Redis\Connection\ReconnectingRedisLink;
 use Fledge\Async\Redis\Connection\RedisLink;
 use Fledge\Async\Redis\Protocol\RedisError;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
+use Fledge\Async\Redis\RedisConfig;
 use Fledge\Async\Redis\RedisException;
 
 use function Fledge\Async\Redis\createRedisConnector;
@@ -28,25 +30,38 @@ final class ClusteringRedisLink implements RedisLink
     private ?string $pinnedNode = null;
 
     /**
-     * @var Closure(string $uri): RedisLink
+     * @var Closure(RedisConfig|string $config): RedisLink
      */
     private readonly Closure $linkFactory;
 
     /**
-     * @param  list<string>  $seedUris  full Redis URIs for each cluster seed (e.g. "tcp://host:port?password=...")
-     * @param  Closure(string $endpoint): string  $uriForEndpoint  builds a URI from "host:port" using shared config
-     * @param  (Closure(string $uri): RedisLink)|null  $linkFactory  optional link factory (defaults to ReconnectingRedisLink)
+     * @param  list<RedisConfig|string>  $seeds  structured configs (or legacy URIs) for each cluster seed
+     * @param  Closure(string $endpoint): (RedisConfig|string)  $configForEndpoint  builds a config from "host:port" using shared options
+     * @param  (Closure(RedisConfig|string $config): RedisLink)|null  $linkFactory  optional link factory (defaults to ReconnectingRedisLink)
      */
     public function __construct(
-        private readonly array $seedUris,
-        private readonly Closure $uriForEndpoint,
+        private readonly array $seeds,
+        private readonly Closure $configForEndpoint,
         ?Closure $linkFactory = null,
     ) {
-        if ($seedUris === []) {
-            throw new \InvalidArgumentException('ClusteringRedisLink requires at least one seed URI.');
+        if ($seeds === []) {
+            throw new \InvalidArgumentException('ClusteringRedisLink requires at least one seed.');
         }
 
-        $this->linkFactory = $linkFactory ?? static fn (string $uri) => new ReconnectingRedisLink(createRedisConnector($uri));
+        $this->linkFactory = $linkFactory ?? static function (RedisConfig|string $config): RedisLink {
+            if ($config instanceof RedisConfig) {
+                $policy = $config->getRetryPolicy();
+
+                return new ReconnectingRedisLink(
+                    createRedisConnector($config),
+                    $config->getReadTimeout(),
+                    BackoffStrategy::fromRetryPolicy($policy),
+                    $policy->maxRetries,
+                );
+            }
+
+            return new ReconnectingRedisLink(createRedisConnector($config));
+        };
         $this->topology = new ClusterTopology();
     }
 
@@ -238,8 +253,8 @@ final class ClusteringRedisLink implements RedisLink
     private function linkFor(string $endpoint): RedisLink
     {
         if (!isset($this->nodeLinks[$endpoint])) {
-            $uri = ($this->uriForEndpoint)($endpoint);
-            $this->nodeLinks[$endpoint] = ($this->linkFactory)($uri);
+            $config = ($this->configForEndpoint)($endpoint);
+            $this->nodeLinks[$endpoint] = ($this->linkFactory)($config);
         }
 
         return $this->nodeLinks[$endpoint];
@@ -249,23 +264,23 @@ final class ClusteringRedisLink implements RedisLink
     {
         $errors = [];
 
-        foreach ($this->seedUris as $uri) {
-            $endpoint = self::endpointFromUri($uri);
+        foreach ($this->seeds as $seed) {
+            $endpoint = self::endpointFor($seed);
 
             if ($endpoint !== null && !isset($this->nodeLinks[$endpoint])) {
-                $this->nodeLinks[$endpoint] = ($this->linkFactory)($uri);
+                $this->nodeLinks[$endpoint] = ($this->linkFactory)($seed);
             }
 
             $seedLink = $endpoint !== null
                 ? $this->nodeLinks[$endpoint]
-                : ($this->linkFactory)($uri);
+                : ($this->linkFactory)($seed);
 
             try {
                 $this->topology->refresh($seedLink);
 
                 return;
             } catch (\Throwable $exception) {
-                $errors[] = $uri.': '.$exception->getMessage();
+                $errors[] = ($endpoint ?? 'seed').': '.$exception->getMessage();
             }
         }
 
@@ -287,6 +302,28 @@ final class ClusteringRedisLink implements RedisLink
     public function executeOn(string $endpoint, string $command, array $parameters): RedisResponse
     {
         return $this->dispatch($endpoint, $command, $parameters);
+    }
+
+    private static function endpointFor(RedisConfig|string $seed): ?string
+    {
+        return $seed instanceof RedisConfig ? self::endpointFromConfig($seed) : self::endpointFromUri($seed);
+    }
+
+    /**
+     * Config-aware sibling of endpointFromUri() using the structured host
+     * and port, so seeds carrying TLS/auth/timeout options resolve to the
+     * same "host:port" endpoint keys as MOVED/ASK redirect targets.
+     */
+    public static function endpointFromConfig(RedisConfig $config): string
+    {
+        $host = $config->getHost();
+        $port = $config->getPort();
+
+        if (\str_contains($host, ':') && !\str_starts_with($host, '[')) {
+            return '['.$host.']:'.$port;
+        }
+
+        return $host.':'.$port;
     }
 
     private static function endpointFromUri(string $uri): ?string
