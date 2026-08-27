@@ -1,5 +1,35 @@
 # Changelog
 
+## v13.29.0.2 - 2026-08-27
+
+Full config-parity release for the Laravel integration layer. A three-way audit against Laravel's stock drivers (PDO connectors, phpredis connector, Guzzle cURL handler) found options that fledge-fiber silently ignored; this release makes them work or fail loudly. Read the behavior changes below before upgrading.
+
+### Database
+
+- Postgres: `sslcert`, `sslkey`, and `sslrootcert` config keys are now passed through to libpq, matching the pgsql driver.
+- Postgres: `isolation_level`, `timezone`, `search_path`/`schema`, `synchronous_commit`, and `charset` now ride the libpq startup packet as `-c` options, so `DISCARD ALL` on pool checkout restores them instead of wiping them. Previously they were applied to a single pooled connection and silently lost after the first checkout.
+- Postgres: an omitted `host` now defers to libpq defaults (unix socket or localhost) instead of forcing 127.0.0.1.
+- MySQL/MariaDB **behavior change**: `ATTR_SSL_*` options in `options` now actually enable TLS on the async driver; they were previously ignored and connections stayed plaintext. Configs that implied TLS may now surface certificate errors at deploy; that is the fix working. `ATTR_SSL_VERIFY_SERVER_CERT => false` disables peer verification.
+- MySQL/MariaDB: `charset`/`collation` are only sent when configured (no more invalid `SET NAMES 'latin1' COLLATE 'utf8mb4_0900_ai_ci'`), the handshake charset now works on MariaDB and MySQL 5.7 (collation id 45 instead of the MySQL-8-only 255), and `ATTR_INIT_COMMAND` plus `isolation_level`/`timezone` run on every pooled connection via the new `SessionInitializingConnector`, not just the first.
+- MariaDB: new `FledgeMariaDbConnector` whose strict mode never emits `NO_AUTO_CREATE_USER`; the `fledge-mariadb` driver now binds to it. MySQL strict mode adds `NO_AUTO_CREATE_USER` when the `version` config key is set below 8.0.11.
+
+### Redis
+
+- **Prefix migration note (breaking)**: the `prefix` option is now actually applied with phpredis OPT_PREFIX semantics. Keys written by earlier fledge-fiber versions (which ignored the prefix) become invisible to a prefixed connection after upgrading. Migrate with `redis-cli --scan` plus `RENAME` to the prefixed names, or clear the cache if the data is disposable. This restores physical-keyspace compatibility with phpredis deployments, verified by a differential test against phpredis itself.
+- **In-flight command behavior change**: when a connection drops with commands awaiting responses, non-idempotent commands (`INCR`, `LPUSH`, `SET` with expiration, ...) are no longer silently resent after reconnect; they fail with `RedisInFlightCommandException` because they may already have executed server-side. Idempotent commands (the upstream RETRYABLE_COMMANDS whitelist) are still resent transparently.
+- TLS context options, ACL usernames, `timeout`, `name` (CLIENT SETNAME), and `tcp_keepalive` now reach the connection instead of being dropped by URI round-tripping; `REDIS_SCHEME=tls` and `rediss://` URLs actually encrypt now, and unix sockets work with Laravel-style configs that carry a `host` key.
+- `read_timeout` is honored: a blocked response throws `RedisTimeoutException` and drops the connection, like phpredis. `command_retries`, `max_retries`, `retry_interval`, and `backoff_*` are honored; the command retry loop mirrors upstream `PhpRedisConnection::command()`.
+- Cluster seeds inherit TLS, auth, timeouts, and retry policy. Unsupported options (serializer, compression, pack_ignore_numbers, sentinel, distribute failover, predis client-side sharding) now throw `UnsupportedRedisOptionException` at connect time instead of being silently ignored.
+
+### HTTP client
+
+- Transport failures now reject as Guzzle exception types (`ConnectException` for socket/TLS/DNS/timeout failures, `RequestException` otherwise), restoring `Illuminate\Http\Client\ConnectionException` and the `ConnectionFailed` event, which the raw async exceptions silently bypassed.
+- **Behavior change**: the hidden transport-level `RetryRequests(2)` interceptor is gone; `Http::retry()` is the only retry layer. Socket connects are single-attempt instead of three with backoff, so connection refusals fail immediately.
+- **Behavior change**: redirect ownership moved from the transport to Guzzle's RedirectMiddleware. `allow_redirects => false` is enforced (it was a no-op), `max` follows Guzzle's default of 5, strict 307/308 method replay works, and no Referer is sent unless enabled (the transport previously leaked the full URL cross-origin).
+- `verify => false`, CA overrides, client certificates, `crypto_method`, and proxies (`http://` via CONNECT, `socks5://`, array form with `no` exclusions) now take effect per request instead of being ignored, via a client cache keyed on the TLS/proxy option tuple and a new `HttpConnectSocketConnector`.
+- `sink` streams to its target instead of silently buffering everything in memory, `stream => true` returns a lazily-readable body, `on_headers` is invoked, `delay` waits non-blockingly, `version => 2` negotiates h2 with HTTP/1.1 fallback, and `on_stats` reports real per-request timings (previously near-zero under `Http::pool()`) with connect/TLS durations and peer address.
+- An 84-test loopback parity suite now exercises the handler directly (it remains disabled under PHPUnit in application test suites).
+
 ## v13.29.0.1 - 2026-08-27
 
 ### Database
