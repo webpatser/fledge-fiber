@@ -57,6 +57,8 @@ class FledgeHandler
 
                 $promise->resolve($response);
             } catch (\Throwable $e) {
+                $e = GuzzleExceptionMapper::map($e, $request);
+
                 $this->invokeStats($request, $options, null, $startTime, $e);
 
                 $promise->reject($e);
