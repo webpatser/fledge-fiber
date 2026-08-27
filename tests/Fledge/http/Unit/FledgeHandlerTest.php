@@ -64,7 +64,7 @@ it('pins the guzzle default protocol version to http/1.1', function () {
     expect($asyncRequest->getProtocolVersions())->toBe(['1.1']);
 });
 
-it('maps an explicit http/2 protocol version to h2-only', function (string $version) {
+it('maps an explicit http/2 protocol version to h2 with a 1.1 fallback', function (string $version) {
     $handler = new FledgeHandler;
     $method = new ReflectionMethod($handler, 'createAsyncRequest');
 
@@ -72,7 +72,9 @@ it('maps an explicit http/2 protocol version to h2-only', function (string $vers
 
     $asyncRequest = $method->invoke($handler, $psr7Request, []);
 
-    expect($asyncRequest->getProtocolVersions())->toBe(['2']);
+    // ALPN negotiates h2 where available; plain-http targets and servers
+    // without h2 fall back to HTTP/1.1 instead of forcing prior knowledge.
+    expect($asyncRequest->getProtocolVersions())->toBe(['2', '1.1']);
 })->with(['2', '2.0']);
 
 it('returns guzzle promise from invocation', function () {

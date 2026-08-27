@@ -18,6 +18,7 @@ use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\StreamInterface;
 
 use function Fledge\Async\async;
+use function Fledge\Async\delay;
 
 /**
  * Guzzle handler backed by Fledge Async HTTP client for non-blocking I/O.
@@ -74,7 +75,17 @@ class FledgeHandler
             $asyncRequest->addEventListener($listener);
         }
 
-        $future = async(fn () => $client->request($asyncRequest));
+        $delay = ($options['delay'] ?? 0) / 1000;
+
+        $future = async(function () use ($client, $asyncRequest, $delay) {
+            if ($delay > 0) {
+                // Non-blocking: only this request's fiber sleeps, so other
+                // requests on the loop keep progressing.
+                delay($delay);
+            }
+
+            return $client->request($asyncRequest);
+        });
 
         $promise = new Promise(function () use (&$promise, $future, $request, $options, $startTime, $listener) {
             try {
@@ -132,12 +143,14 @@ class FledgeHandler
 
         // Protocol version. Guzzle stamps every PSR-7 request "1.1" unless the
         // caller passes the 'version' request option, where HTTP/2 arrives as
-        // "2" or "2.0" depending on how the option was written. Map an explicit
-        // HTTP/2 choice to h2-only ALPN negotiation (setProtocolVersions only
-        // accepts "2"); everything else stays on its literal version, keeping
+        // "2" or "2.0" depending on how the option was written. An explicit
+        // HTTP/2 choice offers h2 with an HTTP/1.1 fallback, matching curl:
+        // ALPN negotiates h2 where the server supports it, and plain-http
+        // targets fall back to an Http1Connection instead of forcing prior
+        // knowledge h2c. Everything else stays on its literal version, keeping
         // default traffic on HTTP/1.1.
         $asyncRequest->setProtocolVersions(match ((string) $request->getProtocolVersion()) {
-            '2', '2.0' => ['2'],
+            '2', '2.0' => ['2', '1.1'],
             '1.0' => ['1.0'],
             default => ['1.1'],
         });
