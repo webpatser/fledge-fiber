@@ -64,7 +64,7 @@ it('pins the guzzle default protocol version to http/1.1', function () {
     expect($asyncRequest->getProtocolVersions())->toBe(['1.1']);
 });
 
-it('maps an explicit http/2 protocol version to h2-only', function (string $version) {
+it('maps an explicit http/2 protocol version to h2 with a 1.1 fallback', function (string $version) {
     $handler = new FledgeHandler;
     $method = new ReflectionMethod($handler, 'createAsyncRequest');
 
@@ -72,7 +72,9 @@ it('maps an explicit http/2 protocol version to h2-only', function (string $vers
 
     $asyncRequest = $method->invoke($handler, $psr7Request, []);
 
-    expect($asyncRequest->getProtocolVersions())->toBe(['2']);
+    // ALPN negotiates h2 where available; plain-http targets and servers
+    // without h2 fall back to HTTP/1.1 instead of forcing prior knowledge.
+    expect($asyncRequest->getProtocolVersions())->toBe(['2', '1.1']);
 })->with(['2', '2.0']);
 
 it('returns guzzle promise from invocation', function () {
@@ -183,6 +185,70 @@ it('invokeStats calls on_stats callback', function () {
     expect($capturedStats)->toBeInstanceOf(\GuzzleHttp\TransferStats::class)
         ->and($capturedStats->getHandlerStats()['handler'])->toBe('fledge')
         ->and($capturedStats->getHandlerStats()['http_code'])->toBe(200);
+});
+
+it('invokeStats produces curl-shaped handler stats', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'invokeStats');
+
+    $request = new Request('GET', 'https://example.com/path');
+    $response = new \GuzzleHttp\Psr7\Response(200, [], 'OK');
+
+    $listener = new \Fledge\Fiber\Http\TransferStatsListener(microtime(true));
+    $listener->connectTime = 0.01;
+    $listener->appconnectTime = 0.02;
+    $listener->pretransferTime = 0.03;
+    $listener->starttransferTime = 0.04;
+    $listener->primaryIp = '93.184.216.34';
+    $listener->primaryPort = 443;
+    $listener->sizeDownload = 2;
+
+    $capturedStats = null;
+    $options = [
+        'on_stats' => function ($stats) use (&$capturedStats) {
+            $capturedStats = $stats;
+        },
+    ];
+
+    $method->invoke($handler, $request, $options, $response, microtime(true), null, $listener);
+
+    $handlerStats = $capturedStats->getHandlerStats();
+
+    expect($handlerStats['namelookup_time'])->toBe(0.0)
+        ->and($handlerStats['connect_time'])->toBe(0.01)
+        ->and($handlerStats['appconnect_time'])->toBe(0.02)
+        ->and($handlerStats['pretransfer_time'])->toBe(0.03)
+        ->and($handlerStats['starttransfer_time'])->toBe(0.04)
+        ->and($handlerStats['primary_ip'])->toBe('93.184.216.34')
+        ->and($handlerStats['primary_port'])->toBe(443)
+        ->and($handlerStats['size_download'])->toBe(2)
+        ->and($handlerStats['http_code'])->toBe(200)
+        ->and($handlerStats['url'])->toBe('https://example.com/path')
+        ->and($handlerStats['total_time'])->toBeFloat()
+        ->and($handlerStats['handler'])->toBe('fledge');
+});
+
+it('invokeStats falls back to zero values without a listener', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'invokeStats');
+
+    $request = new Request('GET', 'https://example.com');
+
+    $capturedStats = null;
+    $options = [
+        'on_stats' => function ($stats) use (&$capturedStats) {
+            $capturedStats = $stats;
+        },
+    ];
+
+    $method->invoke($handler, $request, $options, null, microtime(true));
+
+    $handlerStats = $capturedStats->getHandlerStats();
+
+    expect($handlerStats['connect_time'])->toBe(0.0)
+        ->and($handlerStats['primary_ip'])->toBe('')
+        ->and($handlerStats['size_download'])->toBe(0)
+        ->and($handlerStats['http_code'])->toBe(0);
 });
 
 it('invokeStats does nothing without on_stats option', function () {
