@@ -115,6 +115,145 @@ it('getSqlMode returns null when no strict or modes key', function () {
     expect($method->invoke($connector, ['host' => '127.0.0.1']))->toBeNull();
 });
 
+it('leaves the connect context without tls when no ssl options are configured', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['host' => '10.0.0.1']);
+
+    expect($config->getConnectContext()->getTlsContext())->toBeNull();
+});
+
+it('leaves the connect context without tls for non-ssl pdo options', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => '10.0.0.1',
+        'options' => [PDO::ATTR_CASE => PDO::CASE_LOWER],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext())->toBeNull();
+});
+
+it('maps ssl ca file and peer name into the tls context', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [Pdo\Mysql::ATTR_SSL_CA => '/certs/ca.pem'],
+    ]);
+
+    $tls = $config->getConnectContext()->getTlsContext();
+
+    expect($tls)->not->toBeNull()
+        ->and($tls->getPeerName())->toBe('db.example.com')
+        ->and($tls->getCaFile())->toBe('/certs/ca.pem')
+        ->and($tls->hasPeerVerification())->toBeTrue();
+});
+
+it('maps ssl ca path into the tls context', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [Pdo\Mysql::ATTR_SSL_CAPATH => '/certs'],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext()->getCaPath())->toBe('/certs');
+});
+
+it('maps client certificate and key into the tls context', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [
+            Pdo\Mysql::ATTR_SSL_CERT => '/certs/client.crt',
+            Pdo\Mysql::ATTR_SSL_KEY => '/certs/client.key',
+        ],
+    ]);
+
+    $certificate = $config->getConnectContext()->getTlsContext()->getCertificate();
+
+    expect($certificate)->not->toBeNull()
+        ->and($certificate->getCertFile())->toBe('/certs/client.crt')
+        ->and($certificate->getKeyFile())->toBe('/certs/client.key');
+});
+
+it('falls back to the certificate file as key when no ssl key is configured', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [Pdo\Mysql::ATTR_SSL_CERT => '/certs/client.pem'],
+    ]);
+
+    $certificate = $config->getConnectContext()->getTlsContext()->getCertificate();
+
+    expect($certificate->getCertFile())->toBe('/certs/client.pem')
+        ->and($certificate->getKeyFile())->toBe('/certs/client.pem');
+});
+
+it('maps ssl ciphers into the tls context', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [Pdo\Mysql::ATTR_SSL_CIPHER => 'ECDHE-RSA-AES128-GCM-SHA256'],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext()->getCiphers())
+        ->toBe('ECDHE-RSA-AES128-GCM-SHA256');
+});
+
+it('disables peer verification when verify server cert is false', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => false],
+    ]);
+
+    $tls = $config->getConnectContext()->getTlsContext();
+
+    expect($tls)->not->toBeNull()
+        ->and($tls->hasPeerVerification())->toBeFalse();
+});
+
+it('keeps peer verification when verify server cert is true', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [
+            Pdo\Mysql::ATTR_SSL_CA => '/certs/ca.pem',
+            Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => true,
+        ],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext()->hasPeerVerification())->toBeTrue();
+});
+
+it('skips tls when connecting over a unix socket', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'unix_socket' => '/var/run/mysqld/mysqld.sock',
+        'options' => [Pdo\Mysql::ATTR_SSL_CA => '/certs/ca.pem'],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext())->toBeNull();
+});
+
 it('builds config with all fields empty strings', function () {
     $connector = new FledgeMySqlConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');

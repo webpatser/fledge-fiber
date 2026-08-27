@@ -146,6 +146,33 @@ it('rolls back a transaction', function () {
     $pdo->close();
 });
 
+it('negotiates tls when ssl options are configured', function () {
+    $connector = new FledgeMySqlConnector;
+
+    $plain = $connector->connect(mysqlConfig());
+    $stmt = $plain->prepare("SHOW VARIABLES LIKE 'have_ssl'");
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $plain->close();
+
+    if (($rows[0]['Value'] ?? '') !== 'YES') {
+        $this->markTestSkipped('MySQL server does not have TLS enabled');
+    }
+
+    $pdo = $connector->connect(mysqlConfig() + [
+        'options' => [Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => false],
+    ]);
+
+    $stmt = $pdo->prepare("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    expect($rows)->toHaveCount(1)
+        ->and($rows[0]['Value'])->not->toBe('');
+
+    $pdo->close();
+});
+
 it('closes without error', function () {
     $connector = new FledgeMySqlConnector;
     $pdo = $connector->connect(mysqlConfig());
