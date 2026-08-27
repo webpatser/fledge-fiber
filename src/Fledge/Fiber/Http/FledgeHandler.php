@@ -6,6 +6,7 @@ use Fledge\Async\Http\Client\BufferedContent;
 use Fledge\Async\Http\Client\HttpClient;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Response as Psr7Response;
@@ -50,9 +51,13 @@ class FledgeHandler
      */
     public function __invoke(RequestInterface $request, array $options): PromiseInterface
     {
-        $asyncRequest = $this->createAsyncRequest($request, $options);
+        try {
+            $asyncRequest = $this->createAsyncRequest($request, $options);
 
-        $client = $this->client ?? $this->factory->default();
+            $client = $this->client ?? $this->factory->clientFor($options, $request->getUri());
+        } catch (\Throwable $e) {
+            return Create::rejectionFor(GuzzleExceptionMapper::map($e, $request));
+        }
 
         $future = async(fn () => $client->request($asyncRequest));
 
@@ -127,6 +132,13 @@ class FledgeHandler
         // Body size limit (for large responses)
         if (isset($options['max_body_size'])) {
             $asyncRequest->setBodySizeLimit((int) $options['max_body_size']);
+        }
+
+        // A string decode_content value advertises that encoding without any
+        // automatic decompression: the DecompressResponse interceptor leaves
+        // requests with a manually set Accept-Encoding header untouched.
+        if (\is_string($options['decode_content'] ?? null)) {
+            $asyncRequest->setHeader('Accept-Encoding', $options['decode_content']);
         }
 
         return $asyncRequest;
