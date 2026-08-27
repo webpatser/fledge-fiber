@@ -64,6 +64,38 @@ it('creates a table, inserts, and selects', function () {
     $pdo->close();
 });
 
+it('keeps session settings across pool checkouts despite DISCARD ALL', function () {
+    $connector = new FledgePostgresConnector;
+    $pdo = $connector->connect([
+        'pool_size' => 1,
+        'isolation_level' => 'repeatable read',
+        'search_path' => 'public,pg_catalog',
+        'synchronous_commit' => 'off',
+    ] + postgresConfig());
+
+    $property = new ReflectionProperty($pdo, 'pool');
+    $pool = $property->getValue($pdo);
+
+    $show = function (string $sql, string $column) use ($pool): string {
+        foreach ($pool->query($sql) as $row) {
+            return $row[$column];
+        }
+
+        throw new RuntimeException("No row returned for {$sql}");
+    };
+
+    // Every query checks a connection out of the pool, which runs DISCARD ALL
+    // first. RESET ALL (part of DISCARD ALL) restores startup-packet session
+    // defaults, so settings passed via options survive; plain SETs would not.
+    foreach (range(1, 3) as $checkout) {
+        expect($show('SHOW search_path', 'search_path'))->toBe('"public","pg_catalog"')
+            ->and($show('SHOW default_transaction_isolation', 'default_transaction_isolation'))->toBe('repeatable read')
+            ->and($show('SHOW synchronous_commit', 'synchronous_commit'))->toBe('off');
+    }
+
+    $pdo->close();
+});
+
 it('handles prepared statements with placeholder conversion', function () {
     $connector = new FledgePostgresConnector;
     $pdo = $connector->connect(postgresConfig());

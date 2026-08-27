@@ -23,11 +23,7 @@ class FledgePostgresConnector implements ConnectorInterface
         $pgConfig = $this->buildConfig($config);
         $pool = $this->createPool($pgConfig, $config);
 
-        $pdo = new FledgePostgresPdo($pool);
-
-        $this->configureConnection($pool, $config);
-
-        return $pdo;
+        return new FledgePostgresPdo($pool);
     }
 
     protected function buildConfig(array $config): PostgresConfig
@@ -45,6 +41,7 @@ class FledgePostgresConnector implements ConnectorInterface
             database: $database,
             applicationName: $config['application_name'] ?? null,
             sslMode: $config['sslmode'] ?? null,
+            options: $this->buildOptions($config),
             keepalives: isset($config['keepalives']) ? (int) $config['keepalives'] : null,
             keepalivesIdle: isset($config['keepalives_idle']) ? (int) $config['keepalives_idle'] : null,
             keepalivesInterval: isset($config['keepalives_interval']) ? (int) $config['keepalives_interval'] : null,
@@ -60,46 +57,58 @@ class FledgePostgresConnector implements ConnectorInterface
         $maxConnections = (int) ($appConfig['pool_size'] ?? PostgresConnectionPool::DEFAULT_MAX_CONNECTIONS);
         $idleTimeout = (int) ($appConfig['pool_idle_timeout'] ?? PostgresConnectionPool::DEFAULT_IDLE_TIMEOUT);
 
+        // resetConnections stays true: the pool runs DISCARD ALL on every
+        // checkout, and RESET ALL (part of DISCARD ALL) restores GUCs to the
+        // startup-packet session defaults. Session settings therefore ride the
+        // libpq startup packet via buildOptions() instead of SET statements,
+        // which the first DISCARD ALL would wipe out.
         return new PostgresConnectionPool($config, $maxConnections, $idleTimeout);
     }
 
-    protected function configureConnection(PostgresConnectionPool $pool, array $config): void
+    /**
+     * Compose the libpq startup packet options (-c name=value flags) that
+     * carry the session settings, so DISCARD ALL restores them instead of
+     * wiping them.
+     */
+    protected function buildOptions(array $config): ?string
     {
+        $flags = [];
+
         if (isset($config['isolation_level'])) {
-            $pool->query(sprintf(
-                'SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL %s',
-                $config['isolation_level']
-            ));
+            $flags[] = '-c default_transaction_isolation='.$this->escapeOptionValue($config['isolation_level']);
         }
 
         if (isset($config['timezone'])) {
-            $pool->query(sprintf("SET TIME ZONE '%s'", $config['timezone']));
+            $flags[] = '-c TimeZone='.$this->escapeOptionValue($config['timezone']);
         }
 
         if (isset($config['search_path']) || isset($config['schema'])) {
-            $searchPath = $this->quoteSearchPath(
+            $searchPath = implode(',', array_map(
+                static fn (string $schema): string => '"'.$schema.'"',
                 $this->parseSearchPath($config['search_path'] ?? $config['schema'])
-            );
+            ));
 
-            $pool->query(sprintf('SET search_path TO %s', $searchPath));
+            $flags[] = '-c search_path='.$this->escapeOptionValue($searchPath);
         }
 
         if (isset($config['synchronous_commit'])) {
-            $pool->query(sprintf(
-                "SET synchronous_commit TO '%s'",
-                $config['synchronous_commit']
-            ));
+            $flags[] = '-c synchronous_commit='.$this->escapeOptionValue($config['synchronous_commit']);
         }
 
         if (isset($config['charset'])) {
-            $pool->query(sprintf("SET NAMES '%s'", $config['charset']));
+            $flags[] = '-c client_encoding='.$this->escapeOptionValue($config['charset']);
         }
+
+        return $flags === [] ? null : implode(' ', $flags);
     }
 
-    protected function quoteSearchPath(array $searchPath): string
+    /**
+     * Escape a value for use inside the libpq options string, where unescaped
+     * spaces separate flags. Backslashes and spaces are backslash-escaped;
+     * PostgresConfig::getConnectionString() addslashes() the rest.
+     */
+    protected function escapeOptionValue(string $value): string
     {
-        return count($searchPath) === 1
-            ? '"'.$searchPath[0].'"'
-            : '"'.implode('", "', $searchPath).'"';
+        return str_replace(['\\', ' '], ['\\\\', '\\ '], $value);
     }
 }

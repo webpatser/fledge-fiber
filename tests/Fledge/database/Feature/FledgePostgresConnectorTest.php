@@ -144,6 +144,75 @@ it('omits ssl certificate options when not configured', function () {
         ->and($config->getSslRootCert())->toBeNull();
 });
 
+it('builds no startup options for a bare config', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    expect($method->invoke($connector, ['host' => '127.0.0.1']))->toBeNull();
+});
+
+it('composes session settings as startup packet options', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, [
+        'isolation_level' => 'serializable',
+        'timezone' => 'UTC',
+        'search_path' => 'public',
+        'synchronous_commit' => 'off',
+        'charset' => 'utf8',
+    ]);
+
+    expect($options)->toBe(
+        '-c default_transaction_isolation=serializable'
+        .' -c TimeZone=UTC'
+        .' -c search_path="public"'
+        .' -c synchronous_commit=off'
+        .' -c client_encoding=utf8'
+    );
+});
+
+it('escapes spaces in option values', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, ['isolation_level' => 'repeatable read']);
+
+    expect($options)->toBe('-c default_transaction_isolation=repeatable\\ read');
+});
+
+it('quotes and joins multiple schemas without spaces', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, ['search_path' => 'public,audit']);
+
+    expect($options)->toBe('-c search_path="public","audit"');
+});
+
+it('accepts schema as a search_path alias', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    expect($method->invoke($connector, ['schema' => 'tenant']))->toBe('-c search_path="tenant"');
+});
+
+it('emits startup options in the connection string', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => '127.0.0.1',
+        'isolation_level' => 'repeatable read',
+        'search_path' => 'public,audit',
+    ]);
+
+    expect($config->getConnectionString())->toContain(
+        "options='-c default_transaction_isolation=repeatable\\\\ read"
+        .' -c search_path=\\"public\\",\\"audit\\"\''
+    );
+});
+
 it('preserves host when using connect_via', function () {
     $connector = new FledgePostgresConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');
