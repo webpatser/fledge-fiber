@@ -3,31 +3,6 @@
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 
-function mysqlConfig(): array
-{
-    return [
-        'host' => test_env('FLEDGE_TEST_MYSQL_HOST', '127.0.0.1'),
-        'port' => (int) test_env('FLEDGE_TEST_MYSQL_PORT', 13306),
-        'username' => test_env('FLEDGE_TEST_MYSQL_USER', 'fledge'),
-        'password' => test_env('FLEDGE_TEST_MYSQL_PASSWORD', 'fledge'),
-        'database' => test_env('FLEDGE_TEST_MYSQL_DATABASE', 'fledge_test'),
-        'charset' => 'utf8mb4',
-    ];
-}
-
-function mysqlAvailable(): bool
-{
-    $host = test_env('FLEDGE_TEST_MYSQL_HOST', '127.0.0.1');
-    $port = (int) test_env('FLEDGE_TEST_MYSQL_PORT', 13306);
-    $sock = @fsockopen($host, $port, $errno, $errstr, 1);
-    if (! $sock) {
-        return false;
-    }
-    fclose($sock);
-
-    return true;
-}
-
 uses()->beforeEach(function () {
     if (! mysqlAvailable()) {
         $this->markTestSkipped('MySQL not available on port '.test_env('FLEDGE_TEST_MYSQL_PORT', 13306));

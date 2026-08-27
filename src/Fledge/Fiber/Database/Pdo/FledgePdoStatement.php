@@ -104,11 +104,26 @@ class FledgePdoStatement
         }
 
         if ($this->statement !== null) {
+            // Drop the previous result before executing again: PHP evaluates the
+            // right-hand side before releasing the old value, so the stale result
+            // would still pin a pooled connection while execute() waits for one.
+            $this->result = null;
+
             $this->result = $this->statement->execute($executeParams);
             $this->pdo?->trackLastInsertId($this->result);
         }
 
         $this->bindings = [];
+
+        return true;
+    }
+
+    /**
+     * Release the current result set, freeing its pooled connection.
+     */
+    public function closeCursor(): bool
+    {
+        $this->result = null;
 
         return true;
     }

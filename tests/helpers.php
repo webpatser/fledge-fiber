@@ -72,3 +72,60 @@ if (! function_exists('mariadbConnection')) {
         }
     }
 }
+
+if (! function_exists('postgresConfig')) {
+    function postgresConfig(): array
+    {
+        return [
+            'host' => test_env('FLEDGE_TEST_POSTGRES_HOST', '127.0.0.1'),
+            'port' => (int) test_env('FLEDGE_TEST_POSTGRES_PORT', 15432),
+            'username' => test_env('FLEDGE_TEST_POSTGRES_USER', 'fledge'),
+            'password' => test_env('FLEDGE_TEST_POSTGRES_PASSWORD', 'fledge'),
+            'database' => test_env('FLEDGE_TEST_POSTGRES_DATABASE', 'fledge_test'),
+        ];
+    }
+}
+
+if (! function_exists('postgresAvailable')) {
+    function postgresAvailable(): bool
+    {
+        $host = test_env('FLEDGE_TEST_POSTGRES_HOST', '127.0.0.1');
+        $port = (int) test_env('FLEDGE_TEST_POSTGRES_PORT', 15432);
+        $sock = @fsockopen($host, $port, $errno, $errstr, 1);
+        if (! $sock) {
+            return false;
+        }
+        fclose($sock);
+
+        return true;
+    }
+}
+
+if (! function_exists('mysqlConfig')) {
+    function mysqlConfig(): array
+    {
+        return [
+            'host' => test_env('FLEDGE_TEST_MYSQL_HOST', '127.0.0.1'),
+            'port' => (int) test_env('FLEDGE_TEST_MYSQL_PORT', 13306),
+            'username' => test_env('FLEDGE_TEST_MYSQL_USER', 'fledge'),
+            'password' => test_env('FLEDGE_TEST_MYSQL_PASSWORD', 'fledge'),
+            'database' => test_env('FLEDGE_TEST_MYSQL_DATABASE', 'fledge_test'),
+            'charset' => 'utf8mb4',
+        ];
+    }
+}
+
+if (! function_exists('mysqlAvailable')) {
+    function mysqlAvailable(): bool
+    {
+        $host = test_env('FLEDGE_TEST_MYSQL_HOST', '127.0.0.1');
+        $port = (int) test_env('FLEDGE_TEST_MYSQL_PORT', 13306);
+        $sock = @fsockopen($host, $port, $errno, $errstr, 1);
+        if (! $sock) {
+            return false;
+        }
+        fclose($sock);
+
+        return true;
+    }
+}

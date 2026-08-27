@@ -1,5 +1,13 @@
 # Changelog
 
+## v13.29.0.3 - 2026-08-27
+
+### Database
+- **Fixed a hard deadlock in the pooled statement path** (inherited from the amphp/sql-common fork): when the statement pool declined to retain a prepared statement because the pool was saturated, it dropped neither the statement nor the release closure's reference to it, so the checked-out connection never returned to the pool. With `pool_size => 1`, a second sequential prepare+execute hung forever; in general, N live prepared statements starved a pool of N connections. The decline paths now close the statement (releasing its connection immediately) and the release closure drops its reference. Reported upstream to amphp/sql-common.
+- The PDO statement shim releases its previous result before re-executing (the old result used to pin a pooled connection while the new execute waited for one) and gains `closeCursor()`.
+- **Fixed a Postgres handle wedge on DEALLOCATE errors**: deallocating a prepared statement that the server had already dropped (via the pool's `DISCARD ALL` reset) produced an error result whose fatal-error drain could consume responses belonging to a subsequently dispatched operation, leaving that operation awaiting a reply forever. Deallocation now sends the DEALLOCATE without routing it through result processing and tolerates failure on both the pgsql and pq backends.
+- Regression coverage: statement-pool retention unit tests (upstream never exercises the retention guards; its mocks report a connection limit of 0) and watchdog-bounded `pool_size => 1` integration tests for sequential prepares and same-statement re-execute on both drivers.
+
 ## v13.29.0.2 - 2026-08-27
 
 Full config-parity release for the Laravel integration layer. A three-way audit against Laravel's stock drivers (PDO connectors, phpredis connector, Guzzle cURL handler) found options that fledge-fiber silently ignored; this release makes them work or fail loudly. Read the behavior changes below before upgrading.
