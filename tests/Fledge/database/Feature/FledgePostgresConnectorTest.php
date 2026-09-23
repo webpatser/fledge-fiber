@@ -213,6 +213,43 @@ it('emits startup options in the connection string', function () {
     );
 });
 
+it('maps server_options to startup packet flags', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, [
+        'server_options' => [
+            'statement_timeout' => '5000',
+            'lock_timeout' => '1000',
+        ],
+    ]);
+
+    expect($options)->toBe('-c statement_timeout=5000 -c lock_timeout=1000');
+});
+
+it('escapes spaces in server_options values', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, [
+        'server_options' => ['application_name' => 'my app'],
+    ]);
+
+    expect($options)->toBe('-c application_name=my\\ app');
+});
+
+it('combines server_options with other startup options', function () {
+    $connector = new FledgePostgresConnector;
+    $method = new ReflectionMethod($connector, 'buildOptions');
+
+    $options = $method->invoke($connector, [
+        'timezone' => 'UTC',
+        'server_options' => ['statement_timeout' => '5000'],
+    ]);
+
+    expect($options)->toBe('-c TimeZone=UTC -c statement_timeout=5000');
+});
+
 it('preserves host when using connect_via', function () {
     $connector = new FledgePostgresConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');

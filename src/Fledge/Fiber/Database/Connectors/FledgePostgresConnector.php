@@ -99,6 +99,10 @@ class FledgePostgresConnector implements ConnectorInterface
             $flags[] = '-c client_encoding='.$this->escapeOptionValue($config['charset']);
         }
 
+        foreach ($config['server_options'] ?? [] as $name => $value) {
+            $flags[] = '-c '.$name.'='.$this->escapeOptionValue((string) $value);
+        }
+
         return $flags === [] ? null : implode(' ', $flags);
     }
 
