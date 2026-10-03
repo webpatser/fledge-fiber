@@ -30,8 +30,17 @@ final class SocketMysqlConnection implements MysqlConnection
         MysqlConfig $config,
         ?Cancellation $cancellation = null,
     ): self {
+        $uri = $config->getConnectionString();
+        $context = $config->getConnectContext();
+
+        // MySQL is strictly request/response: without TCP_NODELAY, Nagle plus delayed ACK
+        // stalls each small command packet (prepare, execute, close) by ~20 ms over TCP.
+        if (\str_starts_with($uri, 'tcp://')) {
+            $context = $context->withTcpNoDelay();
+        }
+
         try {
-            $socket = $connector->connect($config->getConnectionString(), $config->getConnectContext(), $cancellation);
+            $socket = $connector->connect($uri, $context, $cancellation);
         } catch (SocketException $exception) {
             throw new SqlException(
                 'Connecting to the MySQL server failed: ' . $exception->getMessage(),

@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.34.0.1 - 2026-10-03
+
+### Database
+- **MySQL connections over TCP set TCP_NODELAY**: the client never disabled Nagle's algorithm, so every small command packet (prepare, execute, statement close) waited on the server's delayed ACK, stalling each round trip by ~20 ms over TCP while unix sockets took ~0.2 ms. `SocketMysqlConnection::connect()` now adds `withTcpNoDelay()` to the connect context for `tcp://` connections, keeping caller-supplied options such as TLS; unix sockets are unchanged.
+
 ## v13.29.0.3 - 2026-08-27
 
 ### Database
