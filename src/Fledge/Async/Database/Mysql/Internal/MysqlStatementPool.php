@@ -42,7 +42,21 @@ final class MysqlStatementPool extends SqlStatementPool implements MysqlStatemen
             return;
         }
 
-        $statement->reset();
+        // push() runs from release callbacks queued on the event loop, where an exception
+        // would surface as an UncaughtThrowable in an unrelated query. A reset that fails
+        // means the connection is gone (KILL, wait_timeout): discard the statement instead.
+        try {
+            $statement->reset();
+        } catch (\Throwable) {
+            try {
+                $statement->close();
+            } catch (\Throwable) {
+                // The connection is already dead; nothing left to release.
+            }
+
+            return;
+        }
+
         parent::push($statement);
     }
 

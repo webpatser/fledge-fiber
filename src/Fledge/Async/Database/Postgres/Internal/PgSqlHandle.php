@@ -59,6 +59,9 @@ final class PgSqlHandle extends AbstractHandle
     /** @var array<non-empty-string, StatementStorage<string>> */
     private array $statements = [];
 
+    /** libpq's message from the moment the connection died, e.g. the server's FATAL plus "server closed the connection unexpectedly". */
+    private ?string $lostMessage = null;
+
     /**
      * @param \PgSql\Connection $connection PostgreSQL connection handle.
      * @param resource $socket PostgreSQL connection stream socket.
@@ -76,6 +79,7 @@ final class PgSqlHandle extends AbstractHandle
         $lastUsedAt = &$this->lastUsedAt;
         $deferred = &$this->pendingOperation;
         $listeners = &$this->listeners;
+        $lostMessage = &$this->lostMessage;
         $onClose = new DeferredFuture();
 
         $poll = EventLoop::onReadable($socket, static function (string $watcher) use (
@@ -83,6 +87,7 @@ final class PgSqlHandle extends AbstractHandle
             &$lastUsedAt,
             &$listeners,
             &$connection,
+            &$lostMessage,
             $onClose,
         ): void {
             if (!$connection) {
@@ -115,6 +120,12 @@ final class PgSqlHandle extends AbstractHandle
                 }
 
                 if ($deferred === null) {
+                    // The server can end an idle session (pg_terminate_backend, shutdown):
+                    // record it now, while libpq still holds the FATAL and the closing text.
+                    if (\pg_connection_status($connection) !== \PGSQL_CONNECTION_OK) {
+                        throw new SqlConnectionException("The connection closed during the operation");
+                    }
+
                     return; // No active query, only notification listeners.
                 }
 
@@ -125,10 +136,27 @@ final class PgSqlHandle extends AbstractHandle
                 $deferred->complete(\pg_get_result($connection));
                 $deferred = null;
 
+                // A FATAL that ends the session (57P01 pg_terminate_backend, server shutdown)
+                // leaves libpq with a closed socket. Selecting on it makes stream_select() fail
+                // for every other connection on the loop, so stop watching it right away.
+                if (\pg_connection_status($connection) === \PGSQL_CONNECTION_BAD) {
+                    EventLoop::disable($watcher);
+                    return;
+                }
+
                 if (empty($listeners)) {
                     EventLoop::unreference($watcher);
                 }
             } catch (SqlConnectionException $exception) {
+                // Keep what libpq read before the socket closed (a FATAL such as 57P01 from
+                // pg_terminate_backend): pdo_pgsql reports exactly that text on the next query.
+                $lostMessage = self::lostConnectionMessage($connection);
+
+                // Report libpq's text (the server's FATAL and "server closed the connection
+                // unexpectedly"), not the PHP warning a call on the closed socket raised.
+                if ($lostMessage !== null) {
+                    $exception = new SqlConnectionException($lostMessage, 0, $exception);
+                }
                 $connection = null; // Marks connection as dead.
                 EventLoop::disable($watcher);
 
@@ -190,7 +218,7 @@ final class PgSqlHandle extends AbstractHandle
         \assert($this->pendingOperation === null, 'Operation pending when fetching types!');
 
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         $result = \pg_send_query($this->handle, self::TYPE_QUERY);
@@ -255,6 +283,43 @@ final class PgSqlHandle extends AbstractHandle
         parent::close();
     }
 
+    /**
+     * What libpq reports for a connection the server closed. A FATAL the server sent while no
+     * query was running reaches libpq as a notice, and libpq then adds its own closing text;
+     * pdo_pgsql shows both, so they are joined the same way.
+     */
+    private static function lostConnectionMessage(\PgSql\Connection $connection): ?string
+    {
+        $error = \rtrim((string) @\pg_last_error($connection));
+
+        // When the FATAL arrives after libpq already saw EOF, libpq lists it after its own
+        // closing text; libpq's query path (what pdo_pgsql reports) puts the FATAL first.
+        $fatal = \strpos($error, "\nFATAL:");
+        if ($fatal !== false && \str_contains(\substr($error, 0, $fatal), 'server closed the connection unexpectedly')) {
+            $error = \substr($error, $fatal + 1) . "\n" . \substr($error, 0, $fatal);
+        }
+
+        $notice = @\pg_last_notice($connection);
+        $notice = \is_string($notice) ? \rtrim($notice) : '';
+
+        if (\str_starts_with($notice, 'FATAL:') && !\str_contains($error, $notice)) {
+            $error = $error === '' ? $notice : $notice . "\n" . $error;
+        }
+
+        return $error === '' ? null : $error;
+    }
+
+    /**
+     * The error for an operation on a closed handle: libpq's message when the server ended
+     * the session, so callers see the same text pdo_pgsql reports.
+     */
+    private function closedError(): \Throwable
+    {
+        return $this->lostMessage !== null
+            ? new SqlConnectionException($this->lostMessage)
+            : new \Error("The connection to the database has been closed");
+    }
+
     #[\Override]
     public function isClosed(): bool
     {
@@ -280,7 +345,7 @@ final class PgSqlHandle extends AbstractHandle
         }
 
         if ($this->handle === null) {
-            throw new SqlConnectionException("The connection to the database has been closed");
+            throw new SqlConnectionException($this->lostMessage ?? "The connection to the database has been closed");
         }
 
         while ($result = \pg_get_result($this->handle)) {
@@ -313,8 +378,34 @@ final class PgSqlHandle extends AbstractHandle
      */
     private function createResult(\PgSql\Result $result, string $sql): PostgresResult
     {
+        try {
+            return $this->buildResult($result, $sql);
+        } finally {
+            $this->closeIfConnectionBad();
+        }
+    }
+
+    /**
+     * Release a handle whose connection went bad, even when its last query succeeded: the
+     * poll watcher only stops watching the dead socket, and the pool keeps a handle until it
+     * reports closed. The next operation then fails with libpq's message and the pool connects anew.
+     */
+    private function closeIfConnectionBad(): void
+    {
+        if ($this->handle !== null && \pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
+            $this->lostMessage ??= self::lostConnectionMessage($this->handle);
+            $this->close();
+        }
+    }
+
+    /**
+     * @throws SqlException
+     * @throws SqlQueryError
+     */
+    private function buildResult(\PgSql\Result $result, string $sql): PostgresResult
+    {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         \assert($this->types !== null, 'Expected type array to be populated before creating a result');
@@ -346,6 +437,13 @@ final class PgSqlHandle extends AbstractHandle
                     }
                 } finally {
                     \restore_error_handler();
+
+                    // The server ended the session along with this error: release the dead
+                    // handle (and its loop watchers) so the pool opens a fresh connection.
+                    if (\pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
+                        $this->close();
+                    }
+
                     throw new PostgresQueryError($message, $diagnostics, $sql);
                 }
 
@@ -371,7 +469,7 @@ final class PgSqlHandle extends AbstractHandle
     private function fetchNextResult(string $sql): ?PostgresResult
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         if ($result = \pg_get_result($this->handle)) {
@@ -433,7 +531,7 @@ final class PgSqlHandle extends AbstractHandle
     public function escapeByteA(string $data): string
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         return \pg_escape_bytea($this->handle, $data);
@@ -443,7 +541,7 @@ final class PgSqlHandle extends AbstractHandle
     public function query(string $sql): PostgresResult
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         return $this->createResult($this->send(\pg_send_query(...), $sql), $sql);
@@ -453,7 +551,7 @@ final class PgSqlHandle extends AbstractHandle
     public function execute(string $sql, array $params = []): PostgresResult
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         $sql = parseNamedParams($sql, $names);
@@ -472,7 +570,7 @@ final class PgSqlHandle extends AbstractHandle
     public function prepare(string $sql): PostgresStatement
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         $modifiedSql = parseNamedParams($sql, $names);
@@ -496,6 +594,8 @@ final class PgSqlHandle extends AbstractHandle
 
             switch ($status = \pg_result_status($result)) {
                 case \PGSQL_COMMAND_OK:
+                    $this->closeIfConnectionBad();
+
                     return $name; // Statement created successfully.
 
                 case \PGSQL_NONFATAL_ERROR:
@@ -504,6 +604,11 @@ final class PgSqlHandle extends AbstractHandle
                     foreach (self::DIAGNOSTIC_CODES as $fieldCode => $description) {
                         $diagnostics[$description] = \pg_result_error_field($result, $fieldCode);
                     }
+
+                    if ($this->handle !== null && \pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
+                        $this->close();
+                    }
+
                     throw new PostgresQueryError(
                         \pg_result_error($result) ?: 'Unknown result error',
                         $diagnostics,
@@ -596,7 +701,7 @@ final class PgSqlHandle extends AbstractHandle
     public function quoteLiteral(string $data): string
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         return \pg_escape_literal($this->handle, $data);
@@ -606,7 +711,7 @@ final class PgSqlHandle extends AbstractHandle
     public function quoteIdentifier(string $name): string
     {
         if ($this->handle === null) {
-            throw new \Error("The connection to the database has been closed");
+            throw $this->closedError();
         }
 
         return \pg_escape_identifier($this->handle, $name);

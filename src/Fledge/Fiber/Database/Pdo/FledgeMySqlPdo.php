@@ -29,25 +29,27 @@ class FledgeMySqlPdo extends FledgePdo
     /**
      * Quote a string for use in a query.
      *
-     * Manual escaping for MySQL — Fledge Async MySQL does not provide a quote method.
+     * Manual escaping for MySQL: Fledge Async MySQL does not provide a quote method.
      */
     public function quote(string $string, int $type = PDO::PARAM_STR): string|false
     {
-        if ($type === PDO::PARAM_INT) {
-            return (string) (int) $string;
-        }
+        return $this->guard(function () use ($string, $type): string {
+            if ($type === PDO::PARAM_INT) {
+                return (string) (int) $string;
+            }
 
-        $escaped = strtr($string, [
-            "\0" => '\0',
-            "\n" => '\n',
-            "\r" => '\r',
-            "\x1a" => '\Z',
-            "'" => "\'",
-            '"' => '\"',
-            '\\' => '\\\\',
-        ]);
+            $escaped = strtr($string, [
+                "\0" => '\0',
+                "\n" => '\n',
+                "\r" => '\r',
+                "\x1a" => '\Z',
+                "'" => "\'",
+                '"' => '\"',
+                '\\' => '\\\\',
+            ]);
 
-        return "'{$escaped}'";
+            return "'{$escaped}'";
+        });
     }
 
     public function trackLastInsertId(mixed $result): void

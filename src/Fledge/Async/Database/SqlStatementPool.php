@@ -111,10 +111,24 @@ abstract class SqlStatementPool implements SqlStatement
         // Drop the closure's statement reference once released: if push() declines to
         // retain the statement, a lingering reference here would keep the underlying
         // connection checked out for as long as the result object stays alive.
+        // The release runs from an event-loop callback, so it must never throw: an exception
+        // there becomes an UncaughtThrowable in whatever query runs next.
         $release = function () use (&$statement): void {
-            if ($statement !== null) {
-                $this->push($statement);
-                $statement = null;
+            if ($statement === null) {
+                return;
+            }
+
+            $released = $statement;
+            $statement = null;
+
+            try {
+                $this->push($released);
+            } catch (\Throwable) {
+                try {
+                    $released->close();
+                } catch (\Throwable) {
+                    // The statement's connection is already gone.
+                }
             }
         };
 

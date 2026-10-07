@@ -4,6 +4,7 @@ namespace Fledge\Fiber\Database\Connectors;
 
 use Fledge\Async\Database\Postgres\PostgresConfig;
 use Fledge\Async\Database\Postgres\PostgresConnectionPool;
+use Fledge\Fiber\Database\Pdo\FledgePdoException;
 use Fledge\Fiber\Database\Pdo\FledgePostgresPdo;
 use Illuminate\Database\Concerns\ParsesSearchPath;
 use Illuminate\Database\Connectors\ConnectorInterface;
@@ -18,12 +19,21 @@ class FledgePostgresConnector implements ConnectorInterface
 {
     use ParsesSearchPath;
 
+    /**
+     * The pool opens connections lazily, so server-side connect failures (bad
+     * credentials, unknown database, refused socket) surface on the first query,
+     * where the shim's guard shapes them like the PDO constructor would. Anything
+     * the driver raises while building the pool is shaped the same way here.
+     */
     public function connect(array $config): FledgePostgresPdo
     {
-        $pgConfig = $this->buildConfig($config);
-        $pool = $this->createPool($pgConfig, $config);
+        try {
+            $pgConfig = $this->buildConfig($config);
 
-        return new FledgePostgresPdo($pool);
+            return new FledgePostgresPdo($this->createPool($pgConfig, $config));
+        } catch (\Throwable $e) {
+            throw FledgePdoException::fromThrowable($e, 'pgsql');
+        }
     }
 
     protected function buildConfig(array $config): PostgresConfig

@@ -5,7 +5,6 @@ namespace Fledge\Async\Database;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
@@ -115,8 +114,9 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         }
 
         if ($this->executor->isClosed()) {
-            $this->onRollback->complete();
-            $this->onClose->complete();
+            self::completeOnce($this->onRollback, $this->onClose);
+
+            return;
         }
 
         $busy = &$this->busy;
@@ -132,11 +132,11 @@ abstract class SqlConnectionTransaction implements SqlTransaction
                 if (!$executor->isClosed()) {
                     $executor->rollback();
                 }
-            } catch (SqlException) {
-                // Ignore failure if connection closes during query.
+            } catch (\Throwable) {
+                // Nothing may escape a loop callback: the connection may close mid-rollback,
+                // and there is no caller left to report a failure to.
             } finally {
-                $onRollback->complete();
-                $onClose->complete();
+                self::completeOnce($onRollback, $onClose);
             }
         });
     }
@@ -278,8 +278,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         try {
             $this->executor->commit();
         } finally {
-            $this->onCommit->complete();
-            $this->onClose->complete();
+            self::completeOnce($this->onCommit, $this->onClose);
         }
     }
 
@@ -296,8 +295,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         try {
             $this->executor->rollback();
         } finally {
-            $this->onRollback->complete();
-            $this->onClose->complete();
+            self::completeOnce($this->onRollback, $this->onClose);
         }
     }
 
@@ -309,6 +307,19 @@ abstract class SqlConnectionTransaction implements SqlTransaction
     public function onRollback(\Closure $onRollback): void
     {
         $this->onRollback->getFuture()->finally($onRollback)->ignore();
+    }
+
+    /**
+     * Complete each future that is still pending. Concurrent commit/rollback calls and the
+     * destructor can race to settle the same futures; completing one twice throws an Error.
+     */
+    private static function completeOnce(DeferredFuture ...$futures): void
+    {
+        foreach ($futures as $future) {
+            if (!$future->isComplete()) {
+                $future->complete();
+            }
+        }
     }
 
     private function awaitPendingNestedTransaction(): void

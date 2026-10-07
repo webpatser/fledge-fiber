@@ -8,6 +8,7 @@ use Fledge\Async\Stream\Certificate;
 use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
+use Fledge\Fiber\Database\Pdo\FledgePdoException;
 use Illuminate\Database\Connectors\ConnectorInterface;
 
 use function Fledge\Async\Database\Mysql\mysqlConnector;
@@ -20,12 +21,21 @@ use function Fledge\Async\Database\Mysql\mysqlConnector;
  */
 class FledgeMySqlConnector implements ConnectorInterface
 {
+    /**
+     * The pool opens connections lazily, so server-side connect failures (bad
+     * credentials, unknown database, refused socket) surface on the first query,
+     * where the shim's guard shapes them like the PDO constructor would. Anything
+     * the driver raises while building the pool is shaped the same way here.
+     */
     public function connect(array $config): FledgeMySqlPdo
     {
-        $mysqlConfig = $this->buildConfig($config);
-        $pool = $this->createPool($mysqlConfig, $config);
+        try {
+            $mysqlConfig = $this->buildConfig($config);
 
-        return new FledgeMySqlPdo($pool);
+            return new FledgeMySqlPdo($this->createPool($mysqlConfig, $config));
+        } catch (\Throwable $e) {
+            throw FledgePdoException::fromThrowable($e, 'mysql');
+        }
     }
 
     protected function buildConfig(array $config): MysqlConfig

@@ -3,7 +3,6 @@
 namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\SqlConnectionPool;
-use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlTransaction;
 use PDO;
 
@@ -18,8 +17,9 @@ use PDO;
  * beginTransaction() obtains a pinned SqlTransaction so all subsequent
  * queries within the transaction hit the same server connection.
  *
- * Query errors: SqlQueryError from the driver is rethrown as a PDO-shaped
- * FledgePdoException so Laravel's unique-constraint and concurrency detection work.
+ * Errors: every public method runs through guard(), which turns anything the
+ * async driver raises into the PDOException pdo_mysql/pdo_pgsql would throw, so
+ * Laravel's unique-constraint, concurrency and lost-connection detection work.
  */
 abstract class FledgePdo
 {
@@ -56,15 +56,11 @@ abstract class FledgePdo
      */
     public function prepare(string $query, array $options = []): FledgePdoStatement
     {
-        $executor = $this->transaction ?? $this->pool;
-
-        try {
-            $statement = $executor->prepare($query);
-        } catch (SqlQueryError $e) {
-            throw $this->toPdoException($e);
-        }
-
-        return new FledgePdoStatement($statement, pdo: $this);
+        return $this->guard(fn () => new FledgePdoStatement(
+            ($this->transaction ?? $this->pool)->prepare($query),
+            pdo: $this,
+            driver: $this->getDriverName(),
+        ));
     }
 
     /**
@@ -72,17 +68,13 @@ abstract class FledgePdo
      */
     public function exec(string $statement): int|false
     {
-        $executor = $this->transaction ?? $this->pool;
+        return $this->guard(function () use ($statement): int {
+            $result = ($this->transaction ?? $this->pool)->query($statement);
 
-        try {
-            $result = $executor->query($statement);
-        } catch (SqlQueryError $e) {
-            throw $this->toPdoException($e);
-        }
+            $this->trackLastInsertId($result);
 
-        $this->trackLastInsertId($result);
-
-        return $result->getRowCount() ?? 0;
+            return $result->getRowCount() ?? 0;
+        });
     }
 
     /**
@@ -93,32 +85,36 @@ abstract class FledgePdo
      */
     public function beginTransaction(): bool
     {
-        try {
-            $this->transaction = $this->pool->beginTransaction();
-        } catch (SqlQueryError $e) {
-            throw $this->toPdoException($e);
-        }
+        return $this->guard(function (): bool {
+            if ($this->transaction !== null) {
+                throw FledgePdoException::pdoError('There is already an active transaction');
+            }
 
-        return true;
+            $this->transaction = $this->pool->beginTransaction();
+
+            return true;
+        });
     }
 
     /**
      * Commit the current transaction.
+     *
+     * The driver deactivates the transaction even when COMMIT fails (the server
+     * rolls back on a deadlock or a lost connection), so the pin is always released.
      */
     public function commit(): bool
     {
-        if ($this->transaction === null) {
-            return false;
-        }
+        return $this->guard(function (): bool {
+            $transaction = $this->transaction ?? throw FledgePdoException::pdoError('There is no active transaction');
 
-        try {
-            $this->transaction->commit();
-        } catch (SqlQueryError $e) {
-            throw $this->toPdoException($e);
-        }
-        $this->transaction = null;
+            try {
+                $transaction->commit();
+            } finally {
+                $this->transaction = null;
+            }
 
-        return true;
+            return true;
+        });
     }
 
     /**
@@ -126,18 +122,17 @@ abstract class FledgePdo
      */
     public function rollBack(): bool
     {
-        if ($this->transaction === null) {
-            return false;
-        }
+        return $this->guard(function (): bool {
+            $transaction = $this->transaction ?? throw FledgePdoException::pdoError('There is no active transaction');
 
-        try {
-            $this->transaction->rollback();
-        } catch (SqlQueryError $e) {
-            throw $this->toPdoException($e);
-        }
-        $this->transaction = null;
+            try {
+                $transaction->rollback();
+            } finally {
+                $this->transaction = null;
+            }
 
-        return true;
+            return true;
+        });
     }
 
     /**
@@ -145,7 +140,7 @@ abstract class FledgePdo
      */
     public function inTransaction(): bool
     {
-        return $this->transaction !== null;
+        return $this->guard(fn (): bool => $this->transaction !== null);
     }
 
     /**
@@ -153,7 +148,7 @@ abstract class FledgePdo
      */
     public function lastInsertId(?string $name = null): string|false
     {
-        return $this->lastInsertId;
+        return $this->guard(fn (): string|false => $this->lastInsertId);
     }
 
     /**
@@ -161,31 +156,38 @@ abstract class FledgePdo
      */
     public function getAttribute(int $attribute): mixed
     {
-        if ($attribute === PDO::ATTR_SERVER_VERSION) {
-            return $this->getServerVersion();
-        }
-
-        if ($attribute === PDO::ATTR_DRIVER_NAME) {
-            return $this->getDriverName();
-        }
-
-        return null;
+        return $this->guard(fn (): mixed => match ($attribute) {
+            PDO::ATTR_SERVER_VERSION => $this->getServerVersion(),
+            PDO::ATTR_DRIVER_NAME => $this->getDriverName(),
+            default => null,
+        });
     }
 
     /**
-     * Translate a driver query error into the PDOException pdo_mysql/pdo_pgsql would throw.
+     * Run a shim operation, translating anything the async driver raises into the
+     * PDOException pdo_mysql/pdo_pgsql would throw. Every public method goes through here.
+     *
+     * @template T
+     *
+     * @param  \Closure(): T  $operation
+     * @return T
      */
-    public function toPdoException(SqlQueryError $error): FledgePdoException
+    public function guard(\Closure $operation): mixed
     {
-        return FledgePdoException::fromQueryError($error, $this->driverErrorCode($error));
+        try {
+            return $operation();
+        } catch (\Throwable $e) {
+            throw $this->toPdoException($e);
+        }
     }
 
     /**
-     * The native error code PDO reports for this driver (errorInfo[1]).
+     * Translate a driver throwable into the PDOException pdo_mysql/pdo_pgsql would throw.
+     * Programming errors (TypeError and the like) come back untouched.
      */
-    protected function driverErrorCode(SqlQueryError $error): int
+    public function toPdoException(\Throwable $error): \Throwable
     {
-        return $error->getErrorCode();
+        return FledgePdoException::fromThrowable($error, $this->getDriverName());
     }
 
     /**
@@ -227,6 +229,6 @@ abstract class FledgePdo
      */
     public function close(): void
     {
-        $this->pool->close();
+        $this->guard(fn () => $this->pool->close());
     }
 }

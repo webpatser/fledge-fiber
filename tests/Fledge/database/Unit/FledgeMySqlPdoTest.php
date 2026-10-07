@@ -108,11 +108,11 @@ it('rolls back transaction', function () {
         ->and($pdo->inTransaction())->toBeFalse();
 });
 
-it('returns false for rollback without transaction', function () {
+it('throws like PDO on rollback without transaction', function () {
     $mockPool = Mockery::mock(SqlConnectionPool::class);
     $pdo = new FledgeMySqlPdo($mockPool);
 
-    expect($pdo->rollBack())->toBeFalse();
+    expect(fn () => $pdo->rollBack())->toThrow(PDOException::class, 'There is no active transaction');
 });
 
 it('caches server version from SELECT VERSION()', function () {

@@ -671,11 +671,12 @@ class ConnectionProcessor implements SqlTransientResource
 
         if ($connecting) {
             // connection failure
+            // Carry the server error number (1045, 1049, ...) so callers can shape it like the C client.
             $this->free(new SqlConnectionException(\sprintf(
                 'Could not connect to %s: %s',
                 $this->config->getConnectionString(),
                 $this->metadata->errorMsg,
-            )));
+            ), $this->metadata->errorCode ?? 0));
             return;
         }
 

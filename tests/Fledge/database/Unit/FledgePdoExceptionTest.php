@@ -66,7 +66,8 @@ it('describes SQLSTATEs like PDO', function (string $state, string $description)
     ['42000', 'Syntax error or access violation'],
     ['42S02', 'Base table or view not found'],
     ['HY000', 'General error'],
-    ['08S01', 'General error'],
+    ['08S01', 'Communication link failure'],
+    ['45000', '<<Unknown error>>'],
 ]);
 
 it('falls back to HY000 when the server reported no SQLSTATE', function () {

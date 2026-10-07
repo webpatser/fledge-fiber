@@ -1,5 +1,56 @@
 # Changelog
 
+## v13.35.0.2 - 2026-10-07
+
+### Database
+- **No driver error leaks past the PDO shims any more**: v13.35.0.1 shaped only `SqlQueryError`. Connection failures, lost connections, pool and statement shutdown, cancellation, protocol errors and parameter errors still reached Laravel as `SqlConnectionException`, `SqlException`, plain `\Error` and friends, so `DetectsLostConnections` never reconnected and the connector retry never fired. `FledgePdoException::fromThrowable($e, $driver)` is now the single mapper, and every public method of `FledgePdo`, `FledgePdoStatement`, `FledgeMySqlPdo` and `FledgePostgresPdo` runs through one `guard()` that calls it. The connectors map anything raised while building the pool the same way. Real programming errors (`TypeError`, `ValueError`, and any `\Error` no driver condition explains) are rethrown untouched, and the original exception is always kept as previous.
+- Connection failures now carry the exact text the C drivers produce and Laravel's `LostConnectionDetector` knows: MySQL `SQLSTATE[HY000] [1045] Access denied ...`, `[1049] Unknown database ...`, `[2002] Connection refused` / `Connection timed out` / `No such file or directory` / `php_network_getaddresses: getaddrinfo for ...`; Postgres `SQLSTATE[08006] [7] <libpq message>`. Like the PDO constructor, these use the native error number as an int `getCode()`. A connection lost after connecting becomes `SQLSTATE[HY000]: General error: 2006 MySQL server has gone away`, idle or mid-query, as mysqlnd reports it. On Postgres it becomes `SQLSTATE[HY000]: General error: 7 ...` with libpq's text: the server's FATAL (if it sent one) followed by `server closed the connection unexpectedly ...`, or `no connection to the server`. libpq's lost-connection results carry no SQLSTATE, so pdo_pgsql falls back to HY000; 08006 appears only in the connect-time `[7]` format.
+- SQLSTATE descriptions now come from PDO's own table (`ext/pdo/pdo_sqlstate.c`), including `<<Unknown error>>` for unlisted states, instead of a per-class approximation. For example, `08S01` is now `Communication link failure` and `42P01` is `Undefined table`.
+- **Transactions are as strict as PDO**: `commit()` or `rollBack()` with no active transaction throws `There is no active transaction`, and `beginTransaction()` inside one throws `There is already an active transaction`. Before, the first two returned false silently and the last one overwrote the pinned transaction, leaking its connection. A failed `COMMIT` or `ROLLBACK` now always releases the pin, because the driver has already deactivated the transaction (the server rolls back on a deadlock), so Laravel's retry can begin a fresh one.
+- The MySQL driver now passes the server error number of a handshake ERR packet as the `SqlConnectionException` code, so connect errors (1045, 1049, 1044, 1040, 1129, 1130) take their number from the server instead of from the message text. Parsing the text remains the fallback.
+- `FledgePdoStatement::bindValue()` handles `PDO::PARAM_LOB`, which Laravel's `Connection::bindValues()` uses for resources. As in pdo_mysql and pdo_pgsql, a stream resource is read from its current position to the end, and on Postgres the bytes go to the server as bytea (`PostgresByteA`) instead of text.
+- **Laravel reconnects after a killed connection again.** MySQL: once a connection was killed (`KILL`, `wait_timeout`), releasing a pooled statement sent COM_STMT_RESET on the dead socket from an event-loop callback. The failure then hit the next query as a Revolt `UncaughtThrowable`. `MysqlStatementPool::push()` now discards a statement whose reset fails, and the `SqlStatementPool` release callback never throws. The next query gets `2006 MySQL server has gone away`, and Laravel reconnects. Postgres: a session-ending FATAL (`57P01` from `pg_terminate_backend`, `57P02`, `57P03`) is now reported as pdo_pgsql does: `SQLSTATE[HY000]: General error: 7 FATAL:  ...` followed by libpq's `server closed the connection unexpectedly` text. `PgSqlHandle` keeps the FATAL it read when the socket closed while idle, so the next query reports the same text. `PgSqlHandle` also stops watching and closes a handle whose connection went bad, because the closed libpq socket made `stream_select()` fail for every other connection on the loop.
+- Fixed: `FledgePostgresPdo::quote()` no longer doubles backslashes, so `Connection::escape()` and `toRawSql()` stop corrupting values that contain `\`. It now matches pdo_pgsql: `PARAM_INT` is quoted as a string, `PARAM_LOB` becomes a hex bytea literal, and invalid UTF-8 returns false.
+- Fixed: Postgres `?` to `$N` placeholder conversion now follows PDO's pgsql scanner. `??` becomes a literal `?`, which fixes `whereJsonContainsKey` and the jsonb `?|` and `?&` operators. Comments, `$tag$` dollar quotes and `E''` strings are skipped, and backslash is no longer an escape in plain strings.
+- Security: `FledgePostgresPdo::quote()` now honours the server's `standard_conforming_strings` (doubling backslashes when off, falling back to a safe `E''` literal when unknown), and `inTransaction()` reports false once the server has ended the connection, matching pdo_pgsql.
+- Fixed: a Postgres transaction destroyed after its connection was closed no longer throws an `UncaughtThrowable` from the event loop.
+
+#### Error inventory
+
+Every throwable the forked drivers raise below the shims, and what the shim now throws (what pdo_mysql / pdo_pgsql throw in the same situation).
+
+| Driver throwable | Situation | MySQL / MariaDB (pdo_mysql) | Postgres (pdo_pgsql) |
+|---|---|---|---|
+| `SqlQueryError` (MySQL ERR packet) | Server error on a statement | `SQLSTATE[<state>]: <PDO description>: <errno> <message>`, code = SQLSTATE | n/a |
+| `PostgresQueryError` | Server error on a statement | n/a | `SQLSTATE[<state>]: <PDO description>: 7 <libpq message>`, code = SQLSTATE; session-ending `57P01`/`57P02`/`57P03` become `SQLSTATE[HY000]: General error: 7 FATAL:  ...\nserver closed the connection unexpectedly ...` |
+| `SqlQueryError("Empty query string")` | Empty query (pgsql handle) | n/a | `SQLSTATE[HY000]: General error: 7 Empty query string` |
+| `SqlConnectionException` "Failed to initialize database session" wrapping `SqlQueryError` | `isolation_level`, `timezone` or `ATTR_INIT_COMMAND` fails | The inner statement error, shaped as above | n/a (session settings ride the startup packet) |
+| `SqlConnectionException` "Could not connect to database server at ... after N tries" (`RetrySqlConnector`, `CompositeException` of attempts) | Connect failure | Unwrapped to the last attempt, see the rows below | `SQLSTATE[08006] [7] <libpq message>`, int code 7 |
+| `SqlConnectionException` "Could not connect to tcp://...: #28000Access denied ..." (code = server errno) | Handshake ERR packet | `SQLSTATE[HY000] [1045] Access denied for user ...` (also 1044, 1049 Unknown database, 1040, 1129, 1130), int code = errno | n/a |
+| `SqlConnectionException` "Connection closed unexpectedly" during handshake | Server dropped the handshake | `SQLSTATE[HY000] [2006] MySQL server has gone away` | n/a |
+| `SqlException` "Connecting to the MySQL server failed" wrapping `ConnectException` | Socket refused, timed out, missing unix socket, DNS failure | `SQLSTATE[HY000] [2002] Connection refused` / `Connection timed out` / `No such file or directory` / `php_network_getaddresses: getaddrinfo for <host> failed: Name or service not known` | n/a (libpq opens the socket) |
+| `TlsException` in the chain | TLS negotiation fails | `SQLSTATE[HY000] [2002] Cannot connect to MySQL using SSL` | libpq message under `[08006] [7]` |
+| `SqlConnectionException` "Could not connect to PostgreSQL server" (pecl-pq) | Connect failure | n/a | `SQLSTATE[08006] [7] <libpq message>` from the previous exception |
+| `SqlConnectionException` "Connection closed unexpectedly", "Connection closed after receiving an unexpected error packet", "The connection closed during the operation" | Connection dropped mid-query, or the server killed it | `SQLSTATE[HY000]: General error: 2006 MySQL server has gone away` | `SQLSTATE[HY000]: General error: 7 [FATAL:  ...\n]server closed the connection unexpectedly ...` |
+| Other `SqlConnectionException` ("Connection went away", "Connection closed", libpq errors) | Connection already dead | `SQLSTATE[HY000]: General error: 2006 MySQL server has gone away` | `SQLSTATE[HY000]: General error: 7 no connection to the server`, or the FATAL the handle kept when the server closed it |
+| `\Error` "The connection has been closed", "The connection to the database has been closed", "The pool has been closed", "The statement has been closed" | Use of a closed connection, pool or statement | `2006 MySQL server has gone away` | `no connection to the server` |
+| `SqlException` "Pool closed before an active connection could be obtained", "The statement has been closed or the connection went away / pool has been closed" | Pool or connection shut down underneath | `2006 MySQL server has gone away` | `no connection to the server` |
+| `StreamException`, `ClosedException` | Socket closed or failed | `2006 MySQL server has gone away` | `no connection to the server` |
+| `CancelledException`, `TimeoutException` | Operation cancelled or timed out | `2006 MySQL server has gone away` (mysqlnd read timeout) | `SQLSTATE[57014]: Query canceled: 7 ERROR:  canceling statement due to user request` |
+| `SqlTransactionError` | Use of a committed or rolled back transaction | `There is no active transaction`, code 0, no errorInfo | Same |
+| `\Error` "Parameter N missing", "... is not defined", "Named parameter ...", "Value for (un)named parameter ... missing", "Cannot mix unnamed ...", "Numbered placeholders must be sequential ..." | Bound values do not match the placeholders | `SQLSTATE[HY093]: Invalid parameter number: number of bound variables does not match number of tokens` | Same |
+| `SqlException` (protocol: "Unexpected packet type", binary protocol decoding, `handleEof`), `RuntimeException` ("Decompression failed") | Protocol or decoding error | `SQLSTATE[HY000]: General error: <errno or 2027> <message>` | n/a |
+| `PostgresParseException`, `SqlException` (bad response, unknown result status, prepare failure) | Protocol or array parse error | n/a | `SQLSTATE[HY000]: General error: 7 <message>` |
+| `TypeError`, `ValueError`, `ArgumentCountError`, any other `\Error` | Programming or configuration error | Rethrown untouched | Rethrown untouched |
+| `PDOException` | Already shaped | Passed through | Passed through |
+
+#### Known differences
+
+These are not implemented because Laravel core never reaches them: `fetchColumn`, `bindParam`, `FETCH_KEY_PAIR`, `query()`, `setAttribute()` after connect, and `errorInfo()` on the PDO and PDOStatement objects.
+
+- `quote()` on Postgres caches `standard_conforming_strings` per PDO instance, so a later per-session `SET standard_conforming_strings` is not seen.
+- Connections are lazy. The pool opens its first connection on the first query, so a bad password, an unknown database or a refused socket is not thrown by the connector or by calling `getPdo()` directly, but by the first query, in the same PDO shape. Laravel sees no difference, because `ConnectionFactory` already resolves the PDO lazily.
+
 ## v13.35.0.1 - 2026-10-07
 
 ### Database
