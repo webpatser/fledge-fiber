@@ -1,0 +1,176 @@
+{
+    "date": "2026-10-07T13:33:30+00:00",
+    "php": "8.5.11",
+    "app": "/home/sites/ikregeer.nl/current",
+    "server": "12.3.3-MariaDB-ubu2404",
+    "transport": {
+        "unix_socket": "/run/mysqld/mysqld.sock",
+        "fledge": "unix:///run/mysqld/mysqld.sock",
+        "pdo_mysql": "Localhost via UNIX socket"
+    },
+    "runs": 5,
+    "warmups": 1,
+    "scale": 1,
+    "results": {
+        "bulk tk_raw_json (10000) laravel select()": {
+            "fledge": {
+                "wall_s": 0.087811275,
+                "cpu_s": 0.087731,
+                "peak_mem_mb": 16.92987060546875,
+                "rows": 10000,
+                "cpu_us_per_row": 8.773100000000001
+            },
+            "pdo_mysql": {
+                "wall_s": 0.018684089,
+                "cpu_s": 0.015189999999999999,
+                "peak_mem_mb": 26.640830993652344,
+                "rows": 10000,
+                "cpu_us_per_row": 1.5189999999999997
+            }
+        },
+        "bulk tk_raw_json (10000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.087385407,
+                "cpu_s": 0.08728,
+                "peak_mem_mb": 16.547439575195312,
+                "rows": 10000,
+                "cpu_us_per_row": 8.728
+            },
+            "pdo_mysql": {
+                "wall_s": 0.017592662,
+                "cpu_s": 0.014672000000000001,
+                "peak_mem_mb": 26.25843048095703,
+                "rows": 10000,
+                "cpu_us_per_row": 1.4672
+            }
+        },
+        "bulk koop_document_metadata (100000) laravel select()": {
+            "fledge": {
+                "wall_s": 0.477800685,
+                "cpu_s": 0.47746,
+                "peak_mem_mb": 43.683494567871094,
+                "rows": 100000,
+                "cpu_us_per_row": 4.7746
+            },
+            "pdo_mysql": {
+                "wall_s": 0.041710371,
+                "cpu_s": 0.034133000000000004,
+                "peak_mem_mb": 46.36912536621094,
+                "rows": 100000,
+                "cpu_us_per_row": 0.3413300000000001
+            }
+        },
+        "bulk koop_document_metadata (100000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.466210279,
+                "cpu_s": 0.46602000000000005,
+                "peak_mem_mb": 39.867835998535156,
+                "rows": 100000,
+                "cpu_us_per_row": 4.660200000000001
+            },
+            "pdo_mysql": {
+                "wall_s": 0.036066477,
+                "cpu_s": 0.028564,
+                "peak_mem_mb": 42.55353546142578,
+                "rows": 100000,
+                "cpu_us_per_row": 0.28564
+            }
+        },
+        "bulk feed_items (50000) laravel select()": {
+            "fledge": {
+                "wall_s": 0.427269523,
+                "cpu_s": 0.4270280000000001,
+                "peak_mem_mb": 74.93319702148438,
+                "rows": 50000,
+                "cpu_us_per_row": 8.540560000000001
+            },
+            "pdo_mysql": {
+                "wall_s": 0.084916256,
+                "cpu_s": 0.06365900000000001,
+                "peak_mem_mb": 73.42923736572266,
+                "rows": 50000,
+                "cpu_us_per_row": 1.2731800000000002
+            }
+        },
+        "bulk feed_items (50000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.428476998,
+                "cpu_s": 0.42839299999999997,
+                "peak_mem_mb": 73.02488708496094,
+                "rows": 50000,
+                "cpu_us_per_row": 8.567859999999998
+            },
+            "pdo_mysql": {
+                "wall_s": 0.079779052,
+                "cpu_s": 0.059187000000000003,
+                "peak_mem_mb": 71.52068328857422,
+                "rows": 50000,
+                "cpu_us_per_row": 1.18374
+            }
+        },
+        "point feed_items (5000) laravel select()": {
+            "fledge": {
+                "wall_s": 1.237260677,
+                "cpu_s": 1.224913,
+                "peak_mem_mb": 4.3886871337890625,
+                "rows": 5000,
+                "cpu_us_per_row": 244.98259999999996
+            },
+            "pdo_mysql": {
+                "wall_s": 0.298400311,
+                "cpu_s": 0.170133,
+                "peak_mem_mb": 4.394813537597656,
+                "rows": 5000,
+                "cpu_us_per_row": 34.0266
+            }
+        },
+        "point feed_items (5000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.677650402,
+                "cpu_s": 0.665895,
+                "peak_mem_mb": 0.08092498779296875,
+                "rows": 5000,
+                "cpu_us_per_row": 133.179
+            },
+            "pdo_mysql": {
+                "wall_s": 0.10054775,
+                "cpu_s": 0.040847,
+                "peak_mem_mb": 0.04141998291015625,
+                "rows": 5000,
+                "cpu_us_per_row": 8.1694
+            }
+        },
+        "concurrency 32 fibers x 10 range queries (100 rows)": {
+            "fledge": {
+                "wall_s": 0.333472854,
+                "cpu_s": 0.33336899999999997,
+                "peak_mem_mb": 2.157073974609375,
+                "rows": 32000,
+                "cpu_us_per_row": 10.417781249999999
+            },
+            "pdo_mysql": {
+                "wall_s": 0.06637753,
+                "cpu_s": 0.038539,
+                "peak_mem_mb": 0.5136489868164062,
+                "rows": 32000,
+                "cpu_us_per_row": 1.20434375
+            }
+        },
+        "concurrency 32 fibers x SELECT SLEEP(0.05)": {
+            "fledge": {
+                "wall_s": 0.055530237,
+                "cpu_s": 0.006434,
+                "peak_mem_mb": 0.8110733032226562,
+                "rows": 32,
+                "cpu_us_per_row": 201.0625
+            },
+            "pdo_mysql": {
+                "wall_s": 1.610136699,
+                "cpu_s": 0.005466,
+                "peak_mem_mb": 0.12174224853515625,
+                "rows": 32,
+                "cpu_us_per_row": 170.8125
+            }
+        }
+    }
+}
