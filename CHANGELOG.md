@@ -1,5 +1,11 @@
 # Changelog
 
+## v13.35.0.1 - 2026-10-07
+
+### Database
+- **Query errors are now PDO-shaped**: the async drivers threw `SqlQueryError` (an `\Error` with code 0 and no errorInfo), which slipped past Laravel's `catch (Exception)` in `Connection::runQueryCallback()`. Duplicate-key inserts therefore never became `UniqueConstraintViolationException`, so `createOrFirst()` and `firstOrCreate()` failed instead of returning the existing row, and deadlocks were not recognised as concurrency errors. The PDO shims (`FledgePdo`, `FledgePdoStatement`, and the MySQL/MariaDB and Postgres subclasses) now rethrow driver errors as `FledgePdoException`, a `PDOException` shaped like pdo_mysql/pdo_pgsql: message `SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry ...`, `getCode()` returning the SQLSTATE string, `errorInfo = [sqlstate, native code, server message]`, and the original `SqlQueryError` as previous. This covers prepare, exec, execute, fetching, and transaction begin/commit/rollback.
+- `SqlQueryError` gains `getErrorCode()`, `getSqlState()`, and `getServerMessage()`; the constructor stays backward compatible. The MySQL driver fills them from the ERR packet and `PostgresQueryError` takes the SQLSTATE from its diagnostics. The MySQL message text is unchanged.
+
 ## v13.34.0.1 - 2026-10-03
 
 ### Database

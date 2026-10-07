@@ -3,6 +3,7 @@
 namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\SqlConnectionPool;
+use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlTransaction;
 use PDO;
 
@@ -16,6 +17,9 @@ use PDO;
  * Transaction pinning: Fledge Async pools dispatch queries to different connections.
  * beginTransaction() obtains a pinned SqlTransaction so all subsequent
  * queries within the transaction hit the same server connection.
+ *
+ * Query errors: SqlQueryError from the driver is rethrown as a PDO-shaped
+ * FledgePdoException so Laravel's unique-constraint and concurrency detection work.
  */
 abstract class FledgePdo
 {
@@ -53,7 +57,12 @@ abstract class FledgePdo
     public function prepare(string $query, array $options = []): FledgePdoStatement
     {
         $executor = $this->transaction ?? $this->pool;
-        $statement = $executor->prepare($query);
+
+        try {
+            $statement = $executor->prepare($query);
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
 
         return new FledgePdoStatement($statement, pdo: $this);
     }
@@ -64,7 +73,12 @@ abstract class FledgePdo
     public function exec(string $statement): int|false
     {
         $executor = $this->transaction ?? $this->pool;
-        $result = $executor->query($statement);
+
+        try {
+            $result = $executor->query($statement);
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
 
         $this->trackLastInsertId($result);
 
@@ -79,7 +93,11 @@ abstract class FledgePdo
      */
     public function beginTransaction(): bool
     {
-        $this->transaction = $this->pool->beginTransaction();
+        try {
+            $this->transaction = $this->pool->beginTransaction();
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
 
         return true;
     }
@@ -93,7 +111,11 @@ abstract class FledgePdo
             return false;
         }
 
-        $this->transaction->commit();
+        try {
+            $this->transaction->commit();
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
         $this->transaction = null;
 
         return true;
@@ -108,7 +130,11 @@ abstract class FledgePdo
             return false;
         }
 
-        $this->transaction->rollback();
+        try {
+            $this->transaction->rollback();
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
         $this->transaction = null;
 
         return true;
@@ -144,6 +170,22 @@ abstract class FledgePdo
         }
 
         return null;
+    }
+
+    /**
+     * Translate a driver query error into the PDOException pdo_mysql/pdo_pgsql would throw.
+     */
+    public function toPdoException(SqlQueryError $error): FledgePdoException
+    {
+        return FledgePdoException::fromQueryError($error, $this->driverErrorCode($error));
+    }
+
+    /**
+     * The native error code PDO reports for this driver (errorInfo[1]).
+     */
+    protected function driverErrorCode(SqlQueryError $error): int
+    {
+        return $error->getErrorCode();
     }
 
     /**

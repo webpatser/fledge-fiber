@@ -3,6 +3,7 @@
 namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\Mysql\MysqlStatement;
+use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use PDO;
@@ -109,7 +110,14 @@ class FledgePdoStatement
             // would still pin a pooled connection while execute() waits for one.
             $this->result = null;
 
-            $this->result = $this->statement->execute($executeParams);
+            try {
+                $this->result = $this->statement->execute($executeParams);
+            } catch (SqlQueryError $e) {
+                $this->bindings = [];
+
+                throw $this->toPdoException($e);
+            }
+
             $this->pdo?->trackLastInsertId($this->result);
         }
 
@@ -126,6 +134,14 @@ class FledgePdoStatement
         $this->result = null;
 
         return true;
+    }
+
+    /**
+     * Translate a driver query error, deferring to the parent PDO for driver-specific codes.
+     */
+    protected function toPdoException(SqlQueryError $error): FledgePdoException
+    {
+        return $this->pdo?->toPdoException($error) ?? FledgePdoException::fromQueryError($error);
     }
 
     /**
@@ -153,8 +169,12 @@ class FledgePdoStatement
         $effectiveMode = $mode === PDO::FETCH_DEFAULT ? $this->fetchMode : $mode;
         $rows = [];
 
-        foreach ($this->result as $row) {
-            $rows[] = $this->applyFetchMode($row, $effectiveMode, $args);
+        try {
+            foreach ($this->result as $row) {
+                $rows[] = $this->applyFetchMode($row, $effectiveMode, $args);
+            }
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
         }
 
         return $rows;
@@ -169,7 +189,11 @@ class FledgePdoStatement
             return false;
         }
 
-        $row = $this->result->fetchRow();
+        try {
+            $row = $this->result->fetchRow();
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
 
         if ($row === null) {
             return false;
@@ -197,7 +221,11 @@ class FledgePdoStatement
             return false;
         }
 
-        $next = $this->result->getNextResult();
+        try {
+            $next = $this->result->getNextResult();
+        } catch (SqlQueryError $e) {
+            throw $this->toPdoException($e);
+        }
 
         if ($next === null) {
             return false;

@@ -15,7 +15,14 @@ class PostgresQueryError extends SqlQueryError
         string $query,
         ?\Throwable $previous = null,
     ) {
-        parent::__construct($message, $query, $previous);
+        $sqlState = $diagnostics['sqlstate'] ?? null;
+
+        parent::__construct(
+            $message,
+            $query,
+            $previous,
+            sqlState: \is_string($sqlState) && $sqlState !== '' ? $sqlState : null,
+        );
     }
 
     /**

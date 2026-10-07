@@ -3,6 +3,7 @@
 namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\SqlConnectionPool;
+use Fledge\Async\Database\SqlQueryError;
 use PDO;
 
 /**
@@ -52,12 +53,15 @@ class FledgePostgresPdo extends FledgePdo
      */
     public function prepare(string $query, array $options = []): FledgePdoStatement
     {
-        $query = $this->convertPlaceholders($query);
+        return parent::prepare($this->convertPlaceholders($query), $options);
+    }
 
-        $executor = $this->transaction ?? $this->pool;
-        $statement = $executor->prepare($query);
-
-        return new FledgePdoStatement($statement, pdo: $this);
+    /**
+     * pdo_pgsql reports the libpq result status (PGRES_FATAL_ERROR = 7) as the native code.
+     */
+    protected function driverErrorCode(SqlQueryError $error): int
+    {
+        return 7;
     }
 
     /**

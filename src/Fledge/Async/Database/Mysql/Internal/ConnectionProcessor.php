@@ -688,12 +688,18 @@ class ConnectionProcessor implements SqlTransientResource
         $deferred = $this->result ?? $this->dequeueDeferred();
 
         // normal error
-        $exception = new SqlQueryError(\sprintf(
-            'MySQL error (%d): %s %s',
-            $this->metadata->errorCode,
-            $this->metadata->errorState ?? 'Unknown state',
-            $this->metadata->errorMsg,
-        ), $this->query ?? '');
+        $exception = new SqlQueryError(
+            \sprintf(
+                'MySQL error (%d): %s %s',
+                $this->metadata->errorCode,
+                $this->metadata->errorState ?? 'Unknown state',
+                $this->metadata->errorMsg,
+            ),
+            $this->query ?? '',
+            errorCode: $this->metadata->errorCode ?? 0,
+            sqlState: $this->metadata->errorState !== null ? \ltrim($this->metadata->errorState, '#') : null,
+            serverMessage: $this->metadata->errorMsg,
+        );
 
         $this->result = null;
         $this->query = null;
