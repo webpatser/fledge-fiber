@@ -3,14 +3,24 @@
 declare(strict_types=1);
 
 /**
- * fledge-mariadb vs pdo_mysql driver benchmark (SELECT only, read-only).
+ * fledge-mariadb vs pdo_mysql (vs pdo_mysql + fiberio) driver benchmark
+ * (SELECT only, read-only).
  *
- * Usage: php mysql_driver_bench.php <app-path> [--runs=5] [--scale=1.0]
+ * Usage: php [-d extension=<path>/fiberio.so] mysql_driver_bench.php <app-path>
+ *        [--runs=5] [--scale=1.0] [--fiberio-waiter=<path>/RevoltWaiter.php]
  *
- * Boots the Laravel/Fledge app at <app-path> and compares two connections on
- * the SAME unix socket and credentials:
- *   - "fledge"    : the app's `mariadb` connection (driver fledge-mariadb)
- *   - "pdo_mysql" : runtime clone `mariadb_pdo` with driver `mariadb`
+ * Boots the Laravel/Fledge app at <app-path> and compares connections on the
+ * SAME unix socket and credentials:
+ *   - "fledge"            : the app's `mariadb` connection (driver fledge-mariadb)
+ *   - "pdo_mysql"         : runtime clone `mariadb_pdo` with driver `mariadb`
+ *   - "pdo_mysql+fiberio" : 32 runtime clones `mariadb_fiberio_<n>` (driver
+ *                           `mariadb`, one real PDO per fiber) opened while
+ *                           FiberIo\enable(new FiberIo\RevoltWaiter) is on. Bulk
+ *                           and point cases run inside one fiber so the waiter
+ *                           path is the one measured. The hook is enabled only
+ *                           while this column runs. The column is skipped with
+ *                           a note when ext/fiberio is not loaded or no
+ *                           --fiberio-waiter is given.
  *
  * Concurrency uses Fledge\Async\async() + Fledge\Async\Future\await() (the same
  * primitives as FiberDB::concurrent()). pdo_mysql runs in the very same fibers,
@@ -46,17 +56,20 @@ function fail(string $message): never
 $appPath = null;
 $runs = 5;
 $scale = 1.0;
+$waiterPath = null;
 foreach (array_slice($argv, 1) as $arg) {
     if (str_starts_with($arg, '--runs=')) {
         $runs = max(1, (int) substr($arg, 7));
     } elseif (str_starts_with($arg, '--scale=')) {
         $scale = max(0.0001, (float) substr($arg, 8));
+    } elseif (str_starts_with($arg, '--fiberio-waiter=')) {
+        $waiterPath = substr($arg, 17);
     } elseif ($appPath === null) {
         $appPath = rtrim($arg, '/');
     }
 }
 if ($appPath === null || ! is_file("{$appPath}/vendor/autoload.php") || ! is_file("{$appPath}/bootstrap/app.php")) {
-    fail('usage: php mysql_driver_bench.php <app-path> [--runs=5] [--scale=1.0]');
+    fail('usage: php mysql_driver_bench.php <app-path> [--runs=5] [--scale=1.0] [--fiberio-waiter=<path>]');
 }
 
 chdir($appPath);
@@ -95,7 +108,19 @@ $clone['driver'] = 'mariadb';
 unset($clone['pool_size'], $clone['pool_idle_timeout']);
 config(['database.connections.mariadb_pdo' => $clone]);
 
-$conns = ['fledge' => 'mariadb', 'pdo_mysql' => 'mariadb_pdo'];
+// fiberio column: only when the extension is loaded and a waiter is given.
+$fiberioNote = null;
+if (! extension_loaded('fiberio')) {
+    $fiberioNote = 'ext/fiberio not loaded';
+} elseif ($waiterPath === null || ! is_file($waiterPath)) {
+    $fiberioNote = 'no --fiberio-waiter file given (' . var_export($waiterPath, true) . ')';
+} else {
+    require $waiterPath;
+    if (! class_exists(Revolt\EventLoop::class)) {
+        $fiberioNote = 'revolt/event-loop is not in the app vendor';
+    }
+}
+$fiberio = $fiberioNote === null;
 
 $fledgePdo = DB::connection('mariadb')->getPdo();
 $nativePdo = DB::connection('mariadb_pdo')->getPdo();
@@ -110,16 +135,50 @@ $nativeStatus = (string) $nativePdo->getAttribute(PDO::ATTR_CONNECTION_STATUS);
 if (! str_contains($nativeStatus, 'UNIX socket')) {
     fail("pdo_mysql is not on a unix socket: {$nativeStatus}");
 }
+
+$fiberStatus = null;
+$waiter = null;
+if ($fiberio) {
+    if (FiberIo\enabled()) {
+        FiberIo\disable();
+    }
+    $waiter = new FiberIo\RevoltWaiter;
+    FiberIo\enable($waiter);
+    try {
+        for ($f = 0; $f < FIBERS; $f++) {
+            config(["database.connections.mariadb_fiberio_{$f}" => $clone]);
+            DB::connection("mariadb_fiberio_{$f}")->getPdo();
+        }
+    } finally {
+        FiberIo\disable();
+    }
+    $fiberPdo = DB::connection('mariadb_fiberio_0')->getPdo();
+    if (str_contains($fiberPdo::class, 'Fledge')) {
+        fail('mariadb_fiberio_0 resolved to a Fledge PDO: ' . $fiberPdo::class);
+    }
+    $fiberStatus = (string) $fiberPdo->getAttribute(PDO::ATTR_CONNECTION_STATUS);
+    if (! str_contains($fiberStatus, 'UNIX socket')) {
+        fail("pdo_mysql+fiberio is not on a unix socket: {$fiberStatus}");
+    }
+    $fiberSocket = (string) DB::connection('mariadb_fiberio_0')->selectOne('select @@socket as s')->s;
+}
+
 $nativeSocket = (string) DB::connection('mariadb_pdo')->selectOne('select @@socket as s')->s;
 $fledgeSocket = (string) DB::connection('mariadb')->selectOne('select @@socket as s')->s;
 if ($nativeSocket !== $fledgeSocket) {
     fail("server socket differs: fledge={$fledgeSocket} pdo_mysql={$nativeSocket}");
+}
+if ($fiberio && $fiberSocket !== $fledgeSocket) {
+    fail("server socket differs: fledge={$fledgeSocket} pdo_mysql+fiberio={$fiberSocket}");
 }
 
 echo "Transport check\n";
 echo "  configured unix_socket : {$socket}\n";
 echo "  fledge-mariadb         : unix://{$socket} (class " . $fledgePdo::class . ", server @@socket={$fledgeSocket})\n";
 echo "  pdo_mysql              : {$nativeStatus} (server @@socket={$nativeSocket}), same path {$socket}\n";
+echo $fiberio
+    ? "  pdo_mysql+fiberio      : {$fiberStatus} (server @@socket={$fiberSocket}), " . FIBERS . ' PDO connections, RevoltWaiter, fiberio ' . phpversion('fiberio') . "\n"
+    : "  pdo_mysql+fiberio      : SKIPPED ({$fiberioNote})\n";
 echo '  server                 : ' . DB::connection('mariadb')->selectOne('select version() as v')->v . "\n";
 echo '  php                    : ' . PHP_VERSION . ", runs={$runs}, scale={$scale}\n\n";
 
@@ -259,37 +318,51 @@ for ($f = 0; $f < $fibers; $f++) {
 }
 
 // ---------------------------------------------------------------- cases
-/** @return array<string, array<string, Closure(string): Closure>> case => driver-agnostic factory(connName) */
+// conn(f): the connection name fiber f uses; single(fn): how a non-concurrent case runs.
+$direct = fn (Closure $fn) => $fn;
+$inFiber = fn (Closure $fn) => fn () => async($fn)->await();
+$drivers = [
+    'fledge' => ['conn' => fn (int $f) => 'mariadb', 'single' => $direct, 'hook' => false],
+    'pdo_mysql' => ['conn' => fn (int $f) => 'mariadb_pdo', 'single' => $direct, 'hook' => false],
+];
+if ($fiberio) {
+    $drivers['pdo_mysql+fiberio'] = ['conn' => fn (int $f) => "mariadb_fiberio_{$f}", 'single' => $inFiber, 'hook' => true];
+}
+
+/** @var array<string, Closure(array): Closure> $cases case => factory(driver) */
 $cases = [];
 
 foreach ($plan as $label => $p) {
     $sql = "select * from `{$p['table']}` where `{$p['pk']}` >= ? order by `{$p['pk']}` limit {$p['rows']}";
-    $cases["bulk {$label} ({$p['rows']}) laravel select()"] = fn (string $c) => fn () => count(DB::connection($c)->select($sql, [$p['start']]));
-    $cases["bulk {$label} ({$p['rows']}) raw PDO"] = function (string $c) use ($sql, $p) {
-        $pdo = DB::connection($c)->getPdo();
+    $cases["bulk {$label} ({$p['rows']}) laravel select()"] = fn (array $d) => $d['single'](
+        fn () => count(DB::connection($d['conn'](0))->select($sql, [$p['start']])),
+    );
+    $cases["bulk {$label} ({$p['rows']}) raw PDO"] = function (array $d) use ($sql, $p) {
+        $pdo = DB::connection($d['conn'](0))->getPdo();
 
-        return function () use ($pdo, $sql, $p) {
+        return $d['single'](function () use ($pdo, $sql, $p) {
             $st = $pdo->prepare($sql);
             $st->execute([$p['start']]);
 
             return count($st->fetchAll(PDO::FETCH_ASSOC));
-        };
+        });
     };
 }
 
 $pointSql = "select * from `{$ft}` where `{$fpk}` = ? limit 1";
-$cases["point feed_items ({$pointN}) laravel select()"] = fn (string $c) => function () use ($c, $pointSql, $pointIds) {
+$cases["point feed_items ({$pointN}) laravel select()"] = fn (array $d) => $d['single'](function () use ($d, $pointSql, $pointIds) {
+    $c = $d['conn'](0);
     $n = 0;
     foreach ($pointIds as $id) {
         $n += count(DB::connection($c)->select($pointSql, [$id]));
     }
 
     return $n;
-};
-$cases["point feed_items ({$pointN}) raw PDO"] = function (string $c) use ($pointSql, $pointIds) {
-    $pdo = DB::connection($c)->getPdo();
+});
+$cases["point feed_items ({$pointN}) raw PDO"] = function (array $d) use ($pointSql, $pointIds) {
+    $pdo = DB::connection($d['conn'](0))->getPdo();
 
-    return function () use ($pdo, $pointSql, $pointIds) {
+    return $d['single'](function () use ($pdo, $pointSql, $pointIds) {
         $n = 0;
         $st = $pdo->prepare($pointSql);
         foreach ($pointIds as $id) {
@@ -298,14 +371,15 @@ $cases["point feed_items ({$pointN}) raw PDO"] = function (string $c) use ($poin
         }
 
         return $n;
-    };
+    });
 };
 
 $rangeSql = "select * from `{$ft}` where `{$fpk}` >= ? order by `{$fpk}` limit " . RANGE_ROWS;
-$cases["concurrency {$fibers} fibers x {$perFiber} range queries (" . RANGE_ROWS . ' rows)'] = fn (string $c) => function () use ($c, $fibers, $fiberStarts, $rangeSql) {
+$cases["concurrency {$fibers} fibers x {$perFiber} range queries (" . RANGE_ROWS . ' rows)'] = fn (array $d) => function () use ($d, $fibers, $fiberStarts, $rangeSql) {
     $futures = [];
     for ($f = 0; $f < $fibers; $f++) {
-        $futures[] = async(function () use ($c, $f, $fiberStarts, $rangeSql) {
+        $futures[] = async(function () use ($d, $f, $fiberStarts, $rangeSql) {
+            $c = $d['conn']($f);
             $n = 0;
             foreach ($fiberStarts[$f] as $start) {
                 $n += count(DB::connection($c)->select($rangeSql, [$start]));
@@ -318,10 +392,10 @@ $cases["concurrency {$fibers} fibers x {$perFiber} range queries (" . RANGE_ROWS
     return array_sum(await($futures));
 };
 
-$cases["concurrency {$fibers} fibers x SELECT SLEEP(" . SLEEP_SECONDS . ')'] = fn (string $c) => function () use ($c, $fibers) {
+$cases["concurrency {$fibers} fibers x SELECT SLEEP(" . SLEEP_SECONDS . ')'] = fn (array $d) => function () use ($d, $fibers) {
     $futures = [];
     for ($f = 0; $f < $fibers; $f++) {
-        $futures[] = async(fn () => count(DB::connection($c)->select('select sleep(' . SLEEP_SECONDS . ') as s')));
+        $futures[] = async(fn () => count(DB::connection($d['conn']($f))->select('select sleep(' . SLEEP_SECONDS . ') as s')));
     }
 
     return array_sum(await($futures));
@@ -331,8 +405,17 @@ $cases["concurrency {$fibers} fibers x SELECT SLEEP(" . SLEEP_SECONDS . ')'] = f
 $results = [];
 foreach ($cases as $name => $factory) {
     fwrite(STDERR, "running: {$name}\n");
-    foreach ($conns as $driver => $conn) {
-        $results[$name][$driver] = bench($factory($conn), $runs);
+    foreach ($drivers as $driver => $d) {
+        if ($d['hook']) {
+            FiberIo\enable($waiter);
+        }
+        try {
+            $results[$name][$driver] = bench($factory($d), $runs);
+        } finally {
+            if ($d['hook']) {
+                FiberIo\disable();
+            }
+        }
     }
 }
 
@@ -352,7 +435,8 @@ $json = [
     'php' => PHP_VERSION,
     'app' => $appPath,
     'server' => DB::connection('mariadb')->selectOne('select version() as v')->v,
-    'transport' => ['unix_socket' => $socket, 'fledge' => "unix://{$socket}", 'pdo_mysql' => $nativeStatus],
+    'fiberio' => $fiberio ? phpversion('fiberio') : "skipped: {$fiberioNote}",
+    'transport' => ['unix_socket' => $socket, 'fledge' => "unix://{$socket}", 'pdo_mysql' => $nativeStatus, 'pdo_mysql+fiberio' => $fiberStatus],
     'runs' => $runs,
     'warmups' => WARMUPS,
     'scale' => $scale,
@@ -360,4 +444,7 @@ $json = [
 ];
 $file = __DIR__ . '/mysql_driver_bench-' . date('Y-m-d') . '.json';
 file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+if (! $fiberio) {
+    echo "\nNote: pdo_mysql+fiberio column skipped ({$fiberioNote}).\n";
+}
 echo "\nJSON written to {$file}\n";
