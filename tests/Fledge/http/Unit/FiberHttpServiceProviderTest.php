@@ -148,7 +148,7 @@ it('skips the S3 extension without the AWS SDK or with the flag off', function (
     $provider = providerWith(['fledge-http.integrations.s3' => $flag]);
     $app = Container::getInstance();
     $manager = new FilesystemManager($app);
-    $app->instance('filesystem', $manager);
+    $app->singleton('filesystem', fn () => $manager);
 
     callProvider($provider, 'registerS3');
     $app->make('filesystem');

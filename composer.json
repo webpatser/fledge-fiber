@@ -20,6 +20,10 @@
         "illuminate/support": "^13.0"
     },
     "require-dev": {
+        "aws/aws-sdk-php": "^3.300",
+        "illuminate/broadcasting": "^13.0",
+        "league/flysystem-aws-s3-v3": "^3.0",
+        "pusher/pusher-php-server": "^7.2",
         "livewire/livewire": "^4.2",
         "mockery/mockery": "^1.6",
         "pestphp/pest": "^4.0",
