@@ -2,7 +2,7 @@
 
 namespace Fledge\Fiber\Http;
 
-use Aws\Handler\GuzzleV6\GuzzleHandler;
+use Aws\Handler\Guzzle\GuzzleHandler;
 use Aws\Sdk;
 use Fledge\Fiber\Http\Symfony\FledgeSymfonyHttpClient;
 use Illuminate\Mail\MailManager;

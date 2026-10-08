@@ -1,5 +1,6 @@
 <?php
 
+use Aws\Handler\Guzzle\GuzzleHandler;
 use Aws\Sdk;
 use Fledge\Fiber\Http\FiberHttpServiceProvider;
 use Fledge\Fiber\Http\FiberMailManager;
@@ -165,7 +166,7 @@ it('injects a Fledge http_handler into the SES config when the AWS SDK exists', 
 
     $custom = fn () => null;
 
-    expect($withHandler(['transport' => 'ses'])['http_handler'])->toBeCallable()
+    expect($withHandler(['transport' => 'ses'])['http_handler'])->toBeInstanceOf(GuzzleHandler::class)
         ->and($withHandler(['client' => ['fledge' => false]]))->not->toHaveKey('http_handler')
         ->and($withHandler(['http_handler' => $custom])['http_handler'])->toBe($custom);
 });
