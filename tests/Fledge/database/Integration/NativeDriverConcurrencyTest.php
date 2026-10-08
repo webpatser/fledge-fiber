@@ -24,17 +24,24 @@ use function Fledge\Async\Future\await;
 
 /**
  * A stock blocking pdo_mysql connection for DDL and seeding.
+ *
+ * Lock waits are capped at 10 s: the DDL here blocks outside any fiber, so a
+ * metadata lock held by another run against the same server (two suites at
+ * once) would otherwise hang the process for the server default of a year.
  */
 function nativeConcurrencyAdmin(string $flavor): PDO
 {
     $config = $flavor === 'mysql' ? mysqlConfig() : mariadbConfig();
 
-    return new PDO(
+    $pdo = new PDO(
         "mysql:host={$config['host']};port={$config['port']};dbname={$config['database']}",
         $config['username'],
         $config['password'],
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
     );
+    $pdo->exec('SET SESSION lock_wait_timeout = 10, innodb_lock_wait_timeout = 10');
+
+    return $pdo;
 }
 
 /**
