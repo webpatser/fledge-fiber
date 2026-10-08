@@ -78,6 +78,60 @@ class NativeMySqlConnector implements ConnectorInterface
     }
 
     /**
+     * Whether the loaded php-fiberio accepts the hooks argument (>= 0.2).
+     */
+    public static function fiberIoSupportsHooks(): bool
+    {
+        return defined('FiberIo\\HOOK_ALL');
+    }
+
+    /**
+     * Build the fiberio hooks bitmask from the connection config key
+     * `fiberio_hooks`, falling back to env FLEDGE_FIBERIO_HOOKS. Accepts a
+     * comma list (sleep, dns, ssl), `all` or `none`; unknown names are
+     * ignored. Defaults to all hooks. Only call when fiberIoSupportsHooks().
+     *
+     * @param  array<string, mixed>  $config
+     */
+    public static function resolveHooks(array $config): int
+    {
+        $value = $config['fiberio_hooks'] ?? null;
+
+        if ($value === null || $value === '' || $value === []) {
+            $env = getenv('FLEDGE_FIBERIO_HOOKS');
+            $value = $env === false ? null : $env;
+        }
+
+        $all = \FiberIo\HOOK_ALL;
+        $names = is_array($value) ? $value : explode(',', (string) $value);
+        $map = [
+            'sleep' => \FiberIo\HOOK_SLEEP,
+            'dns' => \FiberIo\HOOK_DNS,
+            'ssl' => \FiberIo\HOOK_SSL,
+        ];
+
+        $mask = 0;
+        $recognised = false;
+
+        foreach ($names as $name) {
+            $name = strtolower(trim((string) $name));
+
+            if ($name === 'all') {
+                return $all;
+            }
+
+            if ($name === 'none') {
+                $recognised = true;
+            } elseif (isset($map[$name])) {
+                $mask |= $map[$name];
+                $recognised = true;
+            }
+        }
+
+        return $recognised ? $mask : $all;
+    }
+
+    /**
      * Make sure fiberio is loaded and enabled with the Revolt waiter.
      *
      * With `'fiberio' => 'optional'` a missing extension logs one warning per
@@ -107,7 +161,12 @@ class NativeMySqlConnector implements ConnectorInterface
 
         try {
             if (! \FiberIo\enabled()) {
-                \FiberIo\enable(new RevoltWaiter);
+                if (self::fiberIoSupportsHooks()) {
+                    \FiberIo\enable(new RevoltWaiter, self::resolveHooks($config));
+                } else {
+                    // php-fiberio v0.1.0: no hooks argument.
+                    \FiberIo\enable(new RevoltWaiter);
+                }
             }
         } catch (\Error $e) {
             throw $this->nonThreadSafeOnly($e);

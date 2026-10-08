@@ -24,7 +24,7 @@ use Revolt\EventLoop;
 final class RevoltWaiter
 {
     /**
-     * @param  resource  $stream  Stream wrapping a dup of the socket, only for watching.
+     * @param  resource|null  $stream  Stream wrapping a dup of the socket, only for watching; null for a timer wait (events 0).
      * @param  int  $events  Bitmask of FiberIo\READABLE and FiberIo\WRITABLE.
      * @param  float|null  $timeout  Seconds, or null to wait without a limit.
      * @return bool True when the stream is ready, false on timeout.
