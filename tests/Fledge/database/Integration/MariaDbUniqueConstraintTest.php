@@ -1,6 +1,7 @@
 <?php
 
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
+use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Illuminate\Database\ConnectionResolver;
 use Illuminate\Database\Eloquent\Model;
@@ -38,10 +39,29 @@ uses()->beforeEach(function () {
         $this->pdo->close();
     }
 
+    if (isset($this->connection) && $this->connection instanceof NativeMariaDbConnection) {
+        $this->connection->disconnect();
+    }
+
+    nativeDriverReset();
     Model::unsetConnectionResolver();
 });
 
-it('throws UniqueConstraintViolationException with the index on a duplicate insert', function () {
+/**
+ * Swap the connection for the native driver when the dataset asks for it (the
+ * table is created in beforeEach on the fledge pool, which both drivers share).
+ */
+function uniqueConstraintUseDriver(string $driver): void
+{
+    if ($driver === 'native') {
+        // Same connection name as the fledge side: Eloquent models re-resolve their connection by name.
+        test()->connection = nativeDriverConnection('mariadb', ['name' => 'fledge-mariadb']);
+    }
+}
+
+it('throws UniqueConstraintViolationException with the index on a duplicate insert', function (string $driver) {
+    uniqueConstraintUseDriver($driver);
+
     $this->connection->table('_fledge_unique_users')->insert(['email' => 'a@example.com']);
 
     try {
@@ -54,9 +74,11 @@ it('throws UniqueConstraintViolationException with the index on a duplicate inse
             ->and($e->errorInfo)->toBe(['23000', 1062, "Duplicate entry 'a@example.com' for key '_fledge_unique_users_email_unique'"])
             ->and($e->getPrevious())->toBeInstanceOf(PDOException::class);
     }
-});
+})->with(['fledge', 'native']);
 
-it('returns the existing row from createOrFirst', function () {
+it('returns the existing row from createOrFirst', function (string $driver) {
+    uniqueConstraintUseDriver($driver);
+
     Model::setConnectionResolver(new ConnectionResolver(['fledge-mariadb' => $this->connection]));
     Model::getConnectionResolver()->setDefaultConnection('fledge-mariadb');
 
@@ -65,7 +87,8 @@ it('returns the existing row from createOrFirst', function () {
     $found = FledgeUniqueConstraintUser::createOrFirst(['email' => 'b@example.com'], ['name' => 'Second']);
 
     expect($found->wasRecentlyCreated)->toBeFalse()
+        ->and($found->getConnection())->toBe($this->connection)
         ->and($found->id)->toEqual($original->id)
         ->and($found->name)->toBe('Original')
         ->and($this->connection->table('_fledge_unique_users')->count())->toBe(1);
-});
+})->with(['fledge', 'native']);

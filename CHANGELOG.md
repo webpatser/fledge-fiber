@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Database
+- **New `fledge-mysql-native` and `fledge-mariadb-native` drivers**: a pool of real `pdo_mysql` connections on php-fiberio, one lease per fiber, built on Laravel's stock MySQL/MariaDB connectors. Requires `pie install webpatser/php-fiberio` (NTS only, v0.x); `'fiberio' => 'optional'` falls back to blocking PDO. New config keys: `pool_size` (32), `pool_idle_timeout` (60), `pool_wait_timeout` (30); persistent connections are rejected. See the README for the caveats: fiberio is process-wide (streams shared by two fibers now throw "stream is in use by another fiber"), TLS needs `MYSQL_ATTR_SSL_CIPHER` or a CA, `RefreshDatabase` only wraps the main context, `pretend()` and `recordsModified` are shared across fibers, and DNS hostnames block while connecting. `fledge-mysql` and `fledge-mariadb` keep their wire-protocol implementation and stay available (see the transaction guard below for the one behaviour change).
+- **Behaviour change: cross-fiber transaction guard** for `fledge-mysql`, `fledge-mariadb` and `fledge-pgsql`: the transaction pin is per connection, so a second fiber's queries used to run silently inside another fiber's open transaction (and were committed or rolled back with it). `FledgePdo` now records the fiber that began the transaction and throws a `LogicException` when any other fiber (or the main context) prepares, executes, execs, begins, commits or rolls back on that connection while it is open. The owning fiber is unaffected. Use separate connections per concurrent fiber, or the native drivers.
+
 ## v13.35.0.2 - 2026-10-07
 
 ### Database

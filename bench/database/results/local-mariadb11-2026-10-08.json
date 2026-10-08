@@ -1,0 +1,370 @@
+{
+    "date": "2026-10-08T08:16:10+00:00",
+    "php": "8.5.11",
+    "fiberio": "0.1.0",
+    "server": "11.8.9-MariaDB-ubu2404",
+    "transport": {
+        "fledge": "tcp://127.0.0.1:13307",
+        "pdo_mysql": "127.0.0.1 via TCP/IP",
+        "pdo_mysql+fiberio": "127.0.0.1 via TCP/IP",
+        "pdo_mysql+fiberio (prepare per call)": "127.0.0.1 via TCP/IP",
+        "laravel stock": "mariadb: 127.0.0.1 via TCP/IP",
+        "native-driver": "fledge-mariadb-native: 127.0.0.1 via TCP/IP"
+    },
+    "runs": 5,
+    "warmups": 1,
+    "scale": 0.2,
+    "notes": "Notes: native-driver and laravel stock go through Connection::select(); the other columns are raw PDO. pdo_mysql+fiberio (prepare per call) differs from pdo_mysql+fiberio only in the point case (new prepared statement per lookup); its bulk and concurrency cases use the same code path as pdo_mysql+fiberio (every raw PDO column prepares per call there) and are measured again. laravel stock is blocking, so its concurrency cases run sequentially.\n",
+    "results": {
+        "bulk tk_raw_json (2000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.02048275,
+                "cpu_s": 0.01931,
+                "peak_mem_mb": 4.495536804199219,
+                "rows": 2000,
+                "cpu_us_per_row": 9.655
+            },
+            "pdo_mysql": {
+                "wall_s": 0.010070416,
+                "cpu_s": 0.001955,
+                "peak_mem_mb": 8.003379821777344,
+                "rows": 2000,
+                "cpu_us_per_row": 0.9775000000000001
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.01028075,
+                "cpu_s": 0.003032,
+                "peak_mem_mb": 8.021659851074219,
+                "rows": 2000,
+                "cpu_us_per_row": 1.516
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.010481417,
+                "cpu_s": 0.0029040000000000003,
+                "peak_mem_mb": 8.021659851074219,
+                "rows": 2000,
+                "cpu_us_per_row": 1.4520000000000002
+            },
+            "laravel stock": {
+                "wall_s": 0.010050041,
+                "cpu_s": 0.001948,
+                "peak_mem_mb": 8.080398559570312,
+                "rows": 2000,
+                "cpu_us_per_row": 0.9740000000000001
+            },
+            "native-driver": {
+                "wall_s": 0.01053525,
+                "cpu_s": 0.003218,
+                "peak_mem_mb": 8.099067687988281,
+                "rows": 2000,
+                "cpu_us_per_row": 1.609
+            }
+        },
+        "bulk koop_document_metadata (20000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.133383167,
+                "cpu_s": 0.130982,
+                "peak_mem_mb": 9.783561706542969,
+                "rows": 20000,
+                "cpu_us_per_row": 6.549099999999999
+            },
+            "pdo_mysql": {
+                "wall_s": 0.008516833,
+                "cpu_s": 0.002866,
+                "peak_mem_mb": 10.598258972167969,
+                "rows": 20000,
+                "cpu_us_per_row": 0.14329999999999998
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.006726875,
+                "cpu_s": 0.003123,
+                "peak_mem_mb": 10.616539001464844,
+                "rows": 20000,
+                "cpu_us_per_row": 0.15615
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.006745042,
+                "cpu_s": 0.003263,
+                "peak_mem_mb": 10.616539001464844,
+                "rows": 20000,
+                "cpu_us_per_row": 0.16315
+            },
+            "laravel stock": {
+                "wall_s": 0.007072125,
+                "cpu_s": 0.0034519999999999998,
+                "peak_mem_mb": 11.361892700195312,
+                "rows": 20000,
+                "cpu_us_per_row": 0.1726
+            },
+            "native-driver": {
+                "wall_s": 0.007193125,
+                "cpu_s": 0.003734,
+                "peak_mem_mb": 11.380561828613281,
+                "rows": 20000,
+                "cpu_us_per_row": 0.1867
+            }
+        },
+        "bulk feed_items (10000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.111788916,
+                "cpu_s": 0.111094,
+                "peak_mem_mb": 8.520263671875,
+                "rows": 10000,
+                "cpu_us_per_row": 11.109399999999999
+            },
+            "pdo_mysql": {
+                "wall_s": 0.013327167,
+                "cpu_s": 0.004269,
+                "peak_mem_mb": 11.292564392089844,
+                "rows": 10000,
+                "cpu_us_per_row": 0.42690000000000006
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.012693917,
+                "cpu_s": 0.005351,
+                "peak_mem_mb": 11.310844421386719,
+                "rows": 10000,
+                "cpu_us_per_row": 0.5351
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.013230834,
+                "cpu_s": 0.005282,
+                "peak_mem_mb": 11.310844421386719,
+                "rows": 10000,
+                "cpu_us_per_row": 0.5282
+            },
+            "laravel stock": {
+                "wall_s": 0.013847708,
+                "cpu_s": 0.0048330000000000005,
+                "peak_mem_mb": 11.674728393554688,
+                "rows": 10000,
+                "cpu_us_per_row": 0.4833000000000001
+            },
+            "native-driver": {
+                "wall_s": 0.013953792,
+                "cpu_s": 0.006332,
+                "peak_mem_mb": 11.693397521972656,
+                "rows": 10000,
+                "cpu_us_per_row": 0.6332
+            }
+        },
+        "point feed_items (1000) raw PDO": {
+            "fledge": {
+                "wall_s": 0.269413875,
+                "cpu_s": 0.161262,
+                "peak_mem_mb": 0.08608245849609375,
+                "rows": 1000,
+                "cpu_us_per_row": 161.262
+            },
+            "pdo_mysql": {
+                "wall_s": 0.158453042,
+                "cpu_s": 0.010191,
+                "peak_mem_mb": 0.0451202392578125,
+                "rows": 1000,
+                "cpu_us_per_row": 10.191
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.162474417,
+                "cpu_s": 0.024354,
+                "peak_mem_mb": 0.0634002685546875,
+                "rows": 1000,
+                "cpu_us_per_row": 24.354
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.32373875,
+                "cpu_s": 0.050359,
+                "peak_mem_mb": 0.0634002685546875,
+                "rows": 1000,
+                "cpu_us_per_row": 50.359
+            },
+            "laravel stock": {
+                "wall_s": 0.318663042,
+                "cpu_s": 0.025601,
+                "peak_mem_mb": 0.0458526611328125,
+                "rows": 1000,
+                "cpu_us_per_row": 25.601
+            },
+            "native-driver": {
+                "wall_s": 0.334743292,
+                "cpu_s": 0.060762,
+                "peak_mem_mb": 0.06452178955078125,
+                "rows": 1000,
+                "cpu_us_per_row": 60.762
+            }
+        },
+        "concurrency 32 fibers x 2 range queries (100 rows)": {
+            "fledge": {
+                "wall_s": 0.088074459,
+                "cpu_s": 0.08750000000000001,
+                "peak_mem_mb": 1.1980667114257812,
+                "rows": 6400,
+                "cpu_us_per_row": 13.671875000000002
+            },
+            "pdo_mysql": {
+                "wall_s": 0.032828625,
+                "cpu_s": 0.004605,
+                "peak_mem_mb": 0.24164581298828125,
+                "rows": 6400,
+                "cpu_us_per_row": 0.71953125
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.00866975,
+                "cpu_s": 0.006517,
+                "peak_mem_mb": 1.6524734497070312,
+                "rows": 6400,
+                "cpu_us_per_row": 1.01828125
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.008744916,
+                "cpu_s": 0.007254999999999999,
+                "peak_mem_mb": 1.6197586059570312,
+                "rows": 6400,
+                "cpu_us_per_row": 1.1335937499999997
+            },
+            "laravel stock": {
+                "wall_s": 0.029665625,
+                "cpu_s": 0.004605,
+                "peak_mem_mb": 0.16416168212890625,
+                "rows": 6400,
+                "cpu_us_per_row": 0.71953125
+            },
+            "native-driver": {
+                "wall_s": 0.008728083,
+                "cpu_s": 0.007388,
+                "peak_mem_mb": 1.7122116088867188,
+                "rows": 6400,
+                "cpu_us_per_row": 1.154375
+            }
+        },
+        "concurrency 32 fibers x SELECT SLEEP(0.05)": {
+            "fledge": {
+                "wall_s": 0.057272625,
+                "cpu_s": 0.006976,
+                "peak_mem_mb": 0.7871780395507812,
+                "rows": 32,
+                "cpu_us_per_row": 218
+            },
+            "pdo_mysql": {
+                "wall_s": 1.710102959,
+                "cpu_s": 0.007131,
+                "peak_mem_mb": 0.125640869140625,
+                "rows": 32,
+                "cpu_us_per_row": 222.84375
+            },
+            "pdo_mysql+fiberio": {
+                "wall_s": 0.057512625,
+                "cpu_s": 0.006617,
+                "peak_mem_mb": 1.4986495971679688,
+                "rows": 32,
+                "cpu_us_per_row": 206.78125
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall_s": 0.054450542,
+                "cpu_s": 0.002101,
+                "peak_mem_mb": 1.4986495971679688,
+                "rows": 32,
+                "cpu_us_per_row": 65.65625
+            },
+            "laravel stock": {
+                "wall_s": 1.730512917,
+                "cpu_s": 0.008022,
+                "peak_mem_mb": 0.04441070556640625,
+                "rows": 32,
+                "cpu_us_per_row": 250.6875
+            },
+            "native-driver": {
+                "wall_s": 0.058226166,
+                "cpu_s": 0.007205,
+                "peak_mem_mb": 1.5568923950195312,
+                "rows": 32,
+                "cpu_us_per_row": 225.15625
+            }
+        }
+    },
+    "native_ratios": {
+        "bulk tk_raw_json (2000) raw PDO": {
+            "laravel stock": {
+                "wall": 1.0482793055272113,
+                "cpu": 1.6519507186858315
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 1.0051360421973479,
+                "cpu": 1.1081267217630852
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 1.0247550032828343,
+                "cpu": 1.0613456464379947
+            }
+        },
+        "bulk koop_document_metadata (20000) raw PDO": {
+            "laravel stock": {
+                "wall": 1.0171094260918747,
+                "cpu": 1.081691772885284
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 1.0664314618055752,
+                "cpu": 1.144345694146491
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 1.0693115302424974,
+                "cpu": 1.1956452129362791
+            }
+        },
+        "bulk feed_items (10000) raw PDO": {
+            "laravel stock": {
+                "wall": 1.0076607623442089,
+                "cpu": 1.3101593213325056
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 1.0546419069274091,
+                "cpu": 1.198788337750852
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 1.099250294452059,
+                "cpu": 1.1833302186507195
+            }
+        },
+        "point feed_items (1000) raw PDO": {
+            "laravel stock": {
+                "wall": 1.05046160953927,
+                "cpu": 2.3734229131674542
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 1.0339920445111992,
+                "cpu": 1.2065767787287276
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 2.060283078289181,
+                "cpu": 2.494949494949495
+            }
+        },
+        "concurrency 32 fibers x 2 range queries (100 rows)": {
+            "laravel stock": {
+                "wall": 0.2942153755398714,
+                "cpu": 1.604343105320304
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 0.9980751101554319,
+                "cpu": 1.0183321847002067
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 1.0067283370339397,
+                "cpu": 1.1336504526622677
+            }
+        },
+        "concurrency 32 fibers x SELECT SLEEP(0.05)": {
+            "laravel stock": {
+                "wall": 0.03364676763057065,
+                "cpu": 0.8981550735477437
+            },
+            "pdo_mysql+fiberio (prepare per call)": {
+                "wall": 1.0693404300732214,
+                "cpu": 3.4293193717277486
+            },
+            "pdo_mysql+fiberio": {
+                "wall": 1.0124066846192468,
+                "cpu": 1.0888620220643797
+            }
+        }
+    }
+}

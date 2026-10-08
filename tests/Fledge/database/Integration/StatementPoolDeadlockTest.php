@@ -96,3 +96,61 @@ it('re-executes a prepared statement on a single-connection mysql pool', functio
 
     assertReExecuteWorks($pdo);
 });
+
+/**
+ * Native driver counterpart. A native connection leases one PDO per fiber, so a
+ * statement a caller still holds only pins that fiber's own lease and the next
+ * prepare+execute on the same fiber reuses it. The watchdog closes the pool
+ * (waiters get a RuntimeException) so a regression fails instead of hanging.
+ */
+function withNativeDeadlockWatchdog(string $flavor, Closure $test): void
+{
+    $connection = nativeDriverConnection($flavor, ['pool_size' => 1]);
+    $pool = $connection->getRawPdo();
+    $watchdog = EventLoop::delay(10, static fn () => $pool->close());
+
+    try {
+        $test($connection->getPdo());
+
+        // Leaving the outermost scope of the next query returns the lease.
+        $connection->scalar('SELECT 1');
+
+        expect($pool->getLeasedCount())->toBe(0)
+            ->and($pool)->toHaveCount(1);
+    } finally {
+        EventLoop::cancel($watchdog);
+        $connection->disconnect();
+        nativeDriverReset();
+    }
+}
+
+it('runs sequential prepared statements on a single-connection native pool', function (string $flavor) {
+    withNativeDeadlockWatchdog($flavor, function (PDO $pdo): void {
+        $stmt1 = $pdo->prepare('SELECT 1 AS n');
+        $stmt1->execute();
+        $rows1 = $stmt1->fetchAll(PDO::FETCH_ASSOC);
+
+        // $stmt1 stays in scope, pinning its result like any real PDO consumer.
+        $stmt2 = $pdo->prepare('SELECT 2 AS n');
+        $stmt2->execute();
+        $rows2 = $stmt2->fetchAll(PDO::FETCH_ASSOC);
+
+        expect($rows1[0]['n'])->toEqual(1)
+            ->and($rows2[0]['n'])->toEqual(2);
+    });
+})->with(['mysql', 'mariadb']);
+
+it('re-executes a prepared statement on a single-connection native pool', function (string $flavor) {
+    withNativeDeadlockWatchdog($flavor, function (PDO $pdo): void {
+        $stmt = $pdo->prepare('SELECT 3 AS n');
+
+        $stmt->execute();
+        $first = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt->execute();
+        $second = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        expect($first[0]['n'])->toEqual(3)
+            ->and($second[0]['n'])->toEqual(3);
+    });
+})->with(['mysql', 'mariadb']);

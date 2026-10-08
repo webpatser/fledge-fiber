@@ -8,6 +8,10 @@
  *
  * Both Laravel connections resolve their PDO lazily (as ConnectionFactory does), so
  * connect failures surface on the first query on both sides, just as in an app.
+ *
+ * MySQL and MariaDB have a third side, the native driver (a leased pdo_mysql on
+ * fiberio), compared against real PDO the same way. Those tests skip without
+ * fiberio: php -d extension=<path>/fiberio.so vendor/bin/pest <this file>.
  */
 
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
@@ -16,6 +20,10 @@ use Fledge\Fiber\Database\Connections\FledgePostgresConnection;
 use Fledge\Fiber\Database\Connectors\FledgeMariaDbConnector;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Connectors\FledgePostgresConnector;
+use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
+use Fledge\Fiber\Database\Native\NativeMariaDbConnector;
+use Fledge\Fiber\Database\Native\NativeMySqlConnection;
+use Fledge\Fiber\Database\Native\NativeMySqlConnector;
 use Fledge\Fiber\Database\Pdo\FledgePdo;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Connectors\MariaDbConnector;
@@ -24,6 +32,7 @@ use Illuminate\Database\Connectors\PostgresConnector;
 use Illuminate\Database\MariaDbConnection;
 use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\PostgresConnection;
+use Pdo\Mysql;
 
 /**
  * One side of the comparison: a raw PDO (real or shim) or a Laravel Connection.
@@ -355,7 +364,7 @@ function parityScenarios(string $family): array
 
     return $common + [
         'unknown database' => [['database' => 'parity_nope', 'username' => 'root', 'password' => 'root'], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
-        'tls failure' => [['options' => [Pdo\Mysql::ATTR_SSL_CA => parityForeignCa(), Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => true]], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
+        'tls failure' => [['options' => [Mysql::ATTR_SSL_CA => parityForeignCa(), Mysql::ATTR_SSL_VERIFY_SERVER_CERT => true]], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
         'lock wait timeout' => [[], function (PdoParitySubject $s, PDO $admin) {
             $admin->beginTransaction();
             $admin->query('SELECT id FROM _parity_rows WHERE id = 1 FOR UPDATE')->fetchAll();
@@ -504,41 +513,78 @@ function parityCapture(string $engine, string $case, PdoParitySubject $subject, 
 }
 
 /**
- * @return array{0: Closure(array): object, 1: Closure(array): object}
+ * Per side, a factory that builds the PDO for a config: real, fledge, and for
+ * mysql/mariadb native (a connection leased from the native pool, so it is a
+ * plain pdo_mysql PDO).
+ *
+ * @return array{real: Closure(array): object, fledge: Closure(array): object, native?: Closure(array): object}
  */
 function parityPdoFactories(string $engine): array
 {
     return match ($engine) {
-        'mysql' => [fn (array $c) => (new MySqlConnector)->connect($c), fn (array $c) => (new FledgeMySqlConnector)->connect($c)],
-        'mariadb' => [fn (array $c) => (new MariaDbConnector)->connect($c), fn (array $c) => (new FledgeMariaDbConnector)->connect($c)],
-        'pgsql' => [fn (array $c) => (new PostgresConnector)->connect($c), fn (array $c) => (new FledgePostgresConnector)->connect($c)],
+        'mysql' => [
+            'real' => fn (array $c) => (new MySqlConnector)->connect($c),
+            'fledge' => fn (array $c) => (new FledgeMySqlConnector)->connect($c),
+            'native' => fn (array $c) => (new NativeMySqlConnector)->connect($c)->acquire(),
+        ],
+        'mariadb' => [
+            'real' => fn (array $c) => (new MariaDbConnector)->connect($c),
+            'fledge' => fn (array $c) => (new FledgeMariaDbConnector)->connect($c),
+            'native' => fn (array $c) => (new NativeMariaDbConnector)->connect($c)->acquire(),
+        ],
+        'pgsql' => [
+            'real' => fn (array $c) => (new PostgresConnector)->connect($c),
+            'fledge' => fn (array $c) => (new FledgePostgresConnector)->connect($c),
+        ],
     };
-}
-
-function parityLaravelConnection(string $engine, bool $fledge, array $config): Connection
-{
-    [$real, $shim] = parityPdoFactories($engine);
-    $resolver = $fledge ? fn () => $shim($config) : fn () => $real($config);
-
-    $class = match ($engine) {
-        'mysql' => $fledge ? FledgeMySqlConnection::class : MySqlConnection::class,
-        'mariadb' => $fledge ? FledgeMariaDbConnection::class : MariaDbConnection::class,
-        'pgsql' => $fledge ? FledgePostgresConnection::class : PostgresConnection::class,
-    };
-
-    return new $class($resolver, $config['database'], '', $config);
 }
 
 /**
- * Run the scenario against real PDO and against Fledge on fresh tables, return both shapes.
- *
- * @return array{real: array<string, mixed>, fledge: array<string, mixed>}
+ * @param  string  $side  real, fledge or native
+ * @param  bool  $reconnector  give a real-PDO connection the reconnector an app always has
  */
-function parityCompare(string $engine, string $case, bool $laravel): array
+function parityLaravelConnection(string $engine, string $side, array $config, bool $reconnector = false): Connection
+{
+    if ($side === 'native') {
+        $connector = $engine === 'mysql' ? NativeMySqlConnector::class : NativeMariaDbConnector::class;
+        $class = $engine === 'mysql' ? NativeMySqlConnection::class : NativeMariaDbConnection::class;
+
+        // The pool is resolved lazily too, so connect failures surface on the first query.
+        return new $class(fn () => (new $connector)->connect($config), $config['database'], '', $config);
+    }
+
+    $resolver = fn () => parityPdoFactories($engine)[$side]($config);
+
+    $class = match ($engine) {
+        'mysql' => $side === 'fledge' ? FledgeMySqlConnection::class : MySqlConnection::class,
+        'mariadb' => $side === 'fledge' ? FledgeMariaDbConnection::class : MariaDbConnection::class,
+        'pgsql' => $side === 'fledge' ? FledgePostgresConnection::class : PostgresConnection::class,
+    };
+
+    $connection = new $class($resolver, $config['database'], '', $config);
+
+    if ($reconnector) {
+        // As in an app (DatabaseManager::reconnect()): a lost connection is rebuilt from the
+        // config, so a connect failure retries and surfaces the driver error. Without one,
+        // stock Laravel throws "Lost connection and no reconnector available" instead.
+        $connection->setReconnector(fn (Connection $connection) => $connection->setPdo($resolver));
+    }
+
+    return $connection;
+}
+
+/**
+ * Run the scenario against real PDO and against the candidate (the Fledge shim or
+ * the native driver) on fresh tables, return both shapes keyed by side.
+ *
+ * @param  string  $candidate  fledge or native
+ * @return array<string, array<string, mixed>>
+ */
+function parityCompare(string $engine, string $case, bool $laravel, string $candidate = 'fledge'): array
 {
     [$overrides] = parityScenarios(parityFamily($engine))[$case];
     $config = array_replace(parityConfig($engine), $overrides);
-    [$real, $shim] = parityPdoFactories($engine);
+    $factories = parityPdoFactories($engine);
     $admin = parityAdmin($engine);
 
     // Serialise concurrent runs of this file: they share the _parity_* tables.
@@ -547,12 +593,12 @@ function parityCompare(string $engine, string $case, bool $laravel): array
     $results = [];
 
     try {
-        foreach (['real' => false, 'fledge' => true] as $side => $fledge) {
+        foreach (['real', $candidate] as $side) {
             parityResetTables($engine, $admin);
 
             $subject = $laravel
-                ? PdoParitySubject::laravel(parityLaravelConnection($engine, $fledge, $config))
-                : PdoParitySubject::raw(fn () => ($fledge ? $shim : $real)($config));
+                ? PdoParitySubject::laravel(parityLaravelConnection($engine, $side, $config, reconnector: $candidate === 'native'))
+                : PdoParitySubject::raw(fn () => $factories[$side]($config));
 
             $results[$side] = parityCapture($engine, $case, $subject, $admin);
         }
@@ -570,11 +616,21 @@ function parityCompare(string $engine, string $case, bool $laravel): array
 /**
  * Both shapes, printed in full so a failure shows the exact real and Fledge values.
  */
-function parityMismatch(array $real, array $fledge): string
+function parityMismatch(array $real, array $fledge, string $label = 'fledge'): string
 {
     $flags = JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
 
-    return 'PARITY real='.json_encode($real, $flags).' fledge='.json_encode($fledge, $flags);
+    return 'PARITY real='.json_encode($real, $flags)." {$label}=".json_encode($fledge, $flags);
+}
+
+/**
+ * The scenarios of the engines the native driver supports.
+ *
+ * @return array<string, array{0: string, 1: string}>
+ */
+function parityNativeDataset(): array
+{
+    return array_filter(parityDataset(), fn (array $args) => $args[0] !== 'pgsql');
 }
 
 beforeEach(function () {
@@ -584,6 +640,8 @@ beforeEach(function () {
         }
     }
 });
+
+afterEach(fn () => nativeDriverReset());
 
 it('raises the same PDOException through the Fledge shim as through real PDO', function (string $engine, string $case) {
     ['real' => $real, 'fledge' => $fledge] = parityCompare($engine, $case, laravel: false);
@@ -601,3 +659,25 @@ it('raises the same Laravel exception through a Fledge connection as through a P
     expect($real['class'])->not->toBeNull("Laravel on real PDO did not fail on {$engine}: {$case}")
         ->and($fledge)->toBe($real, parityMismatch($real, $fledge));
 })->with(parityDataset());
+
+it('raises the same PDOException through the native driver as through real PDO', function (string $engine, string $case) {
+    if (($reason = nativeDriverSkipReason($engine)) !== null) {
+        $this->markTestSkipped($reason);
+    }
+
+    ['real' => $real, 'native' => $native] = parityCompare($engine, $case, laravel: false, candidate: 'native');
+
+    expect($real['class'])->toBe(PDOException::class, "real PDO did not fail on {$engine}: {$case}")
+        ->and($native)->toBe($real, parityMismatch($real, $native, 'native'));
+})->with(parityNativeDataset());
+
+it('raises the same Laravel exception through a native connection as through a PDO connection', function (string $engine, string $case) {
+    if (($reason = nativeDriverSkipReason($engine)) !== null) {
+        $this->markTestSkipped($reason);
+    }
+
+    ['real' => $real, 'native' => $native] = parityCompare($engine, $case, laravel: true, candidate: 'native');
+
+    expect($real['class'])->not->toBeNull("Laravel on real PDO did not fail on {$engine}: {$case}")
+        ->and($native)->toBe($real, parityMismatch($real, $native, 'native'));
+})->with(parityNativeDataset());
