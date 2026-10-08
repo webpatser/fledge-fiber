@@ -52,6 +52,11 @@ function startSymfonyLoopback(): array
 
                 return new ServerResponse(200, [], 'late');
             })(),
+            '/slow500' => (function (): ServerResponse {
+                delay(0.3);
+
+                return new ServerResponse(500, [], 'late failure');
+            })(),
             '/large' => new ServerResponse(200, [], str_repeat('abcdefgh', 64 * 1024)),
             default => new ServerResponse(404, [], 'not found'),
         };
@@ -170,6 +175,10 @@ it('does not leak the original path or credentials on a cross-origin redirect', 
         $received[] = [
             'referer' => $request->getHeader('referer'),
             'authorization' => $request->getHeader('authorization'),
+            'cookie' => $request->getHeader('cookie'),
+            'token' => $request->getHeader('x-postmark-server-token'),
+            'accept' => $request->getHeader('accept'),
+            'user_agent' => $request->getHeader('user-agent'),
         ];
 
         return new ServerResponse(200, [], 'landed');
@@ -182,12 +191,17 @@ it('does not leak the original path or credentials on a cross-origin redirect', 
     try {
         $response = symfonyClient()->request('GET', "http://127.0.0.1:{$originPort}/secret-path?token=abc", [
             'auth_bearer' => 'secret-token',
+            'headers' => ['X-Postmark-Server-Token' => 'server-token', 'Cookie' => 'a=b', 'Accept' => 'application/json'],
         ]);
 
         expect($response->getContent())->toBe('landed')
             ->and($received->getArrayCopy())->toHaveCount(1)
             ->and($received[0]['referer'])->toBeNull()
-            ->and($received[0]['authorization'])->toBeNull();
+            ->and($received[0]['authorization'])->toBeNull()
+            ->and($received[0]['cookie'])->toBeNull()
+            ->and($received[0]['token'])->toBeNull()
+            ->and($received[0]['accept'])->toBe('application/json')
+            ->and($received[0]['user_agent'])->toBe('Symfony HttpClient (Fledge)');
     } finally {
         $origin->stop();
         $target->stop();
@@ -219,6 +233,74 @@ it('rejects options it cannot honor', function (array $options, string $option) 
     'resolve' => [['resolve' => ['example.com' => '127.0.0.1']], 'resolve'],
     'peer_fingerprint' => [['peer_fingerprint' => ['pin-sha256' => ['AAAA']]], 'peer_fingerprint'],
 ]);
+
+it('rejects a host-only verification downgrade and combined CA options', function (array $options, string $message) {
+    expect(fn () => symfonyClient()->request('GET', 'https://127.0.0.1:1/', $options))
+        ->toThrow(InvalidArgumentException::class, $message);
+})->with([
+    'verify_host only' => [['verify_host' => false], 'Option "verify_host" set to false'],
+    'cafile and capath' => [['cafile' => __FILE__, 'capath' => __DIR__], 'Options "cafile" and "capath" cannot be combined'],
+]);
+
+it('accepts verify_peer false and contracts without max_connect_duration', function () {
+    [$server, $port] = startSymfonyLoopback();
+
+    try {
+        $client = symfonyClient(['verify_peer' => false, 'verify_host' => false]);
+
+        // symfony/http-client-contracts before 3.7 has no max_connect_duration.
+        $defaults = new ReflectionProperty(FledgeSymfonyHttpClient::class, 'defaultOptions');
+        $options = $defaults->getValue($client);
+        unset($options['max_connect_duration']);
+        $defaults->setValue($client, $options);
+
+        expect($client->request('GET', "http://127.0.0.1:{$port}/echo")->toArray()['method'])->toBe('GET');
+    } finally {
+        $server->stop();
+    }
+});
+
+it('reports unusable proxy settings as transport errors, decided per redirect hop', function () {
+    [$target, $targetPort] = startLoopbackServer(null, fn (): ServerResponse => new ServerResponse(200, [], 'landed'));
+    [$origin, $originPort] = startLoopbackServer(null, fn (): ServerResponse => new ServerResponse(302, ['location' => "http://localhost:{$targetPort}/landing"]));
+
+    try {
+        $direct = symfonyClient(['proxy' => 'ftp://127.0.0.1:1'])->request('GET', "http://127.0.0.1:{$targetPort}/");
+
+        expect(fn () => $direct->getStatusCode())->toThrow(TransportException::class, 'Unsupported proxy scheme');
+
+        // The first hop is exempt through no_proxy, the redirect target is not.
+        $redirected = symfonyClient(['proxy' => 'ftp://127.0.0.1:1', 'no_proxy' => '127.0.0.1'])
+            ->request('GET', "http://127.0.0.1:{$originPort}/");
+
+        expect(fn () => $redirected->getStatusCode())->toThrow(TransportException::class, 'Unsupported proxy scheme');
+    } finally {
+        $origin->stop();
+        $target->stop();
+    }
+});
+
+it('bounds max_duration across redirect hops', function () {
+    [$target, $targetPort] = startLoopbackServer(null, function (): ServerResponse {
+        delay(0.3);
+
+        return new ServerResponse(200, [], 'landed');
+    });
+    [$origin, $originPort] = startLoopbackServer(null, function () use ($targetPort): ServerResponse {
+        delay(0.3);
+
+        return new ServerResponse(302, ['location' => "http://127.0.0.1:{$targetPort}/"]);
+    });
+
+    try {
+        $response = (new FledgeSymfonyHttpClient)->request('GET', "http://127.0.0.1:{$originPort}/", ['timeout' => LOOPBACK_TIMEOUT, 'max_duration' => 0.5]);
+
+        expect(fn () => $response->getContent())->toThrow(TransportException::class);
+    } finally {
+        $origin->stop();
+        $target->stop();
+    }
+});
 
 it('applies withOptions defaults without touching the original client', function () {
     [$server, $port] = startSymfonyLoopback();
@@ -318,6 +400,58 @@ it('overlaps concurrent requests made from separate fibers', function () {
         expect($bodies)->toBe(['slow', 'slow'])
             ->and($elapsed)->toBeGreaterThanOrEqual(0.3)
             ->and($elapsed)->toBeLessThan(0.55);
+    } finally {
+        $server->stop();
+    }
+});
+
+it('checks the status code after a streamed first chunk', function () {
+    [$server, $port] = startSymfonyLoopback();
+
+    try {
+        $client = symfonyClient();
+        $response = $client->request('GET', "http://127.0.0.1:{$port}/404");
+
+        expect(function () use ($client, $response) {
+            foreach ($client->stream($response) as $chunk) {
+                // The status check runs once the first chunk was consumed.
+            }
+        })->toThrow(ClientException::class);
+    } finally {
+        $server->stop();
+    }
+});
+
+it('shares one idle timeout across streamed responses and skips the destructor check after it', function () {
+    [$server, $port] = startSymfonyLoopback();
+
+    try {
+        $client = symfonyClient();
+        $responses = [
+            $client->request('GET', "http://127.0.0.1:{$port}/stall"),
+            $client->request('GET', "http://127.0.0.1:{$port}/slow500"),
+        ];
+
+        $start = microtime(true);
+        $seen = [];
+
+        foreach ($client->stream($responses, 0.1) as $response => $chunk) {
+            if ($chunk->isTimeout()) {
+                $seen[spl_object_id($response)] ??= microtime(true) - $start;
+
+                if (count($seen) === 2) {
+                    break;
+                }
+            }
+        }
+
+        expect(max($seen))->toBeLessThan(0.18);
+
+        // Timed out responses do not wait for headers or throw on destruct.
+        $start = microtime(true);
+        unset($response, $responses);
+
+        expect(microtime(true) - $start)->toBeLessThan(0.1);
     } finally {
         $server->stop();
     }

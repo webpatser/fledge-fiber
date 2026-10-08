@@ -10,6 +10,7 @@ use Fledge\Async\Http\Client\Response;
 use Fledge\Fiber\Http\AsyncClientFactory;
 use Fledge\Fiber\Http\FledgeGuzzle;
 use Symfony\Component\HttpClient\Exception\InvalidArgumentException;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\HttpClientTrait;
 use Symfony\Component\HttpClient\Response\ResponseStream;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -32,22 +33,30 @@ use Symfony\Contracts\HttpClient\ResponseStreamInterface;
  *  - timeout: idle timeout, also bounds TCP connect and TLS handshake
  *  - max_duration: total transfer time, 0 for unlimited
  *  - max_connect_duration: tighter bound for TCP connect and TLS handshake
- *  - verify_peer, verify_host, cafile, capath: peer verification; turning
- *    off either check turns off verification as a whole
+ *  - verify_peer, verify_host, cafile, capath: peer verification;
+ *    verify_peer false turns off verification as a whole, verify_host false
+ *    on its own is not supported, nor are cafile and capath together
  *  - local_cert, local_pk, passphrase: client certificate
  *  - crypto_method: minimum TLS version
- *  - proxy, no_proxy: http:// proxies (and the proxy env vars Symfony honors)
- *  - max_redirects: followed here, Authorization and Cookie are dropped when
- *    the host changes
+ *  - proxy, no_proxy: http:// proxies (and the proxy env vars Symfony honors),
+ *    decided again for every redirect hop
+ *  - max_redirects: followed here; on a cross-origin hop only Accept,
+ *    Accept-Language, Accept-Encoding, User-Agent and (with the body kept)
+ *    Content-Type are forwarded, so no credential header reaches the new host
  *  - http_version: "1.0", "1.1" or "2" (h2 with HTTP/1.1 fallback)
  *
  * bindto, resolve, peer_fingerprint, ciphers, capture_peer_cert_chain and
  * on_progress have no equivalent and throw InvalidArgumentException rather
- * than being ignored silently. The body is always buffered in memory.
+ * than being ignored silently. Proxy settings the transport cannot use
+ * surface as TransportException, as with Symfony's own clients. The body is
+ * always buffered in memory.
  */
 final class FledgeSymfonyHttpClient implements HttpClientInterface
 {
     use HttpClientTrait;
+
+    /** Request headers forwarded when a redirect leaves the original origin. */
+    private const CROSS_ORIGIN_HEADERS = ['accept', 'accept-language', 'accept-encoding', 'user-agent'];
 
     private array $defaultOptions = self::OPTIONS_DEFAULTS;
 
@@ -90,7 +99,6 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
         }
 
         $request = $this->buildRequest($method, self::urlWithoutFragment($url), $headers, $body, $options);
-        $client = $this->factory->clientFor($this->transportOptions($options, $url), $request->getUri());
 
         $info = [
             'url' => (string) $request->getUri(),
@@ -100,7 +108,7 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
             'max_duration' => $options['max_duration'],
         ];
 
-        $send = fn (Cancellation $cancellation): array => $this->send($client, $request, $body, $options, $cancellation);
+        $send = fn (Cancellation $cancellation): array => $this->send($request, $body, $options, $cancellation);
 
         return new FledgeSymfonyResponse($send, $info);
     }
@@ -115,18 +123,22 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
     }
 
     /**
-     * Send the request and follow redirects within max_redirects.
+     * Send the request and follow redirects within max_redirects. The
+     * client (TLS and proxy) is resolved per hop and max_duration bounds the
+     * whole transfer, redirects included.
      *
      * @return array{Response, array<string, mixed>} the final response and the info it adds
      */
-    private function send(HttpClient $client, Request $request, string $body, array $options, Cancellation $cancellation): array
+    private function send(Request $request, string $body, array $options, Cancellation $cancellation): array
     {
         $redirects = 0;
         $url = (string) $request->getUri();
         $original = self::parseUrl($url);
+        $current = $original;
+        $deadline = $options['max_duration'] > 0 ? \microtime(true) + (float) $options['max_duration'] : null;
 
         while (true) {
-            $response = $client->request($request, $cancellation);
+            $response = $this->clientFor($options, $current, $request)->request($request, $cancellation);
             $status = $response->getStatus();
             $location = $response->getHeader('location');
 
@@ -163,11 +175,12 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
             foreach ($request->getHeaderPairs() as [$name, $value]) {
                 $lower = \strtolower($name);
 
-                if (! $sameOrigin && \in_array($lower, ['authorization', 'cookie'], true)) {
+                if ($body === '' && \in_array($lower, ['content-type', 'content-length'], true)) {
                     continue;
                 }
 
-                if ($body === '' && \in_array($lower, ['content-type', 'content-length'], true)) {
+                if (! $sameOrigin && ! \in_array($lower, self::CROSS_ORIGIN_HEADERS, true)
+                    && ! ($lower === 'content-type' && $body !== '')) {
                     continue;
                 }
 
@@ -184,8 +197,19 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
 
             self::copyLimits($request, $hop);
 
+            if ($deadline !== null) {
+                $remaining = $deadline - \microtime(true);
+
+                if ($remaining <= 0) {
+                    throw new TransportException(\sprintf('Max duration was reached for "%s".', $next));
+                }
+
+                $hop->setTransferTimeout($remaining);
+            }
+
             $request = $hop;
             $url = $next;
+            $current = $target;
             $redirects++;
         }
     }
@@ -223,7 +247,9 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
         }
 
         $timeout = (float) $options['timeout'];
-        $connect = $options['max_connect_duration'] > 0 ? \min($options['max_connect_duration'], $timeout) : $timeout;
+        // max_connect_duration exists from symfony/http-client-contracts 3.7 on.
+        $maxConnect = (float) ($options['max_connect_duration'] ?? 0);
+        $connect = $maxConnect > 0 ? \min($maxConnect, $timeout) : $timeout;
 
         $request->setTcpConnectTimeout($connect);
         $request->setTlsHandshakeTimeout($connect);
@@ -244,6 +270,21 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
     }
 
     /**
+     * Resolve the client for one hop. Proxy settings the transport rejects
+     * are transport errors, as Symfony reports them.
+     *
+     * @param  array<string, string|null>  $url  parsed URL parts of the hop
+     */
+    private function clientFor(array $options, array $url, Request $request): HttpClient
+    {
+        try {
+            return $this->factory->clientFor($this->transportOptions($options, $url), $request->getUri());
+        } catch (\InvalidArgumentException $e) {
+            throw new TransportException($e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
      * Map the TLS and proxy options onto the factory's Guzzle-style options.
      *
      * @return array<string, mixed>
@@ -252,7 +293,7 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
     {
         $transport = [];
 
-        if (! $options['verify_peer'] || ! $options['verify_host']) {
+        if (! $options['verify_peer']) {
             $transport['verify'] = false;
         } elseif (($options['cafile'] ?? null) !== null) {
             $transport['verify'] = (string) $options['cafile'];
@@ -306,6 +347,20 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
             if ($set) {
                 throw new InvalidArgumentException(\sprintf('Option "%s" is not supported by %s.', $option, self::class));
             }
+        }
+
+        if (! $options['verify_peer']) {
+            return;
+        }
+
+        // Turning off only the host name check would also turn off chain
+        // verification here, a silent downgrade.
+        if (! $options['verify_host']) {
+            throw new InvalidArgumentException(\sprintf('Option "verify_host" set to false with "verify_peer" enabled is not supported by %s; set "verify_peer" to false to turn off verification.', self::class));
+        }
+
+        if (($options['cafile'] ?? null) !== null && ($options['capath'] ?? null) !== null) {
+            throw new InvalidArgumentException(\sprintf('Options "cafile" and "capath" cannot be combined with %s; pass one of them.', self::class));
         }
     }
 
