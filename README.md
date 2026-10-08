@@ -57,7 +57,7 @@ A pool of real `pdo_mysql` connections running on [php-fiberio](https://github.c
 | | `fledge-mariadb` / `fledge-mysql` | `fledge-mariadb-native` / `fledge-mysql-native` |
 |---|---|---|
 | Wire protocol | Implemented in PHP | Stock `pdo_mysql` (C) |
-| Extra requirements | None | `php-fiberio` 0.1.0+, NTS PHP only |
+| Extra requirements | None | `php-fiberio` 0.1.0+ (0.2.0+ for the hooks below), NTS PHP only |
 | Transactions | Pinned per connection; other fibers get a `LogicException` | Per fiber, each on its own lease |
 | CPU per row, bulk read (10,000 rows) | 11.11 us | 0.63 us |
 | CPU per row, bulk read (20,000 rows) | 6.55 us | 0.19 us |
@@ -72,7 +72,7 @@ pie install webpatser/php-fiberio
 ```
 
 - NTS builds of PHP only; the extension is v0.x. Source and releases: <https://github.com/webpatser/php-fiberio>.
-- php-fiberio 0.1.0 or later is required. Earlier builds let warnings in other fibers throw `PDOException` while a connect is in flight.
+- php-fiberio 0.1.0 or later is required. Earlier builds let warnings in other fibers throw `PDOException` while a connect is in flight. The hooks below need 0.2.0; with 0.1.0 the driver still works and simply enables the `tcp://`/`unix://` hook.
 - Without the extension the connector throws a `RuntimeException` naming the install command. Set `'fiberio' => 'optional'` to fall back to blocking PDO with one logged warning instead.
 
 #### Configuration
@@ -107,11 +107,26 @@ pie install webpatser/php-fiberio
 
 To roll back, change `driver` back. `fledge-mysql` and `fledge-mariadb` keep their wire-protocol implementation and stay available.
 
+#### fiberio hooks (`FLEDGE_FIBERIO_HOOKS`)
+
+With php-fiberio 0.2.0 or later the extension can also make `sleep()` and friends, DNS lookups and `ssl://`/`tls://` client streams fiber-aware. The native connector enables them for the whole process through config `fledge-http.fiberio_hooks`, fed by the env var `FLEDGE_FIBERIO_HOOKS`:
+
+```env
+FLEDGE_FIBERIO_HOOKS=sleep,dns,ssl   # default: all
+```
+
+- Values: a comma list (or array) of `sleep`, `dns`, `ssl`, or `all`. `none`, `off`, `no`, `false`, `0` and the empty string turn every optional hook off (plain `tcp://` and `unix://` stay hooked, which is what the driver needs).
+- Unknown names are ignored with one logged warning per process. If no valid name is left, the result is no hooks, never all.
+- Precedence: the connection's own `fiberio_hooks` key, then `fledge-http.fiberio_hooks` (env `FLEDGE_FIBERIO_HOOKS`), then `all`.
+- fiberio state is process-global and `enable()` runs once, so the first native connection to connect decides the hooks for the whole process. Set it app-wide through the env var rather than per connection.
+- Needs php-fiberio 0.2.0. On v0.1.0 the setting is ignored and `enable()` is called without a hooks argument; everything keeps working.
+- The setting is read through config, so it survives `php artisan config:cache`. Run `config:cache` again after changing the env var.
+
 #### Caveats and migration notes
 
 **Requirements**
 - **TLS needs a cipher or CA.** Set `PDO::MYSQL_ATTR_SSL_CIPHER` (or a CA via `ATTR_SSL_CA`) in `options`. Unlike `fledge-mariadb`, `ATTR_SSL_VERIFY_SERVER_CERT => false` on its own connects in plain text.
-- **Use a socket or IP address, not a DNS hostname.** Name resolution blocks the whole process while connecting.
+- **Use a socket or IP address, or enable the DNS hook.** Without the `dns` hook (php-fiberio 0.1.0, or `FLEDGE_FIBERIO_HOOKS` without `dns`), resolving a hostname blocks the whole process while connecting. With php-fiberio 0.2.0 and the `dns` hook, the lookup runs on a helper thread and only the calling fiber waits.
 - **No benefit under FPM** without an event loop: requests run one at a time, so the pool just adds overhead.
 
 **Behaviour**
@@ -147,6 +162,71 @@ Rejected loudly with `UnsupportedRedisOptionException`: `serializer` and `compre
 Supported request options: `timeout`, `connect_timeout`, `version` (1.0/1.1/2 with ALPN and 1.1 fallback), `verify` (true/false/CA file or dir), `cert`, `ssl_key`, `crypto_method`, `proxy` (string or array form including `no`; `http://` via CONNECT and `socks5://`), `decode_content`, `sink` (path, resource, PSR-7 stream), `stream`, `on_headers`, `on_stats` (curl-shaped handler stats), `delay`, `allow_redirects` (all Guzzle sub-options, handled by RedirectMiddleware), plus everything Guzzle middleware implements above the handler. Transport failures reject as Guzzle exception types, so `Illuminate\Http\Client\ConnectionException` and the `ConnectionFailed` event work.
 
 Known limitations: no `ntlm` auth, `progress`, `debug`, `force_ip_resolve`, Expect 100-continue handling, or raw curl options; no `https://`-scheme proxies; plain-HTTP proxying always tunnels via CONNECT; `namelookup_time` is always 0 in handler stats.
+
+#### `FledgeGuzzle`: one stack for every Guzzle consumer
+
+`Fledge\Fiber\Http\FledgeGuzzle` hands out Guzzle pieces that run on the Fledge handler instead of curl:
+
+```php
+use Fledge\Fiber\Http\FledgeGuzzle;
+
+$stack = FledgeGuzzle::stack();           // HandlerStack: redirects, cookies, http_errors, prepare-body on FledgeHandler
+$client = FledgeGuzzle::client(['base_uri' => 'https://api.example.com']);
+$limited = FledgeGuzzle::client([], 8);   // at most 8 open connections per host
+$factory = FledgeGuzzle::factory(8);      // the shared AsyncClientFactory for that limit
+FledgeGuzzle::flush();                    // drop the shared pools (tests)
+```
+
+- `stack(?int $perHost = null)` returns a fresh `HandlerStack` each call (stacks are mutable); `client(array $options = [], ?int $perHost = null)` is a `GuzzleHttp\Client` on it, and a `handler` in `$options` wins.
+- Connection pools live in one `AsyncClientFactory` per per-host limit, shared by every stack and client, so keep-alive connections are reused across integrations.
+
+#### Third-party integrations (on by default)
+
+`FiberHttpServiceProvider` also puts the HTTP clients of these integrations on the Fledge handler, so their requests suspend only the calling fiber:
+
+| Integration | What changes | Env flag |
+|---|---|---|
+| Mail | The mail manager is replaced by `FiberMailManager`. HTTP transports (Postmark, Mailgun, Resend, ...) use a Symfony `HttpClientInterface` on the Fledge client. SES and SES v2 get an AWS SDK `http_handler` on the Fledge stack. | `FLEDGE_HTTP_MAIL` |
+| Broadcasting | The `pusher` and `reverb` drivers get `client_options.handler` on the Fledge stack. | `FLEDGE_HTTP_BROADCASTING` |
+| S3 | The `s3` filesystem driver gets an `http_handler` through the AWS SDK's Guzzle bridge. No-op without `aws/aws-sdk-php`. | `FLEDGE_HTTP_S3` |
+| Elasticsearch | PDPhilip's `elasticsearch` database driver is replaced by `FledgeElasticConnection`, built by `ElasticClientFactory`. No-op without `pdphilip/elasticsearch`. | `FLEDGE_HTTP_ELASTICSEARCH` |
+
+**Behaviour change: all four are ON by default after upgrading.** Mail, Pusher/Reverb, S3 and Elasticsearch traffic that used to go through curl, Symfony's client or the AWS default handler now goes through Fledge. Set the flag to `false` to return one integration to its previous client:
+
+```env
+FLEDGE_HTTP_MAIL=false
+FLEDGE_HTTP_BROADCASTING=false
+FLEDGE_HTTP_S3=false
+FLEDGE_HTTP_ELASTICSEARCH=false
+```
+
+- All integrations are inactive while PHPUnit runs, so application test suites keep the stock managers and HTTP fakes.
+- Config lives in `config/fledge-http.php`, merged by the provider (there is no `vendor:publish` tag). To change a value, set the env var or add your own `config/fledge-http.php` with the keys you want to override. It holds scalars only, so it is `config:cache` safe; run `php artisan config:cache` again after changing an env var.
+- Per-host connection limits, `fledge-http.pool_per_host.*` (`null` means unlimited): `mail` null, `broadcasting` 8, `s3` null, `elasticsearch` 8. A mailer's own `client.max_host_connections` wins over `pool_per_host.mail`.
+- Per-mailer opt-out: `'client' => ['fledge' => false]` in the mailer config keeps that mailer (and its SES handler) on the stock client. Other keys of a mailer's `client` array are passed on as Symfony request options; `max_pending_pushes` is dropped. Without `symfony/http-client` the stock client is used.
+- An `http_handler` set on an SES mailer, in `services.ses`, or on an S3 disk, and a `client_options.handler` on a Pusher/Reverb connection, are left alone.
+- Extend-order caveat: Pusher/Reverb and S3 are registered right after the broadcast and filesystem managers resolve. An app's own `Broadcast::extend('pusher')` or `Storage::extend('s3')` in a provider `boot()` replaces the Fledge one (last extend wins).
+- Elasticsearch moved here from scrpr's `app/Support/Search`. The handler is now passed through `setHttpClientOptions(['handler' => ...])` as well, because `ClientBuilder` rebuilds its Guzzle client when SSL verification is off or a CA bundle is set, and used to lose the handler (and fall back to curl).
+
+#### Symfony HttpClient adapter
+
+`Fledge\Fiber\Http\Symfony\FledgeSymfonyHttpClient` implements Symfony's `HttpClientInterface` on the async client (requires `symfony/http-client`). Requests start when `request()` returns and responses created back to back overlap on the wire. Supported options: `timeout`, `max_duration`, `max_connect_duration`, `verify_peer`, `verify_host`, `cafile`, `capath`, `local_cert`, `local_pk`, `passphrase`, `crypto_method`, `proxy`, `no_proxy`, `max_redirects`, `http_version` (`1.0`, `1.1`, `2`), plus the body and header options Symfony normalizes itself.
+
+- Unsupported options throw `InvalidArgumentException` instead of being ignored: `bindto`, `resolve`, `peer_fingerprint`, `ciphers`, `capture_peer_cert_chain`, `on_progress`.
+- `verify_host => false` on its own throws, because the transport cannot skip only the host name check and would silently turn off chain verification. Use `verify_peer => false` to turn verification off. `cafile` together with `capath` throws too; pass one.
+- Redirects are followed by the adapter. On a cross-origin hop only `Accept`, `Accept-Language`, `Accept-Encoding`, `User-Agent` and (when the body is kept) `Content-Type` are forwarded, so no credential header reaches the new host. No `Referer` is added.
+- Proxy settings the transport cannot use (for example an `https://` proxy) surface lazily as a `TransportException` when the response is read, as with Symfony's own clients. The proxy is decided again for each redirect hop.
+- The body is always buffered in memory.
+
+#### Cross-origin Referer
+
+With `allow_redirects.referer` enabled, Guzzle 7 sends the full previous URL (path and query) to the new origin; only Guzzle 8 trims it. `FledgeHandler` now reduces the Referer on every redirect hop itself: origin only across origins, no userinfo or fragment. A Referer you set on the first request is left alone.
+
+#### Rolling back the integrations
+
+1. Set the `FLEDGE_HTTP_*` flag of the affected integration to `false` (or `'client' => ['fledge' => false]` for one mailer), run `php artisan config:cache`, and restart workers (Octane, queue, Torque) so long-lived processes pick it up.
+2. To drop the global Guzzle handler as well, call `Factory::globalHandler(null)`.
+3. Native database driver: change `driver` back to `fledge-mariadb`/`fledge-mysql`, or switch single fiberio hooks off with `FLEDGE_FIBERIO_HOOKS` (for example `FLEDGE_FIBERIO_HOOKS=none`), then `config:cache` and restart workers.
 
 ## What's included
 

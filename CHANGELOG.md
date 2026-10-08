@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## v13.35.0.4 - 2026-10-08
+
+### Added
+- **`FledgeGuzzle`**: shared entry point (`stack()`, `client()`, `factory()`, `flush()`) for Guzzle consumers on the Fledge handler, with an optional per-host connection limit. Pools are shared per limit through `AsyncClientFactory`.
+- **Third-party integrations on the Fledge HTTP client**, configured in `config/fledge-http.php` (merged by `FiberHttpServiceProvider`, scalars only, `config:cache` safe):
+  - Mail: `FiberMailManager` runs HTTP transports (Postmark, Mailgun, Resend, ...) on the new `FledgeSymfonyHttpClient` and gives SES/SES v2 an AWS SDK `http_handler` on the Fledge stack. Per-mailer opt-out with `'client' => ['fledge' => false]`.
+  - Broadcasting: the `pusher` and `reverb` drivers get `client_options.handler` on the Fledge stack.
+  - S3: the `s3` filesystem driver gets an `http_handler` via the AWS SDK Guzzle bridge (no-op without `aws/aws-sdk-php`).
+  - Elasticsearch: `ElasticClientFactory` and `FledgeElasticConnection` moved in from scrpr (`app/Support/Search`), registered as the `elasticsearch` database driver when `pdphilip/elasticsearch` is installed.
+  - Per-host limits in `fledge-http.pool_per_host.{mail,broadcasting,s3,elasticsearch}` (defaults null, 8, null, 8).
+- **`FledgeSymfonyHttpClient` and `FledgeSymfonyResponse`**: Symfony `HttpClientInterface` on the async client. `bindto`, `resolve`, `peer_fingerprint`, `ciphers`, `capture_peer_cert_chain` and `on_progress` throw `InvalidArgumentException`; `verify_host => false` on its own and `cafile` plus `capath` together throw as well; redirects are followed by the adapter and strip credential headers on cross-origin hops; unusable proxy settings fail lazily as `TransportException`.
+- **fiberio hooks for the native drivers**: `fledge-http.fiberio_hooks` (env `FLEDGE_FIBERIO_HOOKS`: `sleep`, `dns`, `ssl`, `all`, `none`) selects the php-fiberio 0.2.0 hooks. Precedence: connection `fiberio_hooks`, then the config key, then `all`. Unknown names are ignored with one warning; if no valid name remains, no hooks are enabled. Process-global, decided by the first native connection. php-fiberio 0.1.0 still works (hooks argument not passed). Read through config, so it works under `config:cache`.
+- `symfony/http-client`, `aws/aws-sdk-php`, `league/flysystem-aws-s3-v3`, `illuminate/broadcasting`, `pusher/pusher-php-server` and `pdphilip/elasticsearch` as dev dependencies so the integration tests run.
+
+### Changed
+- **Behaviour change: the third-party integrations are ON by default after upgrading.** Mail transports, Pusher/Reverb, S3 and Elasticsearch requests now go through the Fledge handler instead of curl, Symfony's client or the AWS default handler. Switch one off with `FLEDGE_HTTP_MAIL=false`, `FLEDGE_HTTP_BROADCASTING=false`, `FLEDGE_HTTP_S3=false` or `FLEDGE_HTTP_ELASTICSEARCH=false`, then run `php artisan config:cache` and restart workers. They stay inactive under PHPUnit.
+- Elasticsearch: the Fledge handler is now also passed through `setHttpClientOptions()`. `ClientBuilder` rebuilds its Guzzle client when SSL verification is off or a CA bundle is set and used to drop the handler, falling back to curl.
+- `AsyncClientFactory` takes an optional per-host connection limit.
+- The native driver README now documents php-fiberio 0.2.0 (hooks for sleep, DNS and ssl://). With the `dns` hook, hostnames no longer block the process while connecting.
 
 ### Fixed
 - **Cross-origin redirects send only the origin as Referer, on any Guzzle version**: with `allow_redirects.referer` enabled, Guzzle 7's RedirectMiddleware sends the full previous URL (path and query included) to the new origin; only Guzzle 8 trims it. `FledgeHandler` now reduces the Referer on every redirect hop itself (strict-origin-when-cross-origin: no userinfo or fragment, origin only across origins), and the transport's own `FollowRedirects` interceptor does the same. A Referer set by the caller on the first request is left alone. The Symfony adapter adds no Referer, now covered by a test.
