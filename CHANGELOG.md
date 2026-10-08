@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.35.0.5 - 2026-10-08
+
+### Fixed
+- **Broadcasting and S3 integrations no longer recurse into the manager.** `BroadcastManager::extend()` and `FilesystemManager::extend()` rebind the driver closure's scope to the manager, so the `self::` calls inside the `pusher`/`reverb` and `s3` closures resolved to the manager's `__call()`. For broadcasting that meant `driver()` and the same closure again (stack overflow on the first `Broadcast::channel()`, killing every artisan command); for S3 it meant `disk()` and an `InvalidArgumentException`. The closures now capture the provider helpers as first-class callables and are `static`. New tests resolve the `pusher`, `reverb` and `s3` drivers and an SES transport through the real Laravel managers.
+
 ## v13.35.0.4 - 2026-10-08
 
 ### Added

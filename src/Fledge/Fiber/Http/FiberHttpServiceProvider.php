@@ -87,8 +87,14 @@ class FiberHttpServiceProvider extends ServiceProvider
                 return;
             }
 
-            $driver = fn ($app, array $config) => new PusherBroadcaster(
-                $manager->pusher(self::broadcastConfig($config, self::perHost($app, 'broadcasting', 8))),
+            // BroadcastManager::extend() rebinds the closure's scope to the
+            // manager, where self:: would hit __call() -> driver() -> this
+            // closure again. Capture the provider helpers as callables first.
+            $perHost = self::perHost(...);
+            $configure = self::broadcastConfig(...);
+
+            $driver = static fn ($app, array $config) => new PusherBroadcaster(
+                $manager->pusher($configure($config, $perHost($app, 'broadcasting', 8))),
                 $config['jsonp'] ?? false,
             );
 
@@ -114,8 +120,13 @@ class FiberHttpServiceProvider extends ServiceProvider
                 return;
             }
 
-            $manager->extend('s3', fn ($app, array $config) => $manager->createS3Driver(
-                self::s3Config($config, self::perHost($app, 's3')),
+            // FilesystemManager::extend() rebinds the closure's scope to the
+            // manager too, so no self:: inside it (see registerBroadcasting()).
+            $perHost = self::perHost(...);
+            $configure = self::s3Config(...);
+
+            $manager->extend('s3', static fn ($app, array $config) => $manager->createS3Driver(
+                $configure($config, $perHost($app, 's3')),
             ));
         });
     }
@@ -241,7 +252,7 @@ class FiberHttpServiceProvider extends ServiceProvider
                 return;
             }
 
-            $db->extend('elasticsearch', fn (array $config, string $name) => new FledgeElasticConnection([...$config, 'name' => $name]));
+            $db->extend('elasticsearch', static fn (array $config, string $name) => new FledgeElasticConnection([...$config, 'name' => $name]));
         });
     }
 }
