@@ -2,6 +2,9 @@
 
 namespace Fledge\Fiber\Http;
 
+use Fledge\Async\Http\Client\Connection\ConnectionFactory;
+use Fledge\Async\Http\Client\Connection\ConnectionLimitingPool;
+use Fledge\Async\Http\Client\Connection\ConnectionPool;
 use Fledge\Async\Http\Client\Connection\DefaultConnectionFactory;
 use Fledge\Async\Http\Client\Connection\UnlimitedConnectionPool;
 use Fledge\Async\Http\Client\HttpClient;
@@ -31,6 +34,11 @@ use Psr\Http\Message\UriInterface;
  * option tuple, cached with a small LRU so repeated calls reuse connection
  * pools. The protocol version is per request via ALPN and never part of
  * the tuple.
+ *
+ * With a per-host connection limit every pool this factory builds is a
+ * ConnectionLimitingPool keyed by authority, so at most that many sockets
+ * are open per scheme, host and port; further requests queue for a free
+ * connection instead of opening new ones.
  */
 class AsyncClientFactory
 {
@@ -44,15 +52,36 @@ class AsyncClientFactory
     protected array $clients = [];
 
     /**
+     * @param int|null $connectionsPerHost Maximum open connections per authority, null for no limit.
+     */
+    public function __construct(protected ?int $connectionsPerHost = null)
+    {
+        if ($connectionsPerHost !== null && $connectionsPerHost < 1) {
+            throw new \InvalidArgumentException('The per-host connection limit must be at least 1');
+        }
+    }
+
+    /**
      * The default client: no transport redirects, no transport retries.
      */
     public function default(): HttpClient
     {
         return $this->default ??= (new HttpClientBuilder)
-            ->usingPool(new UnlimitedConnectionPool(new DefaultConnectionFactory($this->baseConnector())))
+            ->usingPool($this->pool(new DefaultConnectionFactory($this->baseConnector())))
             ->followRedirects(0)
             ->retry(0)
             ->build();
+    }
+
+    /**
+     * The connection pool for a client: unlimited by default, limited per
+     * authority when the factory carries a per-host connection limit.
+     */
+    protected function pool(ConnectionFactory $factory): ConnectionPool
+    {
+        return $this->connectionsPerHost === null
+            ? new UnlimitedConnectionPool($factory)
+            : ConnectionLimitingPool::byAuthority($this->connectionsPerHost, $factory);
     }
 
     /**
@@ -258,7 +287,7 @@ class AsyncClientFactory
         $factory = new DefaultConnectionFactory($this->connectorFor($tuple['proxy']), $connectContext);
 
         $builder = (new HttpClientBuilder)
-            ->usingPool(new UnlimitedConnectionPool($factory))
+            ->usingPool($this->pool($factory))
             ->followRedirects(0)
             ->retry(0);
 

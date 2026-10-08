@@ -23,10 +23,12 @@
         "livewire/livewire": "^4.2",
         "mockery/mockery": "^1.6",
         "pestphp/pest": "^4.0",
-        "phpunit/phpunit": "^11.0 || ^12.0 || ^13.0"
+        "phpunit/phpunit": "^11.0 || ^12.0 || ^13.0",
+        "symfony/http-client": "^7.4 || ^8.0"
     },
     "suggest": {
         "livewire/livewire": "Required for concurrent Livewire component updates (^4.2)",
+        "symfony/http-client": "Required for FledgeSymfonyHttpClient, which runs Symfony HTTP consumers such as the mailer's API transports on the Fledge loop (^7.4 || ^8.0)",
         "ext-resp3": "Install the resp3 PECL extension via PIE (`pie install webpatser/php-resp3`) for faster RESP parsing on cache-heavy workloads; SocketRedisConnection picks it up automatically when loaded."
     },
     "autoload": {
