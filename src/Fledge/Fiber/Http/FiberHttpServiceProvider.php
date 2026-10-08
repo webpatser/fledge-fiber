@@ -4,12 +4,15 @@ namespace Fledge\Fiber\Http;
 
 use Aws\Handler\Guzzle\GuzzleHandler;
 use Aws\S3\S3Client;
+use Fledge\Fiber\Search\ElasticClientFactory;
+use Fledge\Fiber\Search\FledgeElasticConnection;
 use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Contracts\Broadcasting\Factory as BroadcastingFactory;
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Mail\MailManager;
 use Illuminate\Support\ServiceProvider;
+use PDPhilip\Elasticsearch\Connection;
 use Pusher\Pusher;
 
 class FiberHttpServiceProvider extends ServiceProvider
@@ -22,6 +25,7 @@ class FiberHttpServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/fledge-http.php', 'fledge-http');
 
         $this->registerMailIntegration();
+        $this->registerElasticsearch();
     }
 
     public function boot(): void
@@ -148,5 +152,31 @@ class FiberHttpServiceProvider extends ServiceProvider
     private static function s3Config(array $config): array
     {
         return $config + ['http_handler' => new GuzzleHandler(FledgeGuzzle::client())];
+    }
+
+    /**
+     * Replace PDPhilip's `elasticsearch` database driver with one that
+     * transports through the Fledge handler. The flag is read when the
+     * database manager resolves, so config merged by other register() calls
+     * is already in place. A no-op without the pdphilip/elasticsearch package
+     * or while integrations are inactive (PHPUnit).
+     */
+    private function registerElasticsearch(): void
+    {
+        if (! class_exists(Connection::class) || ! $this->integrationsActive()) {
+            return;
+        }
+
+        $this->app->singleton(ElasticClientFactory::class, fn ($app) => new ElasticClientFactory(
+            (int) ($app['config']->get('fledge-http.pool_per_host.elasticsearch') ?? ElasticClientFactory::DEFAULT_CONNECTIONS_PER_HOST),
+        ));
+
+        $this->app->resolving('db', function ($db, $app): void {
+            if (! $app['config']->get('fledge-http.integrations.elasticsearch', true)) {
+                return;
+            }
+
+            $db->extend('elasticsearch', fn (array $config, string $name) => new FledgeElasticConnection([...$config, 'name' => $name]));
+        });
     }
 }

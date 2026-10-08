@@ -27,6 +27,7 @@
         "pusher/pusher-php-server": "^7.2",
         "livewire/livewire": "^4.2",
         "mockery/mockery": "^1.6",
+        "pdphilip/elasticsearch": "^5.0",
         "pestphp/pest": "^4.0",
         "phpoption/phpoption": "^1.9",
         "phpunit/phpunit": "^11.0 || ^12.0 || ^13.0",
