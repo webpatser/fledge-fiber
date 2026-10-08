@@ -8,6 +8,7 @@ use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Contracts\Broadcasting\Factory as BroadcastingFactory;
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Http\Client\Factory;
+use Illuminate\Mail\MailManager;
 use Illuminate\Support\ServiceProvider;
 use Pusher\Pusher;
 
@@ -16,17 +17,42 @@ class FiberHttpServiceProvider extends ServiceProvider
     /** Open connections per host for broadcast (Pusher/Reverb) clients. */
     private const BROADCAST_PER_HOST = 8;
 
+    public function register(): void
+    {
+        $this->mergeConfigFrom(__DIR__.'/../config/fledge-http.php', 'fledge-http');
+
+        $this->registerMailIntegration();
+    }
+
     public function boot(): void
     {
         // Disabled under PHPUnit so application test suites keep Guzzle's
         // default handler and HTTP fakes. The handler's own behavior is
         // covered by the parity suite in tests/Fledge/http.
-        if (! $this->app->runningUnitTests() && ! \defined('PHPUNIT_COMPOSER_INSTALL')) {
+        if ($this->integrationsActive()) {
             Factory::globalHandler(new FledgeHandler);
 
             $this->registerBroadcasting();
             $this->registerS3();
         }
+    }
+
+    /**
+     * Swap the mail manager for one whose HTTP transports run on Fledge.
+     */
+    private function registerMailIntegration(): void
+    {
+        if (! class_exists(MailManager::class) || ! $this->integrationsActive()) {
+            return;
+        }
+
+        $this->app->extend('mail.manager', function ($manager, $app) {
+            if (! $app['config']->get('fledge-http.integrations.mail', true) || $manager::class !== MailManager::class) {
+                return $manager;
+            }
+
+            return new FiberMailManager($app);
+        });
     }
 
     /**
@@ -83,6 +109,15 @@ class FiberHttpServiceProvider extends ServiceProvider
 
             $manager->extend('s3', fn ($app, array $config) => $manager->createS3Driver(self::s3Config($config)));
         });
+    }
+
+    /**
+     * Same guard for every integration: off under PHPUnit so application
+     * suites keep the stock managers and fakes.
+     */
+    protected function integrationsActive(): bool
+    {
+        return ! $this->app->runningUnitTests() && ! \defined('PHPUNIT_COMPOSER_INSTALL');
     }
 
     /**
