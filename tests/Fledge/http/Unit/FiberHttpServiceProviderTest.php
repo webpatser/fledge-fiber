@@ -179,3 +179,37 @@ it('leaves the config repository free of objects and closures', function () {
 
     expect(fn () => var_export(config()->all(), true))->not->toThrow(Throwable::class);
 });
+
+it('extends a filesystem manager that was already resolved', function () {
+    if (! class_exists(S3Client::class)) {
+        $this->markTestSkipped('aws/aws-sdk-php is not installed.');
+    }
+
+    $provider = providerWith([]);
+    $app = Container::getInstance();
+    $manager = new FilesystemManager($app);
+    $app->singleton('filesystem', fn () => $manager);
+    $app->make('filesystem');
+
+    callProvider($provider, 'registerS3');
+
+    expect((new ReflectionProperty($manager, 'customCreators'))->getValue($manager))->toHaveKey('s3');
+});
+
+it('uses pool_per_host.broadcasting for the broadcast stack', function () {
+    providerWith([]);
+    expect(FiberHttpServiceProvider::perHost(Container::getInstance(), 'broadcasting', 8))->toBe(8);
+
+    providerWith(['fledge-http.pool_per_host' => ['broadcasting' => null]]);
+    expect(FiberHttpServiceProvider::perHost(Container::getInstance(), 'broadcasting', 8))->toBeNull();
+
+    providerWith(['fledge-http.pool_per_host' => ['broadcasting' => 2]]);
+    expect(FiberHttpServiceProvider::perHost(Container::getInstance(), 'broadcasting', 8))->toBe(2);
+});
+
+it('finds the AWS Guzzle handler class or reports none', function () {
+    $class = FiberHttpServiceProvider::awsGuzzleHandlerClass();
+
+    expect($class === null || class_exists($class))->toBeTrue()
+        ->and(class_exists(GuzzleHandler::class) ? $class : null)->toBe(class_exists(GuzzleHandler::class) ? GuzzleHandler::class : null);
+});

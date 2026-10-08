@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fledge\Fiber\Database\Native;
 
+use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectorInterface;
 use Illuminate\Database\Connectors\MySqlConnector;
 use Illuminate\Support\Facades\Log;
@@ -26,6 +27,11 @@ class NativeMySqlConnector implements ConnectorInterface
      * Whether the optional-fiberio warning was already logged in this process.
      */
     private static bool $warnedFiberIoMissing = false;
+
+    /**
+     * Whether the unknown-hook-names warning was already logged in this process.
+     */
+    private static bool $warnedUnknownHooks = false;
 
     /**
      * @throws InvalidArgumentException when PDO::ATTR_PERSISTENT is set
@@ -86,49 +92,98 @@ class NativeMySqlConnector implements ConnectorInterface
     }
 
     /**
-     * Build the fiberio hooks bitmask from the connection config key
-     * `fiberio_hooks`, falling back to env FLEDGE_FIBERIO_HOOKS. Accepts a
-     * comma list (sleep, dns, ssl), `all` or `none`; unknown names are
-     * ignored. Defaults to all hooks. Only call when fiberIoSupportsHooks().
+     * Build the fiberio hooks bitmask.
+     *
+     * Precedence: the connection config key `fiberio_hooks`, then the app
+     * config `fledge-http.fiberio_hooks` (env FLEDGE_FIBERIO_HOOKS in the
+     * shipped config file, so it survives config:cache), then `all`.
+     *
+     * Accepts a comma list or array of sleep, dns, ssl, or `all`. `none`,
+     * `0`, `false`, `off`, `no` and the empty string mean no hooks. Unknown
+     * names are ignored with one logged warning per process; when no valid
+     * name remains the result is no hooks (0), never all. Only call when
+     * fiberIoSupportsHooks().
      *
      * @param  array<string, mixed>  $config
      */
     public static function resolveHooks(array $config): int
     {
-        $value = $config['fiberio_hooks'] ?? null;
+        $value = $config['fiberio_hooks'] ?? self::appHooksSetting() ?? 'all';
 
-        if ($value === null || $value === '' || $value === []) {
-            $env = getenv('FLEDGE_FIBERIO_HOOKS');
-            $value = $env === false ? null : $env;
+        if (is_bool($value) || is_int($value)) {
+            $value = $value ? 'all' : 'none';
         }
 
-        $all = \FiberIo\HOOK_ALL;
         $names = is_array($value) ? $value : explode(',', (string) $value);
         $map = [
             'sleep' => \FiberIo\HOOK_SLEEP,
             'dns' => \FiberIo\HOOK_DNS,
             'ssl' => \FiberIo\HOOK_SSL,
         ];
+        $none = ['', 'none', '0', 'false', 'off', 'no'];
 
         $mask = 0;
-        $recognised = false;
+        $unknown = [];
 
         foreach ($names as $name) {
             $name = strtolower(trim((string) $name));
 
             if ($name === 'all') {
-                return $all;
+                return \FiberIo\HOOK_ALL;
             }
 
-            if ($name === 'none') {
-                $recognised = true;
-            } elseif (isset($map[$name])) {
+            if (isset($map[$name])) {
                 $mask |= $map[$name];
-                $recognised = true;
+            } elseif (! in_array($name, $none, true)) {
+                $unknown[] = $name;
             }
         }
 
-        return $recognised ? $mask : $all;
+        if ($unknown !== []) {
+            self::warnUnknownHooks($unknown);
+        }
+
+        return $mask;
+    }
+
+    /**
+     * The app-wide `fledge-http.fiberio_hooks` setting, or null when no
+     * container or config repository is available.
+     */
+    private static function appHooksSetting(): mixed
+    {
+        try {
+            $container = Container::getInstance();
+
+            return $container->bound('config') ? $container->make('config')->get('fledge-http.fiberio_hooks') : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @param  list<string>  $unknown
+     */
+    private static function warnUnknownHooks(array $unknown): void
+    {
+        if (self::$warnedUnknownHooks) {
+            return;
+        }
+
+        self::$warnedUnknownHooks = true;
+
+        try {
+            $container = Container::getInstance();
+
+            if ($container->bound('log')) {
+                $container->make('log')->warning(
+                    'Ignoring unknown fiberio hook name(s): '.implode(', ', $unknown)
+                    .'. Valid names: sleep, dns, ssl, all, none.'
+                );
+            }
+        } catch (\Throwable) {
+            // No usable logger: the unknown names are still ignored.
+        }
     }
 
     /**
@@ -136,6 +191,11 @@ class NativeMySqlConnector implements ConnectorInterface
      *
      * With `'fiberio' => 'optional'` a missing extension logs one warning per
      * process and continues with blocking PDO.
+     *
+     * fiberio state is process-global: enable() runs once, so the first
+     * native connection to connect decides the hooks for the whole process.
+     * A different `fiberio_hooks` on a later connection has no effect; set
+     * it app-wide through `fledge-http.fiberio_hooks` instead.
      *
      * @throws RuntimeException
      */

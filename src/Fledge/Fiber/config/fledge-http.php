@@ -27,15 +27,31 @@ return [
     |--------------------------------------------------------------------------
     |
     | Upper bound on simultaneously open connections to one host, per
-    | integration. Null means unlimited.
+    | integration. Null means unlimited. A mailer's own
+    | `client.max_host_connections` wins over the mail value.
     |
     */
 
     'pool_per_host' => [
         'mail' => null,
-        'broadcasting' => null,
+        'broadcasting' => 8,
         's3' => null,
         'elasticsearch' => 8,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | fiberio Hooks
+    |--------------------------------------------------------------------------
+    |
+    | Which php-fiberio (>= 0.2) hooks the native MySQL/MariaDB driver turns
+    | on: a comma list of sleep, dns, ssl, or `all` / `none`. A connection's
+    | own `fiberio_hooks` key wins over this value. fiberio is enabled once
+    | per process, so the first native connection decides. Read through
+    | config (not getenv) so it keeps working under config:cache.
+    |
+    */
+
+    'fiberio_hooks' => env('FLEDGE_FIBERIO_HOOKS', 'all'),
 
 ];

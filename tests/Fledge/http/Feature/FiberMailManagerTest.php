@@ -4,6 +4,7 @@ use Aws\Handler\Guzzle\GuzzleHandler;
 use Aws\Sdk;
 use Fledge\Fiber\Http\FiberHttpServiceProvider;
 use Fledge\Fiber\Http\FiberMailManager;
+use Fledge\Fiber\Http\FledgeGuzzle;
 use Fledge\Fiber\Http\Symfony\FledgeSymfonyHttpClient;
 use Illuminate\Container\Container;
 use Illuminate\Mail\MailManager;
@@ -169,4 +170,36 @@ it('injects a Fledge http_handler into the SES config when the AWS SDK exists', 
     expect($withHandler(['transport' => 'ses'])['http_handler'])->toBeInstanceOf(GuzzleHandler::class)
         ->and($withHandler(['client' => ['fledge' => false]]))->not->toHaveKey('http_handler')
         ->and($withHandler(['http_handler' => $custom])['http_handler'])->toBe($custom);
+});
+
+it('maps max_host_connections to the per-host pool and drops max_pending_pushes', function () {
+    $manager = new FiberMailManager(mailTestApp());
+    $client = mailHttpClient($manager, ['client' => ['max_host_connections' => 3, 'max_pending_pushes' => 10, 'timeout' => 2]]);
+
+    $options = (new ReflectionProperty($client, 'defaultOptions'))->getValue($client);
+    $factory = (new ReflectionProperty($client, 'factory'))->getValue($client);
+
+    expect($client)->toBeInstanceOf(FledgeSymfonyHttpClient::class)
+        ->and($options)->not->toHaveKey('max_host_connections')
+        ->and($options)->not->toHaveKey('max_pending_pushes')
+        ->and($factory)->toBe(FledgeGuzzle::factory(3));
+});
+
+it('uses fledge-http.pool_per_host.mail when the mailer sets no limit', function () {
+    $app = mailTestApp();
+    $app['config']->set('fledge-http.pool_per_host.mail', 5);
+    $client = mailHttpClient(new FiberMailManager($app), ['transport' => 'postmark']);
+
+    expect((new ReflectionProperty($client, 'factory'))->getValue($client))->toBe(FledgeGuzzle::factory(5));
+});
+
+it('leaves an http_handler from services.ses alone', function () {
+    $app = mailTestApp();
+    $custom = fn () => null;
+    $app['config']->set('services.ses.http_handler', $custom);
+    $manager = new FiberMailManager($app);
+
+    $config = (new ReflectionMethod($manager, 'withSesHandler'))->invoke($manager, ['transport' => 'ses']);
+
+    expect($config)->not->toHaveKey('http_handler');
 });

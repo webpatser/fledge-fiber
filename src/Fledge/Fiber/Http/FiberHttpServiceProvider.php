@@ -2,12 +2,12 @@
 
 namespace Fledge\Fiber\Http;
 
-use Aws\Handler\Guzzle\GuzzleHandler;
 use Aws\S3\S3Client;
 use Fledge\Fiber\Search\ElasticClientFactory;
 use Fledge\Fiber\Search\FledgeElasticConnection;
 use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Contracts\Broadcasting\Factory as BroadcastingFactory;
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Mail\MailManager;
@@ -17,15 +17,17 @@ use Pusher\Pusher;
 
 class FiberHttpServiceProvider extends ServiceProvider
 {
-    /** Open connections per host for broadcast (Pusher/Reverb) clients. */
-    private const BROADCAST_PER_HOST = 8;
-
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/fledge-http.php', 'fledge-http');
 
         $this->registerMailIntegration();
         $this->registerElasticsearch();
+
+        if ($this->integrationsActive()) {
+            $this->registerBroadcasting();
+            $this->registerS3();
+        }
     }
 
     public function boot(): void
@@ -35,9 +37,6 @@ class FiberHttpServiceProvider extends ServiceProvider
         // covered by the parity suite in tests/Fledge/http.
         if ($this->integrationsActive()) {
             Factory::globalHandler(new FledgeHandler);
-
-            $this->registerBroadcasting();
-            $this->registerS3();
         }
     }
 
@@ -66,6 +65,9 @@ class FiberHttpServiceProvider extends ServiceProvider
      * `client_options` to a plain Guzzle client, so a `handler` in there is
      * all it takes.
      *
+     * Registered with callAfterResolving() so a manager that was already
+     * resolved is covered too. The flag is read when the manager resolves.
+     *
      * Extend-order caveat: afterResolving runs right after the manager is
      * built, before application code can reach it, so an app's own
      * Broadcast::extend('pusher'|'reverb') in a provider boot() replaces
@@ -74,19 +76,19 @@ class FiberHttpServiceProvider extends ServiceProvider
      */
     private function registerBroadcasting(): void
     {
-        if (! config('fledge-http.integrations.broadcasting', true)
-            || ! class_exists(Pusher::class)
-            || ! class_exists(PusherBroadcaster::class)) {
+        if (! class_exists(Pusher::class) || ! class_exists(PusherBroadcaster::class)) {
             return;
         }
 
-        $this->app->afterResolving(BroadcastingFactory::class, function ($manager): void {
-            if (! method_exists($manager, 'extend') || ! method_exists($manager, 'pusher')) {
+        $this->callAfterResolving(BroadcastingFactory::class, function ($manager, $app): void {
+            if (! $app['config']->get('fledge-http.integrations.broadcasting', true)
+                || ! method_exists($manager, 'extend')
+                || ! method_exists($manager, 'pusher')) {
                 return;
             }
 
             $driver = fn ($app, array $config) => new PusherBroadcaster(
-                $manager->pusher(self::broadcastConfig($config)),
+                $manager->pusher(self::broadcastConfig($config, self::perHost($app, 'broadcasting', 8))),
                 $config['jsonp'] ?? false,
             );
 
@@ -97,22 +99,74 @@ class FiberHttpServiceProvider extends ServiceProvider
 
     /**
      * Run the S3 filesystem driver on the Fledge handler through the AWS
-     * SDK's Guzzle bridge. No-op while aws/aws-sdk-php is not installed.
-     * Same extend-order caveat as registerBroadcasting().
+     * SDK's Guzzle bridge. No-op while aws/aws-sdk-php (or its Guzzle
+     * handler) is not installed. Same registration and extend-order caveat
+     * as registerBroadcasting().
      */
     private function registerS3(): void
     {
-        if (! config('fledge-http.integrations.s3', true) || ! class_exists(S3Client::class)) {
+        if (! class_exists(S3Client::class) || self::awsGuzzleHandlerClass() === null) {
             return;
         }
 
-        $this->app->afterResolving('filesystem', function ($manager): void {
-            if (! $manager instanceof FilesystemManager) {
+        $this->callAfterResolving('filesystem', function ($manager, $app): void {
+            if (! $app['config']->get('fledge-http.integrations.s3', true) || ! $manager instanceof FilesystemManager) {
                 return;
             }
 
-            $manager->extend('s3', fn ($app, array $config) => $manager->createS3Driver(self::s3Config($config)));
+            $manager->extend('s3', fn ($app, array $config) => $manager->createS3Driver(
+                self::s3Config($config, self::perHost($app, 's3')),
+            ));
         });
+    }
+
+    /**
+     * The AWS SDK's Guzzle bridge class: Aws\Handler\Guzzle\GuzzleHandler on
+     * current SDKs, Aws\Handler\GuzzleV6\GuzzleHandler on older ones, null
+     * when neither exists.
+     *
+     * @return class-string|null
+     */
+    public static function awsGuzzleHandlerClass(): ?string
+    {
+        foreach (['Aws\\Handler\\Guzzle\\GuzzleHandler', 'Aws\\Handler\\GuzzleV6\\GuzzleHandler'] as $class) {
+            if (class_exists($class)) {
+                return $class;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * An AWS SDK http_handler on the Fledge stack, or null without the SDK.
+     *
+     * @param  int|null  $perHost  Maximum open connections per authority, null for no limit.
+     */
+    public static function awsHttpHandler(?int $perHost = null): ?object
+    {
+        $class = self::awsGuzzleHandlerClass();
+
+        return $class === null ? null : new $class(FledgeGuzzle::client([], $perHost));
+    }
+
+    /**
+     * The `fledge-http.pool_per_host.<integration>` limit. A missing key
+     * falls back to $default, an explicit null means unlimited.
+     *
+     * @param  Container|\ArrayAccess<string, mixed>  $app
+     */
+    public static function perHost(mixed $app, string $integration, ?int $default = null): ?int
+    {
+        $pools = $app['config']->get('fledge-http.pool_per_host');
+
+        if (! \is_array($pools) || ! \array_key_exists($integration, $pools)) {
+            return $default;
+        }
+
+        $limit = $pools[$integration];
+
+        return $limit === null || (int) $limit <= 0 ? null : (int) $limit;
     }
 
     /**
@@ -131,13 +185,13 @@ class FiberHttpServiceProvider extends ServiceProvider
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
-    private static function broadcastConfig(array $config): array
+    private static function broadcastConfig(array $config, ?int $perHost = 8): array
     {
         if (isset($config['client_options']['handler'])) {
             return $config;
         }
 
-        $config['client_options']['handler'] = FledgeGuzzle::stack(self::BROADCAST_PER_HOST);
+        $config['client_options']['handler'] = FledgeGuzzle::stack($perHost);
 
         return $config;
     }
@@ -149,9 +203,15 @@ class FiberHttpServiceProvider extends ServiceProvider
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
-    private static function s3Config(array $config): array
+    private static function s3Config(array $config, ?int $perHost = null): array
     {
-        return $config + ['http_handler' => new GuzzleHandler(FledgeGuzzle::client())];
+        if (isset($config['http_handler'])) {
+            return $config;
+        }
+
+        $handler = self::awsHttpHandler($perHost);
+
+        return $handler === null ? $config : $config + ['http_handler' => $handler];
     }
 
     /**
@@ -160,6 +220,11 @@ class FiberHttpServiceProvider extends ServiceProvider
      * database manager resolves, so config merged by other register() calls
      * is already in place. A no-op without the pdphilip/elasticsearch package
      * or while integrations are inactive (PHPUnit).
+     *
+     * PDPhilip's own provider extends `db` in a resolving() callback. The
+     * container fires every resolving() callback before any afterResolving()
+     * one, so registering here with afterResolving makes the Fledge driver win
+     * regardless of provider order.
      */
     private function registerElasticsearch(): void
     {
@@ -168,10 +233,10 @@ class FiberHttpServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(ElasticClientFactory::class, fn ($app) => new ElasticClientFactory(
-            (int) ($app['config']->get('fledge-http.pool_per_host.elasticsearch') ?? ElasticClientFactory::DEFAULT_CONNECTIONS_PER_HOST),
+            self::perHost($app, 'elasticsearch', ElasticClientFactory::DEFAULT_CONNECTIONS_PER_HOST),
         ));
 
-        $this->app->resolving('db', function ($db, $app): void {
+        $this->callAfterResolving('db', function ($db, $app): void {
             if (! $app['config']->get('fledge-http.integrations.elasticsearch', true)) {
                 return;
             }

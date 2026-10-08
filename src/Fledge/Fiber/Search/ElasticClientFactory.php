@@ -38,9 +38,12 @@ final class ElasticClientFactory
     private ?Client $client = null;
 
     /**
-     * @param  int  $connectionsPerHost  Open connections per ES authority and process.
+     * @param  int|null  $connectionsPerHost  Open connections per ES authority and process,
+     *                                        null for unlimited. The provider reads it from
+     *                                        `fledge-http.pool_per_host.elasticsearch`
+     *                                        (default 8; an explicit null means unlimited).
      */
-    public function __construct(private readonly int $connectionsPerHost = self::DEFAULT_CONNECTIONS_PER_HOST) {}
+    public function __construct(private readonly ?int $connectionsPerHost = self::DEFAULT_CONNECTIONS_PER_HOST) {}
 
     /**
      * Shared client for the app-wide `elasticsearch` connection config.

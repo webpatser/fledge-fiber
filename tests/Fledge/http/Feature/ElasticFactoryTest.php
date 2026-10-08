@@ -10,6 +10,7 @@ use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectionFactory;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Arr;
+use PDPhilip\Elasticsearch\ElasticServiceProvider;
 
 function elasticGuzzleHandler(Client $client): mixed
 {
@@ -126,3 +127,43 @@ it('registers the elasticsearch database driver by default', function () {
 it('registers no driver when the flag is off', function () {
     expect(elasticExtensions(false))->not->toHaveKey('elasticsearch');
 });
+
+it('wins over PDPhilip\'s own driver regardless of provider order', function (bool $pdphilipFirst) {
+    $app = new ElasticTestApp;
+    Container::setInstance($app);
+    $app->instance('config', new ElasticTestConfig([]));
+    $app->singleton('db', fn ($app) => new DatabaseManager($app, new ConnectionFactory($app)));
+
+    $providers = [new ElasticTestProvider($app), new ElasticServiceProvider($app)];
+
+    foreach ($pdphilipFirst ? array_reverse($providers) : $providers as $provider) {
+        $provider->register();
+    }
+
+    $extension = (new ReflectionProperty(DatabaseManager::class, 'extensions'))->getValue($app['db'])['elasticsearch'];
+
+    expect((new ReflectionFunction($extension))->getClosureScopeClass()->getName())->toBe(FiberHttpServiceProvider::class);
+})->with(['pdphilip first' => [true], 'pdphilip last' => [false]]);
+
+it('covers a database manager that was resolved before the provider registered', function () {
+    $app = new ElasticTestApp;
+    Container::setInstance($app);
+    $app->instance('config', new ElasticTestConfig([]));
+    $app->singleton('db', fn ($app) => new DatabaseManager($app, new ConnectionFactory($app)));
+    $app->make('db');
+
+    (new ElasticTestProvider($app))->register();
+
+    expect((new ReflectionProperty(DatabaseManager::class, 'extensions'))->getValue($app['db']))->toHaveKey('elasticsearch');
+});
+
+it('reads pool_per_host.elasticsearch with null as unlimited and a missing key as 8', function (array $config, ?int $expected) {
+    $app = new ElasticTestApp;
+    $app->instance('config', new ElasticTestConfig($config));
+
+    expect(FiberHttpServiceProvider::perHost($app, 'elasticsearch', ElasticClientFactory::DEFAULT_CONNECTIONS_PER_HOST))->toBe($expected);
+})->with([
+    'missing' => [[], 8],
+    'explicit null' => [['fledge-http' => ['pool_per_host' => ['elasticsearch' => null]]], null],
+    'explicit 4' => [['fledge-http' => ['pool_per_host' => ['elasticsearch' => 4]]], 4],
+]);
