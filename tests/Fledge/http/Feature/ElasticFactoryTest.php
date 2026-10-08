@@ -9,6 +9,7 @@ use GuzzleHttp\HandlerStack;
 use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectionFactory;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Support\Arr;
 
 function elasticGuzzleHandler(Client $client): mixed
 {
@@ -21,6 +22,30 @@ function elasticGuzzleHandler(Client $client): mixed
     expect($stack)->toBeInstanceOf(HandlerStack::class);
 
     return (new ReflectionProperty($stack, 'handler'))->getValue($stack);
+}
+
+/** Minimal config: dotted get()/set(), which is all the provider uses. */
+final class ElasticTestConfig
+{
+    public function __construct(private array $items) {}
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return Arr::get($this->items, $key, $default);
+    }
+
+    public function set(string $key, mixed $value): void
+    {
+        Arr::set($this->items, $key, $value);
+    }
+}
+
+final class ElasticTestApp extends Container
+{
+    public function configurationIsCached(): bool
+    {
+        return false;
+    }
 }
 
 /** Provider with the PHPUnit guard lifted, as in a real application. */
@@ -37,17 +62,11 @@ final class ElasticTestProvider extends FiberHttpServiceProvider
  */
 function elasticExtensions(?bool $flag): array
 {
-    $app = new Container;
+    $app = new ElasticTestApp;
     Container::setInstance($app);
-    $app->instance('config', new class($flag)
-    {
-        public function __construct(private readonly ?bool $flag) {}
-
-        public function get(string $key, mixed $default = null): mixed
-        {
-            return $key === 'fledge-http.integrations.elasticsearch' && $this->flag !== null ? $this->flag : $default;
-        }
-    });
+    $app->instance('config', new ElasticTestConfig(
+        $flag === null ? [] : ['fledge-http' => ['integrations' => ['elasticsearch' => $flag]]],
+    ));
     $app->singleton('db', fn ($app) => new DatabaseManager($app, new ConnectionFactory($app)));
 
     (new ElasticTestProvider($app))->register();
