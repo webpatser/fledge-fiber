@@ -63,7 +63,7 @@ it('tracks last insert ID from prepared statement execute', function () {
 
     $pdo = new FledgeMySqlPdo($mockPool);
 
-    $stmt = $pdo->prepare("INSERT INTO users (name) VALUES (?)");
+    $stmt = $pdo->prepare('INSERT INTO users (name) VALUES (?)');
     $stmt->bindValue(1, 'Alice', PDO::PARAM_STR);
     $stmt->execute();
 
@@ -153,6 +153,148 @@ it('quotes integers with PARAM_INT', function () {
     expect($pdo->quote('42', PDO::PARAM_INT))->toBe('42')
         ->and($pdo->quote('not_a_number', PDO::PARAM_INT))->toBe('0');
 });
+
+it('refuses queries from another fiber while a transaction is pinned', function () {
+    $mockTransaction = Mockery::mock(MysqlTransaction::class);
+    $mockTransaction->shouldNotReceive('prepare');
+    $mockTransaction->shouldNotReceive('query');
+
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+
+    $pdo = new FledgeMySqlPdo($mockPool);
+    $pdo->beginTransaction();
+
+    $attempts = [
+        'prepare' => fn () => $pdo->prepare('SELECT 1'),
+        'exec' => fn () => $pdo->exec('DELETE FROM users'),
+        'beginTransaction' => fn () => $pdo->beginTransaction(),
+        'commit' => fn () => $pdo->commit(),
+        'rollBack' => fn () => $pdo->rollBack(),
+    ];
+
+    foreach ($attempts as $method => $attempt) {
+        $fiber = new Fiber(function () use ($attempt): ?Throwable {
+            try {
+                $attempt();
+            } catch (Throwable $e) {
+                return $e;
+            }
+
+            return null;
+        });
+        $fiber->start();
+
+        expect($fiber->getReturn())
+            ->toBeInstanceOf(LogicException::class, $method)
+            ->and($fiber->getReturn()->getMessage())->toContain('Another fiber holds an open transaction');
+    }
+
+    expect($pdo->inTransaction())->toBeTrue();
+});
+
+it('refuses main context queries while a fiber holds the transaction', function () {
+    $mockTransaction = Mockery::mock(MysqlTransaction::class);
+    $mockTransaction->shouldReceive('commit')->once();
+    $mockTransaction->shouldNotReceive('query');
+
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+
+    $pdo = new FledgeMySqlPdo($mockPool);
+
+    $fiber = new Fiber(function () use ($pdo): void {
+        $pdo->beginTransaction();
+        Fiber::suspend();
+        $pdo->commit();
+    });
+    $fiber->start();
+
+    expect(fn () => $pdo->exec('DELETE FROM users'))->toThrow(LogicException::class, 'Another fiber holds an open transaction');
+
+    $fiber->resume();
+
+    expect($fiber->isTerminated())->toBeTrue()
+        ->and($pdo->inTransaction())->toBeFalse();
+});
+
+it('lets the owning fiber use its own transaction', function () {
+    $mockStmt = Mockery::mock(MysqlStatement::class);
+    $mockStmt->shouldReceive('execute')->once()->andReturn(new MysqlCommandResult(1, 7));
+
+    $mockTransaction = Mockery::mock(MysqlTransaction::class);
+    $mockTransaction->shouldReceive('prepare')->once()->with('INSERT INTO users (name) VALUES (?)')->andReturn($mockStmt);
+    $mockTransaction->shouldReceive('query')->once()->with('DELETE FROM users')->andReturn(new MysqlCommandResult(2, 0));
+    $mockTransaction->shouldReceive('commit')->once();
+
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+    $mockPool->shouldNotReceive('prepare');
+    $mockPool->shouldNotReceive('query');
+
+    $pdo = new FledgeMySqlPdo($mockPool);
+
+    $fiber = new Fiber(function () use ($pdo): array {
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare('INSERT INTO users (name) VALUES (?)');
+        $stmt->bindValue(1, 'Alice');
+        $stmt->execute();
+        $deleted = $pdo->exec('DELETE FROM users');
+        $pdo->commit();
+
+        return [$deleted, $pdo->lastInsertId()];
+    });
+    $fiber->start();
+
+    expect($fiber->getReturn())->toBe([2, '7']);
+});
+
+it('refuses executing a statement prepared inside the transaction from another fiber', function () {
+    $mockStmt = Mockery::mock(MysqlStatement::class);
+    $mockStmt->shouldNotReceive('execute');
+
+    $mockTransaction = Mockery::mock(MysqlTransaction::class);
+    $mockTransaction->shouldReceive('prepare')->once()->andReturn($mockStmt);
+
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+
+    $pdo = new FledgeMySqlPdo($mockPool);
+    $pdo->beginTransaction();
+    $stmt = $pdo->prepare('DELETE FROM users');
+
+    $fiber = new Fiber(function () use ($stmt): ?Throwable {
+        try {
+            $stmt->execute();
+        } catch (Throwable $e) {
+            return $e;
+        }
+
+        return null;
+    });
+    $fiber->start();
+
+    expect($fiber->getReturn())->toBeInstanceOf(LogicException::class);
+});
+
+it('lets another fiber query again once the transaction ends', function (string $end) {
+    $mockTransaction = Mockery::mock(MysqlTransaction::class);
+    $mockTransaction->shouldReceive($end === 'commit' ? 'commit' : 'rollback')->once();
+
+    $mockStmt = Mockery::mock(MysqlStatement::class);
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+    $mockPool->shouldReceive('prepare')->once()->with('SELECT 1')->andReturn($mockStmt);
+
+    $pdo = new FledgeMySqlPdo($mockPool);
+    $pdo->beginTransaction();
+    $pdo->{$end}();
+
+    $fiber = new Fiber(fn () => $pdo->prepare('SELECT 1'));
+    $fiber->start();
+
+    expect($fiber->getReturn())->toBeInstanceOf(FledgePdoStatement::class);
+})->with(['commit', 'rollBack']);
 
 it('uses pool after commit', function () {
     $mockTransaction = Mockery::mock(MysqlTransaction::class);

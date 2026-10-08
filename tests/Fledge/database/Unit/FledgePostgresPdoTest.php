@@ -10,6 +10,36 @@ use Tests\Fledge\database\Stubs\FakeRowResult;
 
 afterEach(fn () => Mockery::close());
 
+it('refuses another fiber inside a pinned transaction with an unmapped LogicException', function () {
+    $mockTransaction = Mockery::mock(SqlTransaction::class);
+    $mockTransaction->shouldReceive('isActive')->andReturnTrue();
+    $mockTransaction->shouldNotReceive('prepare');
+
+    $mockPool = Mockery::mock(SqlConnectionPool::class);
+    $mockPool->shouldReceive('beginTransaction')->once()->andReturn($mockTransaction);
+
+    $pdo = new FledgePostgresPdo($mockPool);
+    $pdo->beginTransaction();
+
+    foreach (['prepare', 'commit', 'rollBack', 'beginTransaction'] as $method) {
+        $fiber = new Fiber(function () use ($pdo, $method): ?Throwable {
+            try {
+                $method === 'prepare' ? $pdo->prepare('SELECT ?') : $pdo->{$method}();
+            } catch (Throwable $e) {
+                return $e;
+            }
+
+            return null;
+        });
+        $fiber->start();
+
+        expect($fiber->getReturn())->toBeInstanceOf(LogicException::class, $method)
+            ->and($fiber->getReturn())->not->toBeInstanceOf(PDOException::class);
+    }
+
+    expect($pdo->inTransaction())->toBeTrue();
+});
+
 it('converts ? placeholders to $N', function () {
     $mockStmt = Mockery::mock(SqlStatement::class);
     $mockPool = Mockery::mock(SqlConnectionPool::class);

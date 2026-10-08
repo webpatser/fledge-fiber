@@ -34,6 +34,12 @@ abstract class FledgePdo
     protected ?SqlTransaction $transaction = null;
 
     /**
+     * The fiber that began the pinned transaction (null: the main context).
+     * Only meaningful while $transaction is set.
+     */
+    protected ?\Fiber $transactionFiber = null;
+
+    /**
      * The last insert ID from the most recent insert.
      */
     protected string|false $lastInsertId = false;
@@ -56,10 +62,13 @@ abstract class FledgePdo
      */
     public function prepare(string $query, array $options = []): FledgePdoStatement
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(fn () => new FledgePdoStatement(
             ($this->transaction ?? $this->pool)->prepare($query),
             pdo: $this,
             driver: $this->getDriverName(),
+            transaction: $this->transaction,
         ));
     }
 
@@ -68,6 +77,8 @@ abstract class FledgePdo
      */
     public function exec(string $statement): int|false
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function () use ($statement): int {
             $result = ($this->transaction ?? $this->pool)->query($statement);
 
@@ -85,12 +96,15 @@ abstract class FledgePdo
      */
     public function beginTransaction(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             if ($this->transaction !== null) {
                 throw FledgePdoException::pdoError('There is already an active transaction');
             }
 
             $this->transaction = $this->pool->beginTransaction();
+            $this->transactionFiber = \Fiber::getCurrent();
 
             return true;
         });
@@ -104,6 +118,8 @@ abstract class FledgePdo
      */
     public function commit(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             $transaction = $this->transaction ?? throw FledgePdoException::pdoError('There is no active transaction');
 
@@ -111,6 +127,7 @@ abstract class FledgePdo
                 $transaction->commit();
             } finally {
                 $this->transaction = null;
+                $this->transactionFiber = null;
             }
 
             return true;
@@ -122,6 +139,8 @@ abstract class FledgePdo
      */
     public function rollBack(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             $transaction = $this->transaction ?? throw FledgePdoException::pdoError('There is no active transaction');
 
@@ -129,10 +148,50 @@ abstract class FledgePdo
                 $transaction->rollback();
             } finally {
                 $this->transaction = null;
+                $this->transactionFiber = null;
             }
 
             return true;
         });
+    }
+
+    /**
+     * Whether the current fiber (or the main context) may use the pinned transaction.
+     * True when no transaction is pinned.
+     */
+    public function ownsTransaction(): bool
+    {
+        return $this->transaction === null || $this->transactionFiber === \Fiber::getCurrent();
+    }
+
+    /**
+     * Refuse to let another fiber run inside the transaction a fiber has pinned.
+     *
+     * The pin is per connection, not per fiber, so without this check a query from a
+     * second fiber would silently run inside (and be committed or rolled back with) the
+     * first fiber's transaction. Called outside guard() so the LogicException is not
+     * mapped to a PDOException (which Laravel could mistake for a lost connection).
+     *
+     * @param  SqlTransaction|null  $transaction  Only check when this is the pinned transaction
+     *                                            (used by statements prepared inside one).
+     *
+     * @throws \LogicException
+     */
+    public function assertOwnsTransaction(?SqlTransaction $transaction = null): void
+    {
+        if ($transaction !== null && $transaction !== $this->transaction) {
+            return;
+        }
+
+        if ($this->ownsTransaction()) {
+            return;
+        }
+
+        throw new \LogicException(
+            'Another fiber holds an open transaction on this database connection. '
+            .'Queries from other fibers would run inside it, so they are refused until it is committed or rolled back. '
+            .'Use a separate database connection per concurrent fiber, or the fledge-mysql-native / fledge-mariadb-native driver, which keeps transactions per fiber.'
+        );
     }
 
     /**

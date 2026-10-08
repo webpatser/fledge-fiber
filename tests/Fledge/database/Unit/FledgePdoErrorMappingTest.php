@@ -8,6 +8,7 @@ use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlConnectionPool;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
+use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionError;
 use Fledge\Async\Stream\ClosedException;
@@ -203,10 +204,11 @@ it('describes unlisted SQLSTATEs like PDO does', function () {
 
 /*
  * Every public method of the shims must run through guard(), so a future method cannot leak
- * driver exceptions. Only the constructor and the guard plumbing itself are exempt.
+ * driver exceptions. Only the constructor and the guard plumbing itself are exempt, plus the
+ * cross-fiber transaction check, which never calls the driver and must throw its LogicException unmapped.
  */
 it('routes every public shim method through guard', function (string $class) {
-    $exempt = ['__construct', 'guard', 'toPdoException', 'trackLastInsertId'];
+    $exempt = ['__construct', 'guard', 'toPdoException', 'trackLastInsertId', 'ownsTransaction', 'assertOwnsTransaction'];
     $unguarded = [];
 
     foreach ((new ReflectionClass($class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
@@ -278,7 +280,7 @@ it('releases the transaction when commit fails', function () {
 });
 
 it('shapes errors for the driver given to a statement without a parent PDO', function (string $driver, string $message) {
-    $statement = Mockery::mock(\Fledge\Async\Database\SqlStatement::class);
+    $statement = Mockery::mock(SqlStatement::class);
     $statement->shouldReceive('execute')->andThrow(new SqlConnectionException('Connection closed'));
 
     expect(fn () => (new FledgePdoStatement($statement, driver: $driver))->execute())

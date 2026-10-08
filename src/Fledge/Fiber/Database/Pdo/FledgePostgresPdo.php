@@ -96,7 +96,7 @@ class FledgePostgresPdo extends FledgePdo
 
     /**
      * Read standard_conforming_strings from the server (the connection pinned by the
-     * open transaction, if any), caching a known answer. Returns null when unknown.
+     * open transaction, if the current fiber owns it), caching a known answer. Returns null when unknown.
      */
     protected function standardConformingStrings(): ?bool
     {
@@ -105,7 +105,7 @@ class FledgePostgresPdo extends FledgePdo
         }
 
         try {
-            $row = ($this->transaction ?? $this->pool)
+            $row = ($this->ownsTransaction() ? ($this->transaction ?? $this->pool) : $this->pool)
                 ->query('SHOW standard_conforming_strings')
                 ->fetchRow();
         } catch (\Throwable) {
@@ -138,6 +138,8 @@ class FledgePostgresPdo extends FledgePdo
      */
     public function beginTransaction(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             $this->releaseInactiveTransaction();
 
@@ -150,6 +152,8 @@ class FledgePostgresPdo extends FledgePdo
      */
     public function commit(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             $this->releaseInactiveTransaction();
 
@@ -162,6 +166,8 @@ class FledgePostgresPdo extends FledgePdo
      */
     public function rollBack(): bool
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(function (): bool {
             $this->releaseInactiveTransaction();
 
@@ -173,6 +179,7 @@ class FledgePostgresPdo extends FledgePdo
     {
         if ($this->transaction !== null && ! $this->transaction->isActive()) {
             $this->transaction = null;
+            $this->transactionFiber = null;
         }
     }
 
@@ -186,6 +193,8 @@ class FledgePostgresPdo extends FledgePdo
      */
     public function prepare(string $query, array $options = []): FledgePdoStatement
     {
+        $this->assertOwnsTransaction();
+
         return $this->guard(fn () => parent::prepare($this->convertPlaceholders($query), $options));
     }
 

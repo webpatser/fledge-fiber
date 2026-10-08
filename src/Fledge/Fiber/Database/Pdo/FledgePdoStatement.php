@@ -6,6 +6,7 @@ use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\Postgres\PostgresByteA;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
+use Fledge\Async\Database\SqlTransaction;
 use PDO;
 
 /**
@@ -53,14 +54,20 @@ class FledgePdoStatement
     protected ?string $driver;
 
     /**
+     * The pinned transaction this statement was prepared in, if any.
+     */
+    protected ?SqlTransaction $transaction;
+
+    /**
      * Create a new Fledge Async PDO statement shim.
      */
-    public function __construct(?SqlStatement $statement = null, ?SqlResult $result = null, ?FledgePdo $pdo = null, ?string $driver = null)
+    public function __construct(?SqlStatement $statement = null, ?SqlResult $result = null, ?FledgePdo $pdo = null, ?string $driver = null, ?SqlTransaction $transaction = null)
     {
         $this->statement = $statement;
         $this->result = $result;
         $this->pdo = $pdo;
         $this->driver = $driver;
+        $this->transaction = $transaction;
     }
 
     /**
@@ -108,6 +115,12 @@ class FledgePdoStatement
      */
     public function execute(?array $params = null): bool
     {
+        // A statement prepared inside a pinned transaction runs on that transaction's
+        // connection, so another fiber must not execute it while the transaction is open.
+        if ($this->transaction !== null) {
+            $this->pdo?->assertOwnsTransaction($this->transaction);
+        }
+
         return $this->guard(function () use ($params): bool {
             try {
                 $executeParams = $params ?? $this->buildExecuteParams();
