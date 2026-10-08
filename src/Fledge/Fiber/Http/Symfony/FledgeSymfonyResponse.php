@@ -3,7 +3,6 @@
 namespace Fledge\Fiber\Http\Symfony;
 
 use Fledge\Async\Cancellation;
-use Fledge\Async\CancelledException;
 use Fledge\Async\DeferredCancellation;
 use Fledge\Async\Future;
 use Fledge\Async\Http\Client\Response;
@@ -25,6 +24,7 @@ use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 use function Fledge\Async\async;
+use function Fledge\Async\Future\awaitFirst;
 
 /**
  * Lazy Symfony response over a Fledge async request.
@@ -58,6 +58,8 @@ final class FledgeSymfonyResponse implements ResponseInterface
     private bool $firstYielded = false;
 
     private bool $lastYielded = false;
+
+    private bool $didTimeout = false;
 
     private string $content = '';
 
@@ -180,7 +182,7 @@ final class FledgeSymfonyResponse implements ResponseInterface
     public function __destruct()
     {
         try {
-            if (! $this->initialized && $this->info['error'] === null) {
+            if (! $this->initialized && $this->info['error'] === null && ! $this->didTimeout) {
                 $this->initialize();
                 $this->checkStatusCode();
             }
@@ -192,8 +194,11 @@ final class FledgeSymfonyResponse implements ResponseInterface
     /**
      * Yield Symfony chunks for the given responses: a first chunk once
      * headers arrive, data chunks as the body streams, a last chunk at the
-     * end. With a timeout, a response idle for that long yields a timeout
-     * chunk and the stream moves on, coming back to it on the next pass.
+     * end. Responses are served in the order they make progress. With a
+     * timeout, once none of them made progress for that long, every pending
+     * response yields a timeout chunk and the wait starts over, as Symfony's
+     * own stream() does. After a first chunk the status code is checked
+     * unless the consumer already did, so error statuses throw.
      *
      * @param  iterable<ResponseInterface>  $responses
      * @return \Generator<FledgeSymfonyResponse, ChunkInterface>
@@ -212,25 +217,100 @@ final class FledgeSymfonyResponse implements ResponseInterface
             $pending[\spl_object_id($response)] = $response;
         }
 
-        while ($pending !== []) {
-            foreach ($pending as $id => $response) {
-                $chunk = $response->nextChunk($timeout);
+        $lastActivity = \microtime(true);
 
-                if ($chunk === null || $chunk instanceof LastChunk || ($chunk instanceof ErrorChunk && $response->error !== null)) {
+        while ($pending !== []) {
+            $waiting = [];
+            $progressed = false;
+
+            foreach ($pending as $id => $response) {
+                $future = $response->awaiting();
+
+                if ($future !== null) {
+                    $waiting[$id] = $future;
+
+                    continue;
+                }
+
+                $progressed = true;
+                $chunk = $response->nextChunk();
+
+                if ($chunk === null || $chunk instanceof LastChunk || $chunk instanceof ErrorChunk) {
                     unset($pending[$id]);
                 }
 
-                if ($chunk !== null) {
-                    yield $response => $chunk;
+                if ($chunk === null) {
+                    continue;
                 }
+
+                yield $response => $chunk;
+
+                if ($chunk instanceof FirstChunk && ! $response->initialized && $response->info['error'] === null) {
+                    // Ensure the HTTP status code is always checked.
+                    $response->getHeaders(true);
+                }
+            }
+
+            if ($progressed) {
+                // Serve the responses that moved again before waiting.
+                $lastActivity = \microtime(true);
+
+                continue;
+            }
+
+            $remaining = $timeout === null ? null : \max(0.0, $timeout) - (\microtime(true) - $lastActivity);
+
+            if ($remaining !== null && $remaining <= 0) {
+                foreach ($pending as $response) {
+                    $response->didTimeout = true;
+
+                    yield $response => new ErrorChunk((int) $response->info['size_download'], \sprintf('Idle timeout reached for "%s".', $response->info['url']));
+                }
+
+                $lastActivity = \microtime(true);
+
+                continue;
+            }
+
+            try {
+                awaitFirst($waiting, $remaining !== null ? new TimeoutCancellation($remaining) : null);
+            } catch (\Throwable) {
+                // Failures surface through nextChunk(); a timeout loops back.
             }
         }
     }
 
     /**
-     * Advance this response by one chunk for stream().
+     * The future this response waits on before its next chunk is ready, or
+     * null when nextChunk() can answer without suspending.
+     *
+     * @return Future<mixed>|null
      */
-    private function nextChunk(?float $timeout): ?ChunkInterface
+    private function awaiting(): ?Future
+    {
+        if ($this->lastYielded || $this->error !== null) {
+            return null;
+        }
+
+        if ($this->response === null) {
+            return $this->future->isComplete() ? null : $this->future;
+        }
+
+        if (! $this->firstYielded || $this->complete) {
+            return null;
+        }
+
+        $payload = $this->response->getBody();
+        $this->pendingRead ??= async(static fn (): ?string => $payload->read())->ignore();
+
+        return $this->pendingRead->isComplete() ? null : $this->pendingRead;
+    }
+
+    /**
+     * Advance this response by one chunk for stream(). Called only once
+     * awaiting() reports the chunk ready, so it does not suspend.
+     */
+    private function nextChunk(): ?ChunkInterface
     {
         if ($this->lastYielded) {
             return null;
@@ -242,18 +322,16 @@ final class FledgeSymfonyResponse implements ResponseInterface
             return new ErrorChunk((int) $this->info['size_download'], $this->error);
         }
 
-        $cancellation = $timeout !== null ? new TimeoutCancellation(\max(0.0, $timeout)) : null;
-
         try {
             if (! $this->firstYielded) {
-                $this->receiveHeaders($cancellation);
+                $this->receiveHeaders();
                 $this->firstYielded = true;
 
                 return new FirstChunk;
             }
 
             $offset = (int) $this->info['size_download'];
-            $data = $this->readChunk($cancellation);
+            $data = $this->readChunk();
 
             if ($data === null) {
                 $this->lastYielded = true;
@@ -262,8 +340,6 @@ final class FledgeSymfonyResponse implements ResponseInterface
             }
 
             return new DataChunk($offset, $data);
-        } catch (CancelledException) {
-            return new ErrorChunk((int) $this->info['size_download'], \sprintf('Idle timeout reached for "%s".', $this->info['url']));
         } catch (TransportExceptionInterface) {
             $this->lastYielded = true;
 
@@ -284,10 +360,9 @@ final class FledgeSymfonyResponse implements ResponseInterface
     }
 
     /**
-     * Await the response headers. A CancelledException escapes only when
-     * the caller's own cancellation fired; the request keeps running.
+     * Await the response headers.
      */
-    private function receiveHeaders(?TimeoutCancellation $timeout = null): void
+    private function receiveHeaders(): void
     {
         if ($this->error !== null) {
             throw $this->error;
@@ -298,13 +373,7 @@ final class FledgeSymfonyResponse implements ResponseInterface
         }
 
         try {
-            [$response, $meta] = $this->future->await($timeout);
-        } catch (CancelledException $e) {
-            if ($timeout?->isRequested()) {
-                throw $e;
-            }
-
-            $this->fail($e);
+            [$response, $meta] = $this->future->await();
         } catch (\Throwable $e) {
             $this->fail($e);
         }
@@ -337,9 +406,9 @@ final class FledgeSymfonyResponse implements ResponseInterface
     /**
      * Read the next body chunk, or null at the end of the body.
      */
-    private function readChunk(?TimeoutCancellation $timeout = null): ?string
+    private function readChunk(): ?string
     {
-        $this->receiveHeaders($timeout);
+        $this->receiveHeaders();
 
         if ($this->complete) {
             return null;
@@ -349,14 +418,7 @@ final class FledgeSymfonyResponse implements ResponseInterface
         $this->pendingRead ??= async(static fn (): ?string => $payload->read())->ignore();
 
         try {
-            $chunk = $this->pendingRead->await($timeout);
-        } catch (CancelledException $e) {
-            if ($timeout?->isRequested()) {
-                throw $e;
-            }
-
-            $this->pendingRead = null;
-            $this->fail($e);
+            $chunk = $this->pendingRead->await();
         } catch (\Throwable $e) {
             $this->pendingRead = null;
             $this->fail($e);
