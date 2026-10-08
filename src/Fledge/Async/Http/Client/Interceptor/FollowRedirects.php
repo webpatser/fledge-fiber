@@ -202,8 +202,8 @@ final readonly class FollowRedirects implements ApplicationInterceptor
     }
 
     /**
-     * Clients must not add a Referer header when leaving an unencrypted resource and redirecting to an encrypted
-     * resource.
+     * Clients must not add a Referer header when leaving an encrypted resource and redirecting to an unencrypted
+     * resource, and send only the origin when the redirect leaves the referring origin.
      *
      * @link http://www.w3.org/Protocols/rfc2616/rfc2616-sec15.html#sec15.1.3
      */
@@ -216,7 +216,17 @@ final readonly class FollowRedirects implements ApplicationInterceptor
         $destinationIsEncrypted = $followUri->getScheme() === 'https';
 
         if (!$referrerIsEncrypted || $destinationIsEncrypted) {
-            $request->setHeader('Referer', (string) $referrerUri->withUserInfo('')->withFragment(''));
+            $referrer = $referrerUri->withUserInfo('')->withFragment('');
+
+            // strict-origin-when-cross-origin: a new origin only learns where the
+            // request came from, never the path or query that may carry secrets.
+            if ($referrerUri->getScheme() !== $followUri->getScheme()
+                || $referrerUri->getAuthority() !== $followUri->getAuthority()
+            ) {
+                $referrer = $referrer->withPath('/')->withQuery('');
+            }
+
+            $request->setHeader('Referer', (string) $referrer);
         } else {
             $request->removeHeader('Referer');
         }

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Cross-origin redirects send only the origin as Referer, on any Guzzle version**: with `allow_redirects.referer` enabled, Guzzle 7's RedirectMiddleware sends the full previous URL (path and query included) to the new origin; only Guzzle 8 trims it. `FledgeHandler` now reduces the Referer on every redirect hop itself (strict-origin-when-cross-origin: no userinfo or fragment, origin only across origins), and the transport's own `FollowRedirects` interceptor does the same. A Referer set by the caller on the first request is left alone. The Symfony adapter adds no Referer, now covered by a test.
+
 ## v13.35.0.3 - 2026-10-08
 
 ### Added

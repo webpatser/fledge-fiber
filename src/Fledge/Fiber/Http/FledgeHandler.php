@@ -12,6 +12,8 @@ use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\LazyOpenStream;
 use GuzzleHttp\Psr7\Response as Psr7Response;
+use GuzzleHttp\Psr7\Uri;
+use GuzzleHttp\Psr7\UriComparator;
 use GuzzleHttp\Psr7\Utils;
 use GuzzleHttp\TransferStats;
 use Psr\Http\Message\RequestInterface;
@@ -57,6 +59,8 @@ class FledgeHandler
     public function __invoke(RequestInterface $request, array $options): PromiseInterface
     {
         try {
+            $request = $this->restrictRedirectReferer($request, $options);
+
             $asyncRequest = $this->createAsyncRequest($request, $options);
 
             $client = $this->client ?? $this->factory->clientFor($options, $request->getUri());
@@ -105,6 +109,38 @@ class FledgeHandler
         });
 
         return $promise;
+    }
+
+    /**
+     * Reduce the Referer on a redirect hop to what a browser would send under
+     * strict-origin-when-cross-origin: never userinfo or fragment, and only
+     * the origin when the hop leaves the referring origin.
+     *
+     * Guzzle 8's RedirectMiddleware already does this, but Guzzle 7 sends the
+     * full previous URL, path and query included, to the new origin. Doing it
+     * here keeps the guarantee whichever Guzzle version is installed. A
+     * Referer the caller sets on the first request is left alone: only hops
+     * the RedirectMiddleware issued carry __redirect_count.
+     */
+    protected function restrictRedirectReferer(RequestInterface $request, array $options): RequestInterface
+    {
+        if (empty($options['__redirect_count']) || ! $request->hasHeader('Referer')) {
+            return $request;
+        }
+
+        try {
+            $referer = new Uri($request->getHeaderLine('Referer'));
+        } catch (\InvalidArgumentException) {
+            return $request->withoutHeader('Referer');
+        }
+
+        $restricted = $referer->withUserInfo('')->withFragment('');
+
+        if (UriComparator::isCrossOrigin($referer, $request->getUri())) {
+            $restricted = $restricted->withPath('/')->withQuery('');
+        }
+
+        return $request->withHeader('Referer', (string) $restricted);
     }
 
     /**

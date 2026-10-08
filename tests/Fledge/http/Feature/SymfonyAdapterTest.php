@@ -163,6 +163,37 @@ it('follows redirects within max_redirects', function () {
     }
 });
 
+it('does not leak the original path or credentials on a cross-origin redirect', function () {
+    $received = new ArrayObject;
+
+    [$target, $targetPort] = startLoopbackServer(null, function (ServerRequest $request) use ($received): ServerResponse {
+        $received[] = [
+            'referer' => $request->getHeader('referer'),
+            'authorization' => $request->getHeader('authorization'),
+        ];
+
+        return new ServerResponse(200, [], 'landed');
+    });
+
+    [$origin, $originPort] = startLoopbackServer(null, function () use ($targetPort): ServerResponse {
+        return new ServerResponse(302, ['location' => "http://127.0.0.1:{$targetPort}/landing"]);
+    });
+
+    try {
+        $response = symfonyClient()->request('GET', "http://127.0.0.1:{$originPort}/secret-path?token=abc", [
+            'auth_bearer' => 'secret-token',
+        ]);
+
+        expect($response->getContent())->toBe('landed')
+            ->and($received->getArrayCopy())->toHaveCount(1)
+            ->and($received[0]['referer'])->toBeNull()
+            ->and($received[0]['authorization'])->toBeNull();
+    } finally {
+        $origin->stop();
+        $target->stop();
+    }
+});
+
 it('times out on an idle server', function () {
     [$server, $port] = startSymfonyLoopback();
 

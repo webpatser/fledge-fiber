@@ -1,7 +1,10 @@
 <?php
 
+use Fledge\Async\Http\Client\HttpClientBuilder;
+use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Server\Request as ServerRequest;
 use Fledge\Async\Http\Server\Response as ServerResponse;
+use Fledge\Async\TimeoutCancellation;
 use GuzzleHttp\Exception\TooManyRedirectsException;
 use GuzzleHttp\RedirectMiddleware;
 
@@ -117,7 +120,66 @@ it('does not leak the original path in cross-origin referers', function () {
         expect($response->getStatusCode())->toBe(200)
             ->and($entries)->toHaveCount(1)
             ->and((string) $entries[0]['referer'])->not->toContain('secret-path')
-            ->and((string) $entries[0]['referer'])->not->toContain('token');
+            ->and((string) $entries[0]['referer'])->not->toContain('token')
+            ->and($entries[0]['referer'])->toBe("http://127.0.0.1:{$originPort}/");
+    } finally {
+        $origin->stop();
+        $target->stop();
+    }
+});
+
+it('keeps the full referer on same-origin redirects', function () {
+    [$server, $port, $received] = startRedirectLoopback();
+
+    try {
+        $response = makeGuzzleClient([
+            'allow_redirects' => ['max' => 5, 'referer' => true],
+        ])->get("http://127.0.0.1:{$port}/a?token=abc");
+
+        $referers = array_column($received->getArrayCopy(), 'referer', 'path');
+
+        expect($response->getStatusCode())->toBe(200)
+            ->and($referers['/b'])->toBe("http://127.0.0.1:{$port}/a?token=abc")
+            ->and($referers['/c'])->toBe("http://127.0.0.1:{$port}/b");
+    } finally {
+        $server->stop();
+    }
+});
+
+it('leaves a caller-set referer alone on the first request', function () {
+    [$server, $port, $received] = startRedirectLoopback();
+
+    try {
+        makeGuzzleClient()->get("http://127.0.0.1:{$port}/c", [
+            'headers' => ['Referer' => 'https://elsewhere.test/page?q=1'],
+        ]);
+
+        expect($received[0]['referer'])->toBe('https://elsewhere.test/page?q=1');
+    } finally {
+        $server->stop();
+    }
+});
+
+it('sends only the origin as referer when the transport follows a cross-origin redirect', function () {
+    [$target, $targetPort, $targetReceived] = startRedirectLoopback();
+
+    [$origin, $originPort] = startLoopbackServer(null, function () use ($targetPort): ServerResponse {
+        return new ServerResponse(302, ['location' => "http://127.0.0.1:{$targetPort}/c"]);
+    });
+
+    try {
+        $client = (new HttpClientBuilder)->followRedirects(5)->build();
+        $response = $client->request(
+            new AsyncRequest("http://127.0.0.1:{$originPort}/secret-path?token=abc#frag"),
+            new TimeoutCancellation(LOOPBACK_TIMEOUT),
+        );
+        $response->getBody()->buffer();
+
+        $entries = $targetReceived->getArrayCopy();
+
+        expect($response->getStatus())->toBe(200)
+            ->and($entries)->toHaveCount(1)
+            ->and($entries[0]['referer'])->toBe("http://127.0.0.1:{$originPort}/");
     } finally {
         $origin->stop();
         $target->stop();
