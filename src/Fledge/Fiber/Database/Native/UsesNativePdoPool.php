@@ -300,6 +300,61 @@ trait UsesNativePdoPool
     }
 
     /**
+     * Execute the given callback using the Vitess OLAP workload.
+     *
+     * The scope pins the fiber's leases for the whole callback, so the
+     * `set workload` statements and the callback's queries share one pooled
+     * PDO and the OLAP setting never leaks back into the pool.
+     *
+     * @template TReturn
+     *
+     * @param  (Closure($this): TReturn)  $callback
+     * @return TReturn
+     */
+    public function olap(Closure $callback)
+    {
+        $scope = $this->enterLeaseScope();
+
+        try {
+            return parent::olap($callback);
+        } finally {
+            $this->exitLeaseScope($scope);
+        }
+    }
+
+    /**
+     * Set the Vitess workload on the fiber's leased write and read PDOs.
+     *
+     * The stock version calls exec() on the raw read slot, which holds a
+     * NativePdoPool here, not a PDO.
+     *
+     * @param  'olap'|'oltp'  $workload
+     * @return void
+     */
+    protected function setWorkload($workload)
+    {
+        $this->run("set workload = '{$workload}'", [], function ($query) {
+            if ($this->pretending()) {
+                return true;
+            }
+
+            $this->getPdo()->exec($query);
+
+            if ($this->readPdo instanceof Closure) {
+                $this->readPdo = call_user_func($this->readPdo);
+            }
+
+            $readPdo = $this->readPdo instanceof NativePdoPool
+                ? $this->leasedPdo('read', $this->readPdo)
+                : $this->readPdo;
+
+            $readPdo?->exec($query);
+
+            return true;
+        });
+    }
+
+    /**
      * Wrap the manager and register this connection as fiber-scoped, so its
      * transaction records and callbacks stay per fiber.
      *
