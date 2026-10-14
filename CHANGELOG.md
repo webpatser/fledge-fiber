@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.36.0.3 - 2026-10-14
+
+### Fixed
+- **Elasticsearch clients no longer lose their host for good after one network error.** `ElasticClientFactory::builder()` set no node pool, so elastic-transport fell back to `SimpleNodePool` with `NoResurrect`: the first timeout or refused connection marked the only host dead and every later request in that process failed with `NoNodeAvailableException: No alive nodes` until the worker or server restarted. The builder now uses the new `Fledge\Fiber\Search\ResurrectingNodePool`, which keeps round-robin across hosts, skips a dead host for 5 seconds (counted from the failure) and then tries it again. When every host is dead and none is past its window the pool throws `NoNodeAvailableException` instead of handing out a dead host, so a failing single-host setup fails fast: the first failure costs one timeout and marks the host dead, the transport's retries inside the same request (elastic-transport/pdphilip default 3) and every request during the next 5 seconds fail without an HTTP attempt, and after the window the host is tried again and, on success, serves normally. Multi-host setups still fail over to an alive host within the same request. Tune it per connection with `resurrect_after` (seconds), or pass `node_pool` (a `NodePoolInterface` instance or class name, or `false` for the transport default); both are read at the top level of the connection config or under `options`. A node pool set on the returned builder with `setNodePool()` still wins.
+
 ## v13.36.0.2 - 2026-10-14
 
 ### Added

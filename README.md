@@ -207,6 +207,7 @@ FLEDGE_HTTP_ELASTICSEARCH=false
 - An `http_handler` set on an SES mailer, in `services.ses`, or on an S3 disk, and a `client_options.handler` on a Pusher/Reverb connection, are left alone.
 - Extend-order caveat: Pusher/Reverb and S3 are registered right after the broadcast and filesystem managers resolve. An app's own `Broadcast::extend('pusher')` or `Storage::extend('s3')` in a provider `boot()` replaces the Fledge one (last extend wins).
 - Elasticsearch moved here from scrpr's `app/Support/Search`. The handler is now passed through `setHttpClientOptions(['handler' => ...])` as well, because `ClientBuilder` rebuilds its Guzzle client when SSL verification is off or a CA bundle is set, and used to lose the handler (and fall back to curl).
+- Elasticsearch hosts go through `ResurrectingNodePool`: a host that hit a network error is skipped for 5 seconds and then tried again. When every host is dead and none is past its window the request fails fast with `NoNodeAvailableException` (no HTTP attempt, so pdphilip's default 3 retries cannot stack up timeouts on a single host); after the window the host is tried again. Per connection (top level or under `options`): `resurrect_after` in seconds, or `node_pool` as a `NodePoolInterface` instance or class name (`false` for elastic-transport's `SimpleNodePool` with `NoResurrect`). A pool set with `setNodePool()` on the builder wins.
 
 #### Symfony HttpClient adapter
 
