@@ -1,5 +1,17 @@
 # Changelog
 
+## v13.36.0.2 - 2026-10-14
+
+### Added
+- **`Fledge\Async\FiberContext`**: a capture/restore hook for `async()`. Libraries call `FiberContext::register(name, capture, restore)`; `async()` runs every `capture` in the parent fiber before queueing the closure and runs the matching `restore` in the child fiber before the closure starts. A `restore` may return a cleanup closure; the cleanups run in reverse order after the closure finishes, also when it throws, which matters because Revolt reuses callback fibers. With nothing registered the cost is one null check. A throwing hook is reported to the event loop error handler and never fails the async work. `FiberContext::forget(name)` removes a hook. Used by `webpatser/fledge-apm` to keep the active trace span across parallel fibers.
+- Context only follows `async()`. `Future::iterate`, `ConcurrentClosureIterator`/`Pipeline::generate` and the server I/O loops queue their fibers directly and do not propagate it.
+
+## v13.36.0.1 - 2026-10-13
+
+### Fixed
+- **`olap()` on the native drivers no longer leaks the OLAP workload into the pool.** `UsesNativePdoPool::olap()` now opens a lease scope, so the `set workload` statements and the callback's queries share one pooled PDO and that PDO goes back to the pool afterwards.
+- **`setWorkload()` works with the native pools.** The stock version called `exec()` on the raw read slot, which holds a `NativePdoPool` rather than a PDO. The workload is now set on the fiber's leased write PDO and, when a read pool is configured, on its leased read PDO.
+
 ## v13.35.0.5 - 2026-10-08
 
 ### Fixed

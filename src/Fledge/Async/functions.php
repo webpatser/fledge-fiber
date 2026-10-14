@@ -24,7 +24,7 @@ function async(\Closure $closure, mixed ...$args): Future
 {
     static $run = null;
 
-    $run ??= static function (Internal\FutureState $state, \Closure $closure, array $args): void {
+    $run ??= static function (Internal\FutureState $state, \Closure $closure, array $args, ?array $snapshot): void {
         $s = $state;
         $c = $closure;
 
@@ -32,17 +32,25 @@ function async(\Closure $closure, mixed ...$args): Future
          * in the stack trace, which would create a circular reference, preventing immediate garbage collection */
         $state = $closure = null;
 
+        $cleanups = $snapshot === null ? null : FiberContext::restore($snapshot);
+        $snapshot = null;
+
         try {
             // Clear $args to allow garbage collection of arguments during fiber execution
             $s->complete($c(...$args, ...($args = [])));
         } catch (\Throwable $exception) {
             $s->error($exception);
+        } finally {
+            if ($cleanups) {
+                FiberContext::cleanup($cleanups);
+            }
         }
     };
 
     $state = new Internal\FutureState();
+    $snapshot = FiberContext::capture();
 
-    EventLoop::queue($run, $state, $closure, $args);
+    EventLoop::queue($run, $state, $closure, $args, $snapshot);
 
     return new Future($state);
 }
