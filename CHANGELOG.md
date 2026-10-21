@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.38.0.0 - 2026-10-21
+
+### Changed
+- **Aligned with Fledge framework v13.38.0.1 (Laravel v13.38.0).** No code changes. Reviewed the upstream database changes: the new `Connection::usingWritePdo()` works with the native pools because `UsesNativePdoPool::getReadPdo()` checks `readOnWriteConnection` on every call, the `@` on `setPdo(null)` in `disconnect()` stays compatible with the pool's untyped setters, and the new `MySqlGrammar::compileForeignKeys()` filters are inherited unchanged. `readOnWriteConnection` is shared per connection, not per fiber, so a `usingWritePdo()` callback that suspends routes other fibers' reads to the write pool until it returns, which matches stock Laravel.
+
 ## v13.36.0.4 - 2026-10-21
 
 ### Fixed
