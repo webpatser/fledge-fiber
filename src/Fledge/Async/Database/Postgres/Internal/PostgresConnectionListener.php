@@ -36,7 +36,7 @@ final class PostgresConnectionListener implements PostgresListener, \IteratorAgg
     public function __destruct()
     {
         if ($this->unlisten) {
-            async($this->unlisten, $this->channel);
+            async($this->unlisten, $this->channel)->ignore();
             $this->unlisten = null;
         }
     }

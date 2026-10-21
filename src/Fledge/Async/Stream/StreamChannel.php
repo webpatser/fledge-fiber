@@ -99,7 +99,7 @@ final readonly class StreamChannel implements Channel
 
             return $this->received->shift();
         } finally {
-            async($lock->release(...));
+            async($lock->release(...))->ignore();
         }
     }
 

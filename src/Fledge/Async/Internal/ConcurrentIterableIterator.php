@@ -49,7 +49,7 @@ final class ConcurrentIterableIterator implements ConcurrentIterator
             } catch (\Throwable $e) {
                 $queue->error($e);
             }
-        });
+        })->ignore();
     }
 
     #[\Override]

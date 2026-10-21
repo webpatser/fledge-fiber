@@ -47,7 +47,7 @@ abstract class QueuedWritesFile implements File, \IteratorAggregate
 
     public function __destruct()
     {
-        async($this->close(...));
+        async($this->close(...))->ignore();
     }
 
     abstract public function read(

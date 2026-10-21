@@ -114,7 +114,7 @@ final class SocketConnector
                     @\fclose($handle->sockets[0]);
                 }
             }
-        });
+        })->ignore();
 
         return $streams;
     }
@@ -139,7 +139,7 @@ final class SocketConnector
                 \fwrite($socket, \chr(SignalCode::HANDSHAKE_ACK) . \chr($e->getCode()));
                 \fclose($socket);
             }
-        });
+        })->ignore();
     }
 
     /**

@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.36.0.4 - 2026-10-21
+
+### Fixed
+- **Fire-and-forget `async()` calls no longer trip `#[\NoDiscard]`.** `PostgresConnectionListener::__destruct()`, `QueuedWritesFile::__destruct()`, `StreamChannel` (the `finally` that releases the lock), `ConcurrentIterableIterator::__construct()` and the two Windows `SocketConnector` helpers discarded the `Future` from `async()` as a bare statement. PHP emitted a warning for each, which an application error handler (Laravel's, for one) turns into an `ErrorException`, in a destructor or `finally` block that skips the rest of the cleanup. Each call now ends in `->ignore()`.
+
 ## v13.36.0.3 - 2026-10-14
 
 ### Fixed

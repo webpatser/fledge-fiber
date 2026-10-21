@@ -323,3 +323,16 @@ it('does not complete the takeWhile queue more than once with unordered concurre
     array_map(fn (int $size) => "take-{$size}", range(10, 100, 10)),
     array_map(fn (int $size) => [$size], range(10, 100, 10)),
 ));
+
+it('does not emit a NoDiscard warning when a pipeline is created from an iterable', function () {
+    set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    });
+
+    try {
+        $pipeline = Pipeline::fromIterable((static fn () => yield from [1, 2, 3])());
+        expect(iterator_to_array($pipeline, false))->toBe([1, 2, 3]);
+    } finally {
+        restore_error_handler();
+    }
+});
