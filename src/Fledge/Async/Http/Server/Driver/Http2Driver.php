@@ -1127,7 +1127,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
             }
 
             $contentLength = $headers["content-length"][0];
-            if (!\preg_match('/^0|[1-9]\d*$/', $contentLength)) {
+            if (!\preg_match('/^(?:0|[1-9]\d*)$/', $contentLength)) {
                 throw new Http2StreamException(
                     "Invalid content-length header value",
                     $streamId,

@@ -103,3 +103,27 @@ it('does not count ordinary frames toward the low-value limit', function () {
         $peer->close();
     }
 })->group('Http2');
+
+it('rejects a content-length with trailing garbage', function (string $value) {
+    $peer = startH2Driver();
+
+    try {
+        $peer->openStream(1, [['content-length', $value]]);
+
+        expect($peer->resetCode(1))->toBe(Http2Parser::PROTOCOL_ERROR);
+    } finally {
+        $peer->close();
+    }
+})->with(['0abc', '1e3', '-1', '01', ' 5'])->group('Http2');
+
+it('accepts a valid content-length', function () {
+    $peer = startH2Driver();
+
+    try {
+        $peer->openStream(1, [['content-length', '0']], true);
+
+        expect($peer->resetCode(1, 0.5))->toBeNull();
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
