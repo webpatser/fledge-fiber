@@ -231,6 +231,15 @@ final class Http1Driver extends AbstractHttpDriver
                 }
 
                 if (isset($headers["transfer-encoding"])) {
+                    // RFC 7230 3.3.3: a message with both is a request smuggling vector; reject it.
+                    if ($contentLength !== null) {
+                        throw new ClientException(
+                            $this->client,
+                            "Bad Request: both content-length and transfer-encoding present",
+                            HttpStatus::BAD_REQUEST
+                        );
+                    }
+
                     $transferEncoding = \strtolower(\implode(', ', $headers["transfer-encoding"]));
                     $isChunked = match ($transferEncoding) {
                         'chunked' => true,
