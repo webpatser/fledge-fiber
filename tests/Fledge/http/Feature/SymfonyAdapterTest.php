@@ -456,3 +456,31 @@ it('shares one idle timeout across streamed responses and skips the destructor c
         $server->stop();
     }
 });
+
+it('fails the read when the body exceeds the configured cap', function () {
+    [$server, $port] = startSymfonyLoopback();
+
+    try {
+        $client = new FledgeSymfonyHttpClient(
+            ['timeout' => LOOPBACK_TIMEOUT, 'max_duration' => LOOPBACK_TIMEOUT],
+            null,
+            maxBodySize: 1024,
+        );
+
+        expect(fn () => $client->request('GET', "http://127.0.0.1:{$port}/large")->getContent())
+            ->toThrow(TransportException::class);
+
+        // A per-request override lifts the cap.
+        $body = $client->request('GET', "http://127.0.0.1:{$port}/large", [
+            'extra' => ['max_body_size' => 0],
+        ])->getContent();
+
+        expect(strlen($body))->toBe(8 * 64 * 1024);
+    } finally {
+        $server->stop();
+    }
+});
+
+it('caps response bodies by default', function () {
+    expect(FledgeSymfonyHttpClient::DEFAULT_MAX_BODY_SIZE)->toBe(64 * 1024 * 1024);
+});

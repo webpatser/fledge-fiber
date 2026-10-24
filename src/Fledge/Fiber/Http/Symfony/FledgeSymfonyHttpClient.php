@@ -49,7 +49,7 @@ use Symfony\Contracts\HttpClient\ResponseStreamInterface;
  * on_progress have no equivalent and throw InvalidArgumentException rather
  * than being ignored silently. Proxy settings the transport cannot use
  * surface as TransportException, as with Symfony's own clients. The body is
- * always buffered in memory.
+ * always buffered in memory, capped at the `$maxBodySize` constructor argument (64 MiB by default).
  */
 final class FledgeSymfonyHttpClient implements HttpClientInterface
 {
@@ -60,14 +60,27 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
 
     private array $defaultOptions = self::OPTIONS_DEFAULTS;
 
+    /** Default cap on a buffered response body: 64 MiB. */
+    public const DEFAULT_MAX_BODY_SIZE = 64 * 1024 * 1024;
+
     private AsyncClientFactory $factory;
 
     /**
      * @param  array<string, mixed>  $defaultOptions  Symfony request options applied to every request.
      * @param  AsyncClientFactory|null  $factory  Client factory, the shared FledgeGuzzle one by default.
+     * @param  int  $maxBodySize  Largest response body in bytes the client buffers before failing the read,
+     *                            0 for unlimited. A single request can override it with
+     *                            `extra: ['max_body_size' => N]`.
      */
-    public function __construct(array $defaultOptions = [], ?AsyncClientFactory $factory = null)
-    {
+    public function __construct(
+        array $defaultOptions = [],
+        ?AsyncClientFactory $factory = null,
+        private readonly int $maxBodySize = self::DEFAULT_MAX_BODY_SIZE,
+    ) {
+        if ($maxBodySize < 0) {
+            throw new InvalidArgumentException('The maximum body size must not be negative.');
+        }
+
         $this->factory = $factory ?? FledgeGuzzle::factory();
 
         if ($defaultOptions !== []) {
@@ -220,7 +233,7 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
     private function buildRequest(string $method, string $url, array $headers, string $body, array $options): Request
     {
         $request = new Request($url, $method);
-        $request->setBodySizeLimit(0);
+        $request->setBodySizeLimit((int) ($options['extra']['max_body_size'] ?? $this->maxBodySize));
 
         foreach ($headers as $line) {
             [$name, $value] = \explode(': ', $line, 2) + [1 => ''];
