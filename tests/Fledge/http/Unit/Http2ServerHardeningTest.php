@@ -211,3 +211,85 @@ it('does not leave an unobserved future when a stream is reset before its reques
         $peer->close();
     }
 })->group('Http2');
+
+it('keeps the deprecated Http2Parser low-value constants as aliases of the driver defaults', function () {
+    expect(Http2Parser::LOW_VALUE_FRAME_LIMIT)->toBe(HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT)
+        ->and(Http2Parser::LOW_VALUE_FRAME_WINDOW)->toBe(HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW);
+})->group('Http2');
+
+it('rejects a non-positive low-value frame limit or window', function (string $class, array $args) {
+    $handler = new Fledge\Async\Http\Server\RequestHandler\ClosureRequestHandler(
+        fn () => new Fledge\Async\Http\Server\Response(200),
+    );
+    $common = [$handler, new Fledge\Async\Http\Server\DefaultErrorHandler, new Psr\Log\NullLogger];
+
+    match ($class) {
+        'factory' => new Fledge\Async\Http\Server\Driver\DefaultHttpDriverFactory(new Psr\Log\NullLogger, ...$args),
+        'parser' => new Http2Parser(
+            new Fledge\Async\Http\Server\Driver\Http2Driver(...$common),
+            new Fledge\Async\Http\HPack,
+            ...$args,
+        ),
+        default => new $class(...$common, ...$args),
+    };
+})->with([
+    'http2 limit 0' => [Fledge\Async\Http\Server\Driver\Http2Driver::class, ['lowValueFrameLimit' => 0]],
+    'http2 window -1' => [Fledge\Async\Http\Server\Driver\Http2Driver::class, ['lowValueFrameWindow' => -1]],
+    'http1 limit 0' => [Fledge\Async\Http\Server\Driver\Http1Driver::class, ['lowValueFrameLimit' => 0]],
+    'http1 window 0' => [Fledge\Async\Http\Server\Driver\Http1Driver::class, ['lowValueFrameWindow' => 0]],
+    'factory limit -5' => ['factory', ['lowValueFrameLimit' => -5]],
+    'factory window 0' => ['factory', ['lowValueFrameWindow' => 0]],
+    'parser limit 0' => ['parser', ['lowValueFrameLimit' => 0]],
+    'parser window 0' => ['parser', ['lowValueFrameWindow' => 0]],
+])->throws(ValueError::class)->group('Http2');
+
+it('forwards the low-value frame settings from the factory to the HTTP/1 driver for h2c', function () {
+    $factory = new Fledge\Async\Http\Server\Driver\DefaultHttpDriverFactory(
+        new Psr\Log\NullLogger,
+        allowHttp2Upgrade: true,
+        lowValueFrameLimit: 42,
+        lowValueFrameWindow: 7,
+    );
+
+    $client = new class implements Fledge\Async\Http\Server\Driver\Client
+    {
+        public function getId(): int
+        {
+            return 1;
+        }
+
+        public function getRemoteAddress(): Fledge\Async\Stream\SocketAddress
+        {
+            return new Fledge\Async\Stream\InternetAddress('127.0.0.1', 50000);
+        }
+
+        public function getLocalAddress(): Fledge\Async\Stream\SocketAddress
+        {
+            return new Fledge\Async\Stream\InternetAddress('127.0.0.1', 8080);
+        }
+
+        public function getTlsInfo(): ?Fledge\Async\Stream\TlsInfo
+        {
+            return null;
+        }
+
+        public function close(): void {}
+
+        public function isClosed(): bool
+        {
+            return false;
+        }
+
+        public function onClose(Closure $onClose): void {}
+    };
+
+    $driver = $factory->createHttpDriver(
+        new Fledge\Async\Http\Server\RequestHandler\ClosureRequestHandler(fn () => new Fledge\Async\Http\Server\Response(200)),
+        new Fledge\Async\Http\Server\DefaultErrorHandler,
+        $client,
+    );
+
+    expect($driver)->toBeInstanceOf(Fledge\Async\Http\Server\Driver\Http1Driver::class)
+        ->and((new ReflectionProperty($driver, 'lowValueFrameLimit'))->getValue($driver))->toBe(42)
+        ->and((new ReflectionProperty($driver, 'lowValueFrameWindow'))->getValue($driver))->toBe(7);
+})->group('Http2');

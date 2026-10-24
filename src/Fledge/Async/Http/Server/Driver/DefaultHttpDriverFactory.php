@@ -11,6 +11,8 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
     /**
      * @param bool $allowHttp2Upgrade Requires HTTP/2 support to be enabled.
      * @param bool $pushEnabled Requires HTTP/2 support to be enabled.
+     * @param positive-int $lowValueFrameLimit HTTP/2 low-value frames allowed per window.
+     * @param positive-int $lowValueFrameWindow HTTP/2 low-value frame counting window in seconds.
      */
     public function __construct(
         private PsrLogger $logger,
@@ -24,6 +26,9 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
         private int $lowValueFrameLimit = HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT,
         private int $lowValueFrameWindow = HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
+        if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {
+            throw new \ValueError('The low-value frame limit and window must be positive integers');
+        }
     }
 
     public function createHttpDriver(

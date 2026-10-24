@@ -133,6 +133,22 @@ final class Http2Parser
 
     private int $receivedFrameCount = 0;
 
+    /**
+     * Seconds per window in which low-value frames are counted.
+     *
+     * @deprecated Use {@see \Fledge\Async\Http\Server\Driver\HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW}; the
+     *     server drivers take the window as the `lowValueFrameWindow` constructor argument.
+     */
+    public const LOW_VALUE_FRAME_WINDOW = \Fledge\Async\Http\Server\Driver\HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW;
+
+    /**
+     * Maximum number of low-value frames per window before ENHANCE_YOUR_CALM.
+     *
+     * @deprecated Use {@see \Fledge\Async\Http\Server\Driver\HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT}; the
+     *     server drivers take the limit as the `lowValueFrameLimit` constructor argument.
+     */
+    public const LOW_VALUE_FRAME_LIMIT = \Fledge\Async\Http\Server\Driver\HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT;
+
     private int $lowValueFrameWindowStart = 0;
 
     private int $lowValueFrameCount = 0;
@@ -144,6 +160,8 @@ final class Http2Parser
     /**
      * @param positive-int $headerSizeLimit
      * @param positive-int $frameSizeLimit
+     * @param positive-int $lowValueFrameLimit
+     * @param positive-int $lowValueFrameWindow
      */
     public function __construct(
         private readonly Http2Processor $handler,
@@ -156,6 +174,10 @@ final class Http2Parser
         /** Seconds per window in which low-value frames are counted. */
         private readonly int $lowValueFrameWindow = 10,
     ) {
+        if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {
+            throw new \ValueError('The low-value frame limit and window must be positive integers');
+        }
+
         $this->parser = new Parser($this->parse($peerSettings));
     }
 

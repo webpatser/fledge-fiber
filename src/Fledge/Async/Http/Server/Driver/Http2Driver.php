@@ -141,6 +141,10 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
     ) {
         parent::__construct($requestHandler, $errorHandler, $logger);
 
+        if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {
+            throw new \ValueError('The low-value frame limit and window must be positive integers');
+        }
+
         $this->remainingStreams = $concurrentStreamLimit;
         $this->allowsPush = $pushEnabled;
 

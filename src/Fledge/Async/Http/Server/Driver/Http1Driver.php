@@ -76,6 +76,10 @@ final class Http1Driver extends AbstractHttpDriver
     ) {
         parent::__construct($requestHandler, $errorHandler, $logger);
 
+        if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {
+            throw new \ValueError('The low-value frame limit and window must be positive integers');
+        }
+
         $this->pendingResponse = Future::complete();
         $this->deferredCancellation = new DeferredCancellation();
     }
