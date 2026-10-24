@@ -8,6 +8,9 @@ use Fledge\Async\Database\SqlConfig;
 final class MysqlConfig extends SqlConfig
 {
     public const DEFAULT_PORT = 3306;
+
+    /** Largest payload the client accepts from the server: 1 GiB, the ceiling of MySQL's max_allowed_packet. */
+    public const DEFAULT_MAX_PACKET_SIZE = 1024 * 1024 * 1024;
     public const BIN_CHARSET = 45; // utf8mb4_general_ci, understood by MySQL 5.7+ and MariaDB (255 is MySQL 8 only)
 
     public const KEY_MAP = [
@@ -66,6 +69,7 @@ final class MysqlConfig extends SqlConfig
 
     /**
      * @param string $key Private key to use for sha256_password auth method
+     * @param int $maxPacketSize Largest (multi-packet) payload accepted from the server, in bytes
      */
     public function __construct(
         string $host,
@@ -80,7 +84,12 @@ final class MysqlConfig extends SqlConfig
         private bool $useCompression = false,
         private string $key = '',
         private bool $useLocalInfile = false,
+        private int $maxPacketSize = self::DEFAULT_MAX_PACKET_SIZE,
     ) {
+        if ($maxPacketSize < 1) {
+            throw new \ValueError('The maximum packet size must be at least 1 byte');
+        }
+
         parent::__construct($host, $port, $user, $password, $database);
 
         $this->context = $context ?? new ConnectContext();
@@ -121,6 +130,20 @@ final class MysqlConfig extends SqlConfig
     public function withoutLocalInfile(): self
     {
         return clone($this, ['useLocalInfile' => false]);
+    }
+
+    public function getMaxPacketSize(): int
+    {
+        return $this->maxPacketSize;
+    }
+
+    public function withMaxPacketSize(int $maxPacketSize): self
+    {
+        if ($maxPacketSize < 1) {
+            throw new \ValueError('The maximum packet size must be at least 1 byte');
+        }
+
+        return clone($this, ['maxPacketSize' => $maxPacketSize]);
     }
 
     public function getConnectContext(): ConnectContext

@@ -1375,6 +1375,13 @@ class ConnectionProcessor implements SqlTransientResource
                 $this->seqId = MysqlDataType::decodeUnsigned8($buffer, $offset);
 
                 if ($length > 0) {
+                    $maxPacketSize = $this->config->getMaxPacketSize();
+                    if (\strlen($packet) + $length > $maxPacketSize) {
+                        throw new SqlConnectionException(
+                            "Server sent a packet larger than the configured maximum of {$maxPacketSize} bytes"
+                        );
+                    }
+
                     $packet .= yield $length;
                 }
             } while ($length === self::MAX_PACKET_LENGTH);
