@@ -127,3 +127,35 @@ it('accepts a valid content-length', function () {
         $peer->close();
     }
 })->group('Http2');
+
+it('enforces the header list size it advertises in SETTINGS', function () {
+    $limit = 4096;
+    $peer = startH2Driver(['headerSizeLimit' => $limit]);
+
+    try {
+        $settings = $peer->waitFor(fn (array $f) => $f['type'] === Http2Parser::SETTINGS && ! ($f['flags'] & Http2Parser::ACK));
+        $advertised = null;
+        foreach (str_split($settings['payload'], 6) as $entry) {
+            ['id' => $id, 'value' => $value] = unpack('nid/Nvalue', $entry);
+            if ($id === Http2Parser::MAX_HEADER_LIST_SIZE) {
+                $advertised = $value;
+            }
+        }
+
+        expect($advertised)->toBe($limit);
+
+        // A header block just under the limit is accepted.
+        $peer->openStream(1, [['x-pad', substr(hash('sha512', 'a').hash('sha512', 'b').hash('sha512', 'c'), 0, 3000)]]);
+        expect($peer->goAwayCode(0.5))->toBeNull();
+
+        // A header block above the advertised limit is refused.
+        $big = '';
+        for ($i = 0; strlen($big) < 8000; $i++) {
+            $big .= hash('sha512', (string) $i);
+        }
+        $peer->openStream(3, [['x-pad', $big]]);
+        expect($peer->goAwayCode())->toBe(Http2Parser::COMPRESSION_ERROR);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
