@@ -690,7 +690,8 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
 
         return $this->streams[$id] = new Http2Stream(
             $bodySizeLimit,
-            $this->initialWindowSize,
+            // The receive window is what this server advertised, not the peer's INITIAL_WINDOW_SIZE setting.
+            self::DEFAULT_WINDOW_SIZE,
             $this->initialWindowSize,
             $flags,
         );
@@ -1209,6 +1210,22 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         $this->serverWindow -= $length;
         $stream->serverWindow -= $length;
         $stream->receivedByteCount += $length;
+
+        // RFC 9113 section 6.9.1: a sender must not exceed the advertised flow-control windows.
+        if ($this->serverWindow < 0) {
+            throw new Http2ConnectionException(
+                "Connection flow control window exceeded",
+                Http2Parser::FLOW_CONTROL_ERROR
+            );
+        }
+
+        if ($stream->serverWindow < 0) {
+            throw new Http2StreamException(
+                "Stream flow control window exceeded",
+                $streamId,
+                Http2Parser::FLOW_CONTROL_ERROR
+            );
+        }
 
         if ($stream->receivedByteCount > $stream->bodySizeLimit) {
             throw new Http2StreamException(
