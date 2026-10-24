@@ -140,16 +140,16 @@ abstract class HttpMessage
      * @param non-empty-string $name
      * @param HeaderParamValueType $value
      *
-     * @throws \Error If the header name or value is invalid.
+     * @throws InvalidHeaderException If the header name or value is invalid.
      */
     protected function setHeader(string $name, array|string $value): void
     {
-        \assert($this->isNameValid($name), "Invalid header name");
+        $this->assertHeaderNameSafe($name);
 
         $lcName = HEADER_LOWERCASE_MAP[$name] ?? \strtolower($name);
 
         if (!\is_array($value)) {
-            \assert(self::isValueValid([$value]), "Invalid header value");
+            self::assertHeaderValuesSafe([$value]);
             $this->headers[$lcName] = [$value];
             $this->headerCase[$lcName] = [$name];
             return;
@@ -162,7 +162,7 @@ abstract class HttpMessage
 
         $value = self::castHeaderArrayValues($value);
 
-        \assert(self::isValueValid($value), "Invalid header value");
+        self::assertHeaderValuesSafe($value);
 
         $this->headers[$lcName] = $value;
         $this->headerCase[$lcName] = \array_fill(0, \count($value), $name);
@@ -174,16 +174,16 @@ abstract class HttpMessage
      * @param non-empty-string $name
      * @param HeaderParamValueType $value
      *
-     * @throws \Error If the header name or value is invalid.
+     * @throws InvalidHeaderException If the header name or value is invalid.
      */
     protected function addHeader(string $name, array|string $value): void
     {
-        \assert($this->isNameValid($name), "Invalid header name");
+        $this->assertHeaderNameSafe($name);
 
         $lcName = HEADER_LOWERCASE_MAP[$name] ?? \strtolower($name);
 
         if (!\is_array($value)) {
-            \assert(self::isValueValid([$value]), "Invalid header value");
+            self::assertHeaderValuesSafe([$value]);
             $this->headers[$lcName][] = $value;
             $this->headerCase[$lcName][] = $name;
             return;
@@ -191,7 +191,7 @@ abstract class HttpMessage
 
         $value = self::castHeaderArrayValues($value);
 
-        \assert(self::isValueValid($value), "Invalid header value");
+        self::assertHeaderValuesSafe($value);
 
         foreach ($value as $header) {
             $this->headers[$lcName][] = $header;
@@ -242,6 +242,33 @@ abstract class HttpMessage
         static $mapper;
 
         return \array_map($mapper ??= self::castHeaderValue(...), \array_values($values));
+    }
+
+    /**
+     * Rejects header names and values that could smuggle a second header or line; unlike an assert() this
+     * also runs in production, where zend.assertions is -1.
+     *
+     * @throws InvalidHeaderException
+     */
+    private function assertHeaderNameSafe(string $name): void
+    {
+        if (!$this->isNameValid($name) || \strpbrk($name, "\r\n\0") !== false) {
+            throw new InvalidHeaderException("Invalid header name");
+        }
+    }
+
+    /**
+     * @param list<string> $values
+     *
+     * @throws InvalidHeaderException
+     */
+    private static function assertHeaderValuesSafe(array $values): void
+    {
+        foreach ($values as $value) {
+            if (\strpbrk($value, "\r\n\0") !== false || !self::isValueValid([$value])) {
+                throw new InvalidHeaderException("Invalid header value");
+            }
+        }
     }
 
     private function isNameValid(string $name): bool
