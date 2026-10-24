@@ -58,3 +58,48 @@ it('does not reset a stream within the window when the peer advertises a small i
         $peer->close();
     }
 })->group('Http2');
+
+it('closes the connection with ENHANCE_YOUR_CALM on a flood of PRIORITY frames', function () {
+    $peer = startH2Driver();
+
+    try {
+        $priority = pack('NC', 0, 15);
+        $frame = Http2Parser::compileFrame($priority, Http2Parser::PRIORITY, 0, 1);
+
+        $peer->send(str_repeat($frame, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+
+        expect($peer->goAwayCode())->toBe(Http2Parser::ENHANCE_YOUR_CALM);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
+
+it('closes the connection with ENHANCE_YOUR_CALM on a flood of empty DATA frames', function () {
+    $peer = startH2Driver();
+
+    try {
+        $peer->openStream(1);
+        $frame = Http2Parser::compileFrame('', Http2Parser::DATA, 0, 1);
+
+        $peer->send(str_repeat($frame, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+
+        expect($peer->goAwayCode())->toBe(Http2Parser::ENHANCE_YOUR_CALM);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
+
+it('does not count ordinary frames toward the low-value limit', function () {
+    $peer = startH2Driver();
+
+    try {
+        $ping = Http2Parser::compileFrame('12345678', Http2Parser::PING, Http2Parser::ACK, 0);
+
+        // PING acks are ignored by the driver and must not trip the flood limit.
+        $peer->send(str_repeat($ping, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+
+        expect($peer->goAwayCode(0.5))->toBeNull();
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');

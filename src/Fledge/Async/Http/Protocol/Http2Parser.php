@@ -133,6 +133,16 @@ final class Http2Parser
 
     private int $receivedFrameCount = 0;
 
+    /** Seconds per window in which low-value frames are counted. */
+    public const LOW_VALUE_FRAME_WINDOW = 10;
+
+    /** Maximum number of low-value frames (see {@see isLowValueFrame()}) per window before ENHANCE_YOUR_CALM. */
+    public const LOW_VALUE_FRAME_LIMIT = 5000;
+
+    private int $lowValueFrameWindowStart = 0;
+
+    private int $lowValueFrameCount = 0;
+
     private int $receivedByteCount = 0;
 
     private readonly Parser $parser;
@@ -204,6 +214,10 @@ final class Http2Parser
             \assert(self::logDebugFrame('recv', $frameType, $frameFlags, $streamId, $frameLength));
 
             try {
+                if (self::isLowValueFrame($frameType, $frameFlags, $frameLength)) {
+                    $this->countLowValueFrame();
+                }
+
                 // Do we want to allow increasing the maximum frame size?
                 if ($frameLength > $this->frameSizeLimit) {
                     throw new Http2ConnectionException("Frame size limit exceeded", self::FRAME_SIZE_ERROR);
@@ -233,6 +247,36 @@ final class Http2Parser
 
                 throw $exception;
             }
+        }
+    }
+
+    /**
+     * Frames that cost CPU but carry no useful work: PRIORITY (deprecated), unknown types, empty DATA that does not
+     * end the stream and empty CONTINUATION frames.
+     */
+    private static function isLowValueFrame(int $frameType, int $frameFlags, int $frameLength): bool
+    {
+        return match ($frameType) {
+            self::PRIORITY => true,
+            self::DATA => $frameLength === 0 && !($frameFlags & self::END_STREAM),
+            self::CONTINUATION => $frameLength === 0 && !($frameFlags & self::END_HEADERS),
+            self::HEADERS, self::RST_STREAM, self::SETTINGS, self::PUSH_PROMISE, self::PING, self::GOAWAY,
+            self::WINDOW_UPDATE => false,
+            default => true,
+        };
+    }
+
+    private function countLowValueFrame(): void
+    {
+        $now = \time();
+
+        if ($now - $this->lowValueFrameWindowStart >= self::LOW_VALUE_FRAME_WINDOW) {
+            $this->lowValueFrameWindowStart = $now;
+            $this->lowValueFrameCount = 0;
+        }
+
+        if (++$this->lowValueFrameCount > self::LOW_VALUE_FRAME_LIMIT) {
+            throw new Http2ConnectionException("Too many low-value frames", self::ENHANCE_YOUR_CALM);
         }
     }
 
