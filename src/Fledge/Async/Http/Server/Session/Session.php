@@ -138,8 +138,22 @@ final class Session
 
                 $this->data = [];
             } elseif (!$this->isLocked()) {
-                $this->lock = $this->mutex->acquire($id);
-                $this->data = $this->storage->read($id);
+                $lock = $this->mutex->acquire($id);
+                $data = $this->storage->read($id);
+
+                if ($data === []) {
+                    // A client-supplied id without stored data is never adopted (session fixation):
+                    // discard it and issue a fresh server-generated id.
+                    $lock->release();
+
+                    $newId = $this->generator->generate();
+                    $this->lock = $this->mutex->acquire($newId);
+                    $this->id = $newId;
+                    $this->data = [];
+                } else {
+                    $this->lock = $lock;
+                    $this->data = $data;
+                }
             }
 
             ++$this->lockCount;
