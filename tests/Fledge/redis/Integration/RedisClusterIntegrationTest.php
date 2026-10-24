@@ -226,3 +226,14 @@ it('supports MULTI/EXEC when keys stay within one slot', function () {
     $conn->command('del', ['{txn}.b']);
     $conn->disconnect();
 });
+
+it('createRedisClusterClient round-trips set and get across slots', function () {
+    $seeds = array_map(fn (array $node) => $node['host'].':'.$node['port'], clusterNodes());
+    $client = Fledge\Async\Redis\createRedisClusterClient($seeds);
+
+    foreach (['cluster:helper:a', 'cluster:helper:b', 'cluster:helper:c'] as $key) {
+        $client->set($key, 'v-'.$key);
+        expect($client->get($key))->toBe('v-'.$key);
+        $client->delete($key);
+    }
+});

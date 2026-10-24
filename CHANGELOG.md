@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **`createRedisClusterClient()` helper** next to `createRedisClient()`: builds a cluster-routing `RedisClient` from a list of seeds (`host:port`, URI or `RedisConfig`), with optional endpoint config and parser factory.
+
 ## v13.38.0.2 - 2026-10-24
 
 ### Security
