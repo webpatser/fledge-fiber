@@ -773,6 +773,15 @@ final class Http1Driver extends AbstractHttpDriver
                 // Send an error response only if another response has not already been sent to the request.
                 $this->sendErrorResponse($exception, $request ?? null)->await();
             }
+        } catch (InvalidHeaderException $exception) {
+            // The request line parsed, but a header name or value is one HttpMessage refuses (control characters,
+            // a byte 0xFF, a non-token name). Answer 400 instead of dropping the connection with an error log.
+            if ($this->bodyQueue === null || !$this->pendingResponseCount) {
+                $this->sendErrorResponse(
+                    new ClientException($this->client, "Bad Request: " . $exception->getMessage(), HttpStatus::BAD_REQUEST, $exception),
+                    $request ?? null,
+                )->await();
+            }
         } catch (StreamException) {
             // Client disconnected, finally block will clean up.
         } catch (CancelledException) {

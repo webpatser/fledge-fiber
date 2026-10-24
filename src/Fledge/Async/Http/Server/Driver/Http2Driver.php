@@ -31,6 +31,7 @@ use Fledge\Async\Http\Server\Trailers;
 use Fledge\Async\Queue;
 use Fledge\Async\Stream\InternetAddress;
 use League\Uri;
+use Psr\Http\Message\UriInterface as PsrUri;
 use Psr\Log\LoggerInterface as PsrLogger;
 use Revolt\EventLoop;
 use function Fledge\Async\async;
@@ -1083,14 +1084,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         $this->pinged = 0; // Reset ping count when a request is received.
 
         if ($streamEnded) {
-            $request = new Request(
-                $this->client,
-                $method,
-                $uri,
-                $headers,
-                "",
-                "2"
-            );
+            $request = $this->createRequest($streamId, $method, $uri, $headers, "");
 
             $this->timeoutTracker->suspend($streamId);
 
@@ -1160,18 +1154,37 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
             );
         }
 
-        $request = new Request(
-            $this->client,
-            $method,
-            $uri,
-            $headers,
-            $body,
-            "2",
-            $trailers
-        );
+        $request = $this->createRequest($streamId, $method, $uri, $headers, $body, $trailers);
 
         $this->streamIdMap[$request] = $streamId;
         $stream->pendingResponse = async($this->handleRequest(...), $request);
+    }
+
+    /**
+     * HPACK delivers any bytes; header names or values HttpMessage refuses (CR, LF, NUL and other control
+     * characters, a byte 0xFF, a non-token name) make the request malformed (RFC 9113 section 8.2.1), so they
+     * reset the stream instead of escaping the parser and dropping the whole connection.
+     *
+     * @param array<non-empty-string, list<string>> $headers
+     */
+    private function createRequest(
+        int $streamId,
+        string $method,
+        PsrUri $uri,
+        array $headers,
+        ReadableStream|string $body,
+        ?Trailers $trailers = null,
+    ): Request {
+        try {
+            return new Request($this->client, $method, $uri, $headers, $body, "2", $trailers);
+        } catch (InvalidHeaderException $exception) {
+            throw new Http2StreamException(
+                "Invalid header field",
+                $streamId,
+                Http2Parser::PROTOCOL_ERROR,
+                $exception
+            );
+        }
     }
 
     public function handleData(int $streamId, string $data): void
