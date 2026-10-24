@@ -670,6 +670,14 @@ final class Http1Driver extends AbstractHttpDriver
                             $this->updateTimeout();
 
                             if ($bufferLength >= $chunkLengthRemaining + 2) {
+                                if (\substr($buffer, $chunkLengthRemaining, 2) !== "\r\n") {
+                                    throw new ClientException(
+                                        $this->client,
+                                        "Bad Request: chunk data not terminated by CRLF",
+                                        HttpStatus::BAD_REQUEST
+                                    );
+                                }
+
                                 try {
                                     $queue->push(\substr($buffer, 0, $chunkLengthRemaining));
                                 } catch (DisposedException) {

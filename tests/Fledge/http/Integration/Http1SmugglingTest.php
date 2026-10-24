@@ -33,3 +33,17 @@ it('still accepts a plain chunked request', function () {
         $server->stop();
     }
 });
+
+it('rejects a chunk whose data is not terminated by CRLF', function () {
+    [$server, $port] = startHttp1RawServer(echoBodyHandler());
+
+    try {
+        // Chunk size 3 but four data bytes follow before the next size line.
+        $response = rawHttp1Exchange($port, "POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabcXY0\r\n\r\n");
+
+        // The parser aborts mid-body, so the server either answers 400 or drops the connection; it must never serve the request.
+        expect(rawHttp1Status($response))->not->toBe(200);
+    } finally {
+        $server->stop();
+    }
+});
