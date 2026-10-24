@@ -71,6 +71,8 @@ final class Http1Driver extends AbstractHttpDriver
         private readonly int $headerSizeLimit = self::DEFAULT_HEADER_SIZE_LIMIT,
         private readonly int $bodySizeLimit = self::DEFAULT_BODY_SIZE_LIMIT,
         private readonly bool $allowHttp2Upgrade = false,
+        private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
+        private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
         parent::__construct($requestHandler, $errorHandler, $logger);
 
@@ -173,6 +175,8 @@ final class Http1Driver extends AbstractHttpDriver
                             headerSizeLimit: $this->headerSizeLimit,
                             bodySizeLimit: $this->bodySizeLimit,
                             pushEnabled: false,
+                            lowValueFrameLimit: $this->lowValueFrameLimit,
+                            lowValueFrameWindow: $this->lowValueFrameWindow,
                         );
 
                         $this->http2driver->handleClient(
@@ -387,6 +391,8 @@ final class Http1Driver extends AbstractHttpDriver
                         bodySizeLimit: $this->bodySizeLimit,
                         pushEnabled: false,
                         settings: $h2cSettings,
+                        lowValueFrameLimit: $this->lowValueFrameLimit,
+                        lowValueFrameWindow: $this->lowValueFrameWindow,
                     );
 
                     $this->http2driver->initializeWriting($this->client, $this->writableStream);

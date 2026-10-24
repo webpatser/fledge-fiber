@@ -21,6 +21,8 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
         private bool $http2Enabled = true,
         private bool $allowHttp2Upgrade = false,
         private bool $pushEnabled = true,
+        private int $lowValueFrameLimit = HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT,
+        private int $lowValueFrameWindow = HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
     }
 
@@ -39,6 +41,8 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
                 headerSizeLimit: $this->headerSizeLimit,
                 bodySizeLimit: $this->bodySizeLimit,
                 pushEnabled: $this->pushEnabled,
+                lowValueFrameLimit: $this->lowValueFrameLimit,
+                lowValueFrameWindow: $this->lowValueFrameWindow,
             );
         }
 
@@ -50,6 +54,8 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
             headerSizeLimit: $this->headerSizeLimit,
             bodySizeLimit: $this->bodySizeLimit,
             allowHttp2Upgrade: $this->http2Enabled && $this->allowHttp2Upgrade,
+            lowValueFrameLimit: $this->lowValueFrameLimit,
+            lowValueFrameWindow: $this->lowValueFrameWindow,
         );
     }
 

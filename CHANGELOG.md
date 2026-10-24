@@ -4,6 +4,7 @@
 
 ### Added
 - **`createRedisClusterClient()` helper** next to `createRedisClient()`: builds a cluster-routing `RedisClient` from a list of seeds (`host:port`, URI or `RedisConfig`), with optional endpoint config and parser factory. Nodes learned from the topology reuse the first seed's auth, TLS and timeout options; unix-socket seeds and seeds selecting a database other than 0 are rejected. `RedisConfig::withEndpoint()` points a config at another host and port.
+- **The HTTP/2 low-value frame flood limit is configurable.** `Http2Driver`, `Http1Driver` (h2c upgrade) and `DefaultHttpDriverFactory` accept `lowValueFrameLimit` (default `HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT`, 5000) and `lowValueFrameWindow` (default `HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW`, 10 seconds). `Http2Parser::LOW_VALUE_FRAME_LIMIT` and `LOW_VALUE_FRAME_WINDOW` are replaced by constructor arguments of the same meaning.
 
 ## v13.38.0.2 - 2026-10-24
 

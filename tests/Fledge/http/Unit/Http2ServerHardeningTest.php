@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Fledge\Async\Http\Http2\Http2Parser;
+use Fledge\Async\Http\Server\Driver\HttpDriver;
 
 require_once __DIR__.'/../Fixtures/h2raw.php';
 
@@ -66,7 +67,7 @@ it('closes the connection with ENHANCE_YOUR_CALM on a flood of PRIORITY frames',
         $priority = pack('NC', 0, 15);
         $frame = Http2Parser::compileFrame($priority, Http2Parser::PRIORITY, 0, 1);
 
-        $peer->send(str_repeat($frame, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+        $peer->send(str_repeat($frame, HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT + 1));
 
         expect($peer->goAwayCode())->toBe(Http2Parser::ENHANCE_YOUR_CALM);
     } finally {
@@ -81,7 +82,7 @@ it('closes the connection with ENHANCE_YOUR_CALM on a flood of empty DATA frames
         $peer->openStream(1);
         $frame = Http2Parser::compileFrame('', Http2Parser::DATA, 0, 1);
 
-        $peer->send(str_repeat($frame, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+        $peer->send(str_repeat($frame, HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT + 1));
 
         expect($peer->goAwayCode())->toBe(Http2Parser::ENHANCE_YOUR_CALM);
     } finally {
@@ -96,7 +97,35 @@ it('does not count ordinary frames toward the low-value limit', function () {
         $ping = Http2Parser::compileFrame('12345678', Http2Parser::PING, Http2Parser::ACK, 0);
 
         // PING acks are ignored by the driver and must not trip the flood limit.
-        $peer->send(str_repeat($ping, Http2Parser::LOW_VALUE_FRAME_LIMIT + 1));
+        $peer->send(str_repeat($ping, HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT + 1));
+
+        expect($peer->goAwayCode(0.5))->toBeNull();
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
+
+it('trips a lower configured low-value frame limit earlier', function () {
+    $peer = startH2Driver(['lowValueFrameLimit' => 50]);
+
+    try {
+        $frame = Http2Parser::compileFrame(pack('NC', 0, 15), Http2Parser::PRIORITY, 0, 1);
+
+        $peer->send(str_repeat($frame, 51));
+
+        expect($peer->goAwayCode())->toBe(Http2Parser::ENHANCE_YOUR_CALM);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
+
+it('does not trip a higher configured low-value frame limit at the default count', function () {
+    $peer = startH2Driver(['lowValueFrameLimit' => HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT * 2]);
+
+    try {
+        $frame = Http2Parser::compileFrame(pack('NC', 0, 15), Http2Parser::PRIORITY, 0, 1);
+
+        $peer->send(str_repeat($frame, HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT + 1));
 
         expect($peer->goAwayCode(0.5))->toBeNull();
     } finally {

@@ -136,6 +136,8 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         private readonly int $concurrentStreamLimit = self::DEFAULT_CONCURRENT_STREAM_LIMIT,
         private readonly bool $pushEnabled = true,
         private readonly ?string $settings = null,
+        private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
+        private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
         parent::__construct($requestHandler, $errorHandler, $logger);
 
@@ -240,7 +242,14 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
             $this->client->getId(),
         )) || true);
 
-        $parser = new Http2Parser($this, $this->hpack, $this->settings, $this->headerSizeLimit);
+        $parser = new Http2Parser(
+            $this,
+            $this->hpack,
+            $this->settings,
+            $this->headerSizeLimit,
+            lowValueFrameLimit: $this->lowValueFrameLimit,
+            lowValueFrameWindow: $this->lowValueFrameWindow,
+        );
 
         try {
             $parser->push($chunk ?? $this->readPreface());

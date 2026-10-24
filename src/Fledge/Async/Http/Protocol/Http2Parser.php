@@ -133,12 +133,6 @@ final class Http2Parser
 
     private int $receivedFrameCount = 0;
 
-    /** Seconds per window in which low-value frames are counted. */
-    public const LOW_VALUE_FRAME_WINDOW = 10;
-
-    /** Maximum number of low-value frames (see {@see isLowValueFrame()}) per window before ENHANCE_YOUR_CALM. */
-    public const LOW_VALUE_FRAME_LIMIT = 5000;
-
     private int $lowValueFrameWindowStart = 0;
 
     private int $lowValueFrameCount = 0;
@@ -157,6 +151,10 @@ final class Http2Parser
         ?string $peerSettings = null,
         private readonly int $headerSizeLimit = self::DEFAULT_MAX_FRAME_SIZE,
         private readonly int $frameSizeLimit = self::DEFAULT_MAX_FRAME_SIZE,
+        /** Maximum number of low-value frames (see {@see isLowValueFrame()}) per window before ENHANCE_YOUR_CALM. */
+        private readonly int $lowValueFrameLimit = 5000,
+        /** Seconds per window in which low-value frames are counted. */
+        private readonly int $lowValueFrameWindow = 10,
     ) {
         $this->parser = new Parser($this->parse($peerSettings));
     }
@@ -270,12 +268,12 @@ final class Http2Parser
     {
         $now = \time();
 
-        if ($now - $this->lowValueFrameWindowStart >= self::LOW_VALUE_FRAME_WINDOW) {
+        if ($now - $this->lowValueFrameWindowStart >= $this->lowValueFrameWindow) {
             $this->lowValueFrameWindowStart = $now;
             $this->lowValueFrameCount = 0;
         }
 
-        if (++$this->lowValueFrameCount > self::LOW_VALUE_FRAME_LIMIT) {
+        if (++$this->lowValueFrameCount > $this->lowValueFrameLimit) {
             throw new Http2ConnectionException("Too many low-value frames", self::ENHANCE_YOUR_CALM);
         }
     }
