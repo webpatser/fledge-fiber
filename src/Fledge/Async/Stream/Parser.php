@@ -17,12 +17,18 @@ class Parser
 
     /**
      * @param \Generator<array-key, int|string|null, string, void> $generator
+     * @param int|null $maxDelimitedLength Maximum number of buffered bytes while waiting for a string delimiter
+     *     (e.g. a line terminator). Null means unlimited.
+     * @param \Closure(int):\Throwable|null $onOverflow Builds the exception thrown when the cap is exceeded.
      *
      * @throws InvalidDelimiterError If the generator yields an invalid delimiter.
      * @throws \Throwable If the generator throws.
      */
-    public function __construct(\Generator $generator)
-    {
+    public function __construct(
+        \Generator $generator,
+        private readonly ?int $maxDelimitedLength = null,
+        private readonly ?\Closure $onOverflow = null,
+    ) {
         $this->generator = $generator;
         $this->delimiter = $this->filterDelimiter($this->generator->current());
 
@@ -92,6 +98,14 @@ class Parser
                     $cutAt = $retainFrom = $this->delimiter;
                 } elseif (\is_string($this->delimiter)) {
                     if (($cutAt = \strpos($data, $this->delimiter)) === false) {
+                        if ($this->maxDelimitedLength !== null && \strlen($data) > $this->maxDelimitedLength) {
+                            throw $this->onOverflow !== null
+                                ? ($this->onOverflow)($this->maxDelimitedLength)
+                                : new \OverflowException(
+                                    'Delimiter not found within ' . $this->maxDelimitedLength . ' bytes'
+                                );
+                        }
+
                         return;
                     }
 
