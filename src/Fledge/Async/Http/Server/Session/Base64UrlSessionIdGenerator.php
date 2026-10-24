@@ -2,8 +2,6 @@
 
 namespace Fledge\Async\Http\Server\Session;
 
-use ParagonIE\ConstantTime\Base64UrlSafe;
-
 final class Base64UrlSessionIdGenerator implements SessionIdGenerator
 {
     /** @var non-empty-string */
@@ -29,8 +27,14 @@ final class Base64UrlSessionIdGenerator implements SessionIdGenerator
 
     public function generate(): string
     {
+        $bytes = \random_bytes($this->bytes);
+
+        // The byte count is a multiple of three, so the encoding never needs "=" padding. ext-sodium encodes in
+        // constant time (what paragonie/constant_time_encoding provided upstream, a package Fledge does not ship).
         /** @var non-empty-string */
-        return Base64UrlSafe::encode(\random_bytes($this->bytes));
+        return \function_exists('sodium_bin2base64')
+            ? \sodium_bin2base64($bytes, \SODIUM_BASE64_VARIANT_URLSAFE_NO_PADDING)
+            : \strtr(\base64_encode($bytes), '+/', '-_');
     }
 
     public function validate(string $id): bool
