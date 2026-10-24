@@ -25,7 +25,7 @@
         "illuminate/mail": "^13.0",
         "league/flysystem-aws-s3-v3": "^3.0",
         "pusher/pusher-php-server": "^7.2",
-        "livewire/livewire": "^4.2",
+        "livewire/livewire": "^4.4.8",
         "mockery/mockery": "^1.6",
         "pdphilip/elasticsearch": "^5.0",
         "pestphp/pest": "^4.0",
@@ -36,7 +36,7 @@
         "vlucas/phpdotenv": "^5.6"
     },
     "suggest": {
-        "livewire/livewire": "Required for concurrent Livewire component updates (^4.2)",
+        "livewire/livewire": "Required for concurrent Livewire component updates (^4.4.8)",
         "symfony/http-client": "Required for FledgeSymfonyHttpClient, which runs Symfony HTTP consumers such as the mailer's API transports on the Fledge loop (^7.4 || ^8.0)",
         "ext-resp3": "Install the resp3 PECL extension via PIE (`pie install webpatser/php-resp3`) for faster RESP parsing on cache-heavy workloads; SocketRedisConnection picks it up automatically when loaded."
     },
