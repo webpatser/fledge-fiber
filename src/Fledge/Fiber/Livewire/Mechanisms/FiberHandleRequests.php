@@ -134,6 +134,8 @@ class FiberHandleRequests extends HandleRequests
                 $e = $errors[$key];
 
                 if ($e instanceof \TypeError && ! config('app.debug')) {
+                    report($e);
+
                     abort(419);
                 }
 
@@ -158,6 +160,8 @@ class FiberHandleRequests extends HandleRequests
         try {
             [$snapshot, $effects] = app('livewire')->update($snapshot, $updates, $calls);
         } catch (\TypeError $e) {
+            report($e);
+
             if (config('app.debug')) {
                 throw $e;
             }
