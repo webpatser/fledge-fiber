@@ -205,3 +205,18 @@ it('tracks redirect history and exposes the effective uri', function () {
         $server->stop();
     }
 });
+
+it('does not follow redirects behind guzzle when given a fixed client that would', function () {
+    [$server, $port, $received] = startRedirectLoopback();
+
+    try {
+        $handler = new Fledge\Fiber\Http\FledgeHandler(HttpClientBuilder::buildDefault());
+
+        $response = makeGuzzleClient(['allow_redirects' => false], $handler)->get("http://127.0.0.1:{$port}/a");
+
+        expect($response->getStatusCode())->toBe(302)
+            ->and(array_column($received->getArrayCopy(), 'path'))->toBe(['/a']);
+    } finally {
+        $server->stop();
+    }
+});

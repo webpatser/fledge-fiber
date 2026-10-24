@@ -4,6 +4,7 @@ namespace Fledge\Fiber\Http;
 
 use Fledge\Async\Http\Client\BufferedContent;
 use Fledge\Async\Http\Client\HttpClient;
+use Fledge\Async\Http\Client\Interceptor\FollowRedirects;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
 use Fledge\Async\Stream\Payload;
@@ -152,6 +153,11 @@ class FledgeHandler
             (string) $request->getUri(),
             $request->getMethod()
         );
+
+        // Redirects belong to Guzzle's RedirectMiddleware, which strips credentials
+        // on cross-origin hops. A fixed client built with transport redirects must not
+        // follow a second time behind its back.
+        $asyncRequest->setAttribute(FollowRedirects::ATTRIBUTE, false);
 
         // Copy headers
         foreach ($request->getHeaders() as $name => $values) {

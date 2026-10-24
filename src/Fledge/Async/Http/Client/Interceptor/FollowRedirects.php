@@ -105,6 +105,13 @@ final readonly class FollowRedirects implements ApplicationInterceptor
         return self::removeDotSegments(\implode('/', $parts));
     }
 
+    /**
+     * Request attribute that, when set to false, makes this interceptor pass the request through untouched.
+     * Callers that follow redirects themselves (Guzzle's RedirectMiddleware) set it so a client built with
+     * the default redirect following does not follow a second time and bypass their credential stripping.
+     */
+    public const ATTRIBUTE = 'fledge.follow_redirects';
+
     private int $maxRedirects;
 
     private bool $autoReferrer;
@@ -124,6 +131,10 @@ final readonly class FollowRedirects implements ApplicationInterceptor
         Cancellation $cancellation,
         DelegateHttpClient $httpClient
     ): Response {
+        if ($request->hasAttribute(self::ATTRIBUTE) && $request->getAttribute(self::ATTRIBUTE) === false) {
+            return $httpClient->request($request, $cancellation);
+        }
+
         // Don't follow redirects on pushes, just store the redirect in cache (if an interceptor is configured)
 
         $clonedRequest = $this->cloneRequest($request);
