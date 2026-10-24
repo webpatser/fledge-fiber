@@ -715,9 +715,15 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
             $exception ??= new ClientException($this->client, "Client disconnected", Http2Parser::CANCEL)
         );
 
-        ($this->trailerDeferreds[$id] ?? null)?->error(
-            $exception ?? new ClientException($this->client, "Client disconnected", Http2Parser::CANCEL)
-        );
+        if (isset($this->trailerDeferreds[$id])) {
+            // A stream reset before its Trailers object exists (e.g. an invalid content-length) leaves nobody
+            // awaiting this future; Trailers awaits it itself once created. Without ignore() the error surfaces
+            // as an UnhandledFutureError on the event loop, which stops a server that has no loop error handler.
+            $this->trailerDeferreds[$id]->getFuture()->ignore();
+            $this->trailerDeferreds[$id]->error(
+                $exception ?? new ClientException($this->client, "Client disconnected", Http2Parser::CANCEL)
+            );
+        }
 
         unset($this->streams[$id], $this->bodyQueues[$id], $this->trailerDeferreds[$id]);
 

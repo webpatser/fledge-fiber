@@ -133,13 +133,7 @@ if (! function_exists('startH2Driver')) {
     /** @param  array<string,mixed>  $driverArgs Named Http2Driver constructor overrides. */
     function startH2Driver(array $driverArgs = []): H2RawPeer
     {
-        // A stream reset before its request is dispatched leaves the body queue's error future unobserved, which
-        // the event loop reports as an uncaught throwable. That is outside what these tests check, so swallow it.
-        \Revolt\EventLoop::setErrorHandler(static function (\Throwable $e): void {
-            if (! $e instanceof \Fledge\Async\Internal\UnhandledFutureError) {
-                throw $e;
-            }
-        });
+        \Revolt\EventLoop::setErrorHandler(null);
 
         [$serverSide, $peerSide] = createSocketPair();
 

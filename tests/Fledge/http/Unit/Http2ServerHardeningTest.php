@@ -159,3 +159,26 @@ it('enforces the header list size it advertises in SETTINGS', function () {
         $peer->close();
     }
 })->group('Http2');
+
+it('does not leave an unobserved future when a stream is reset before its request exists', function () {
+    $peer = startH2Driver();
+
+    $errors = [];
+    \Revolt\EventLoop::setErrorHandler(function (\Throwable $e) use (&$errors): void {
+        $errors[] = $e;
+    });
+
+    try {
+        $peer->openStream(1, [['content-length', '1'], ['content-length', '2']]);
+
+        expect($peer->resetCode(1))->toBe(Http2Parser::PROTOCOL_ERROR);
+
+        \Fledge\Async\delay(0.05);
+        gc_collect_cycles();
+        \Fledge\Async\delay(0.05);
+
+        expect($errors)->toBe([]);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
