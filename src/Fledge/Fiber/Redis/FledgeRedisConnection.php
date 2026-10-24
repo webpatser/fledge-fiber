@@ -3,10 +3,14 @@
 namespace Fledge\Fiber\Redis;
 
 use Fledge\Async\Redis\Connection\RetryableCommands;
+use Fledge\Async\Redis\Protocol\QueryException;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisException as AsyncRedisException;
 use Fledge\Async\Redis\RedisSubscriber;
+use Fledge\Async\Sync\LocalMutex;
+use Fledge\Async\Sync\Lock;
 use Closure;
+use Fiber;
 use Illuminate\Contracts\Redis\Connection as ConnectionContract;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
@@ -43,9 +47,27 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     protected ?RedisSubscriber $subscriber;
 
     /**
-     * Whether we are currently inside a MULTI transaction.
+     * Serializes MULTI ... EXEC/DISCARD blocks across fibers. All fibers share
+     * one Redis link, so while a transaction is open every other fiber has to
+     * wait, or its commands would be queued inside (and replied to from) the
+     * other fiber's transaction.
      */
-    protected bool $inTransaction = false;
+    protected ?LocalMutex $transactionMutex = null;
+
+    /**
+     * The lock held by the fiber that has a transaction open.
+     */
+    protected ?Lock $transactionLock = null;
+
+    /**
+     * The fiber (or main context marker) that has a transaction open.
+     */
+    protected ?object $transactionOwner = null;
+
+    /**
+     * Identity used for code running outside any fiber.
+     */
+    private static ?object $mainContext = null;
 
     /**
      * Create a new Fledge Async Redis connection.
@@ -97,6 +119,17 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
                     $method, $this->parseParametersForEvent($parameters), $e, $this
                 ));
 
+                // A failure other than a Redis error reply (connection lost, read
+                // timeout, client rebuilt) leaves the server-side MULTI state
+                // unknown and the caller will likely never reach exec(): give up
+                // the transaction so other fibers do not wait on it forever, and
+                // never retry a queued command outside its MULTI.
+                if (! $e instanceof QueryException && $this->ownsTransaction()) {
+                    $this->abortTransaction();
+
+                    throw $e;
+                }
+
                 $transient = $e instanceof AsyncRedisException
                     && Str::contains($e->getMessage(), static::TRANSIENT_ERROR_MARKERS);
 
@@ -128,6 +161,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     {
         $command = strtoupper($method);
         $args = $this->keyPrefixer->apply($command, $this->flattenParameters($parameters));
+
+        $this->waitForTransactionGate();
 
         return $this->client->execute($command, ...$args);
     }
@@ -555,11 +590,13 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
     /**
      * Execute commands in a transaction.
+     *
+     * Without a callback this behaves like multi(): the caller must finish
+     * with exec() or discard(), which releases the transaction lock.
      */
     public function transaction(?callable $callback = null)
     {
-        $this->client->execute('MULTI');
-        $this->inTransaction = true;
+        $this->beginTransaction();
 
         if (is_null($callback)) {
             return $this;
@@ -567,16 +604,13 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         try {
             $callback($this);
-            $result = $this->client->execute('EXEC');
-            $this->inTransaction = false;
-
-            return $result;
         } catch (Throwable $e) {
-            $this->client->execute('DISCARD');
-            $this->inTransaction = false;
+            $this->endTransaction('DISCARD');
 
             throw $e;
         }
+
+        return $this->endTransaction('EXEC');
     }
 
     /**
@@ -584,8 +618,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function multi()
     {
-        $this->client->execute('MULTI');
-        $this->inTransaction = true;
+        $this->beginTransaction();
 
         return $this;
     }
@@ -595,9 +628,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function exec()
     {
-        $this->inTransaction = false;
-
-        return $this->client->execute('EXEC');
+        return $this->endTransaction('EXEC');
     }
 
     /**
@@ -605,9 +636,121 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function discard()
     {
-        $this->inTransaction = false;
+        return $this->endTransaction('DISCARD');
+    }
 
-        return $this->client->execute('DISCARD');
+    /**
+     * Whether the current fiber has a MULTI transaction open on this connection.
+     */
+    public function ownsTransaction(): bool
+    {
+        return $this->transactionOwner !== null
+            && $this->transactionOwner === self::currentContext();
+    }
+
+    /**
+     * Take the transaction lock (waiting for any other fiber's transaction to
+     * finish) and send MULTI. A nested MULTI from the owning fiber is passed
+     * through so Redis reports it as usual.
+     */
+    protected function beginTransaction(): void
+    {
+        if ($this->ownsTransaction()) {
+            $this->client->execute('MULTI');
+
+            return;
+        }
+
+        $lock = $this->transactionMutex()->acquire();
+        $this->transactionLock = $lock;
+        $this->transactionOwner = self::currentContext();
+
+        try {
+            $this->client->execute('MULTI');
+        } catch (Throwable $e) {
+            $this->releaseTransaction();
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Send EXEC or DISCARD and always release the transaction lock held by
+     * the current fiber, also when the command fails.
+     */
+    protected function endTransaction(string $command): mixed
+    {
+        if (! $this->ownsTransaction()) {
+            // Not in a transaction from this fiber: let Redis answer the
+            // stray EXEC/DISCARD, but never inside another fiber's MULTI.
+            $this->waitForTransactionGate();
+
+            return $this->client->execute($command);
+        }
+
+        try {
+            return $this->client->execute($command);
+        } finally {
+            $this->releaseTransaction();
+        }
+    }
+
+    /**
+     * Best-effort DISCARD after a failed command, then release the lock. On a
+     * dropped connection the DISCARD runs on the fresh connection and Redis
+     * answers "DISCARD without MULTI", which is ignored.
+     */
+    protected function abortTransaction(): void
+    {
+        try {
+            $this->client->execute('DISCARD');
+        } catch (Throwable) {
+            // The transaction is gone either way.
+        } finally {
+            $this->releaseTransaction();
+        }
+    }
+
+    /**
+     * Drop transaction ownership and wake the next waiting fiber.
+     */
+    protected function releaseTransaction(): void
+    {
+        $lock = $this->transactionLock;
+
+        $this->transactionLock = null;
+        $this->transactionOwner = null;
+
+        $lock?->release();
+    }
+
+    /**
+     * Block the current fiber while another fiber has a transaction open.
+     *
+     * The link enqueues synchronously, so once this returns the following
+     * client call is ordered before any later MULTI.
+     */
+    protected function waitForTransactionGate(): void
+    {
+        while ($this->transactionOwner !== null && ! $this->ownsTransaction()) {
+            $this->transactionMutex()->acquire()->release();
+        }
+    }
+
+    /**
+     * Lazily create the transaction mutex.
+     */
+    protected function transactionMutex(): LocalMutex
+    {
+        return $this->transactionMutex ??= new LocalMutex;
+    }
+
+    /**
+     * Identity of the running fiber, or a shared marker for the main context.
+     */
+    private static function currentContext(): object
+    {
+        return Fiber::getCurrent() ?? (self::$mainContext ??= new \stdClass);
     }
 
     /**
@@ -623,11 +766,15 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         $start = microtime(true);
 
         try {
-            $result = $this->client->eval($script, $keys, $args);
+            $result = $this->evalWithFallback((string) $script, $keys, $args);
         } catch (Throwable $e) {
             $this->events?->dispatch(new CommandFailed(
                 'eval', $this->parseParametersForEvent([$script, $numberOfKeys, ...$arguments]), $e, $this
             ));
+
+            if (! $e instanceof QueryException && $this->ownsTransaction()) {
+                $this->abortTransaction();
+            }
 
             throw $e;
         }
@@ -639,6 +786,31 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         ));
 
         return $result;
+    }
+
+    /**
+     * EVALSHA with an EVAL fallback on NOSCRIPT. Done here rather than via
+     * RedisClient::eval() so the transaction gate is checked before each of
+     * the two sends: the fallback is issued after a suspension, by which time
+     * another fiber may have opened a MULTI.
+     */
+    protected function evalWithFallback(string $script, array $keys, array $args): mixed
+    {
+        $count = count($keys);
+
+        try {
+            $this->waitForTransactionGate();
+
+            return $this->client->execute('evalsha', sha1($script), $count, ...$keys, ...$this->flattenParameters($args));
+        } catch (QueryException $e) {
+            if (! str_starts_with($e->getMessage(), 'NOSCRIPT')) {
+                throw $e;
+            }
+        }
+
+        $this->waitForTransactionGate();
+
+        return $this->client->execute('eval', $script, $count, ...$keys, ...$this->flattenParameters($args));
     }
 
     /**
@@ -719,6 +891,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     public function executeRaw(array $parameters)
     {
         $command = array_shift($parameters);
+
+        $this->waitForTransactionGate();
 
         return $this->client->execute($command, ...$parameters);
     }

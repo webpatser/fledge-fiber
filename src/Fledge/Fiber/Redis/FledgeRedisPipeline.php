@@ -35,6 +35,20 @@ class FledgeRedisPipeline
      */
     public function exec(): array
     {
+        // Inside this fiber's MULTI the commands must stay on this fiber:
+        // child fibers would wait on the transaction lock this fiber holds.
+        if ($this->connection->ownsTransaction()) {
+            $results = [];
+
+            foreach ($this->commands as [$method, $parameters]) {
+                $results[] = $this->connection->command($method, $parameters);
+            }
+
+            $this->commands = [];
+
+            return $results;
+        }
+
         $futures = [];
 
         foreach ($this->commands as [$method, $parameters]) {
