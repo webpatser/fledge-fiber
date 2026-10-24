@@ -1422,8 +1422,7 @@ class ConnectionProcessor implements SqlTransientResource
                                 case 3: // success
                                     return; // expecting OK afterwards
                                 case 4: // fast auth failure
-                                    /* unix domain socket, information not trivially available from $this->socket */
-                                    if ($this->capabilities & self::CLIENT_SSL || $this->config->getHost()[0] === "/") {
+                                    if ($this->isSecureTransport()) {
                                         $this->write($this->config->getPassword() . "\0");
                                     } else {
                                         $this->write("\x02");
@@ -1593,6 +1592,15 @@ class ConnectionProcessor implements SqlTransientResource
         $this->write(\implode($payload));
     }
 
+    /**
+     * True when the password may travel in cleartext: TLS is negotiated or the connection is a
+     * unix domain socket (information not trivially available from $this->socket).
+     */
+    private function isSecureTransport(): bool
+    {
+        return ($this->capabilities & self::CLIENT_SSL) !== 0 || $this->config->getHost()[0] === "/";
+    }
+
     private function getAuthData(): string
     {
         $password = $this->config->getPassword() ?? "";
@@ -1606,6 +1614,12 @@ class ConnectionProcessor implements SqlTransientResource
                 case "mysql_native_password":
                     return $this->secureAuth($password, $this->authPluginData);
                 case "mysql_clear_password":
+                    if (!$this->isSecureTransport()) {
+                        throw new SqlConnectionException(
+                            "Refusing mysql_clear_password authentication over an unencrypted TCP connection; "
+                            . "enable TLS or connect through a unix socket"
+                        );
+                    }
                     return $password;
                 case "sha256_password":
                     $key = $this->config->getKey();
