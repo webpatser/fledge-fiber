@@ -53,3 +53,31 @@ it('parses dotted, plus and dash subtypes in full', function () {
         ->and($types['svg'])->toBe('image/svg+xml')
         ->and($types['docx'])->toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 });
+
+it('serves the modern overrides', function (string $ext, string $type) {
+    expect(loadedMimeTypes()[$ext])->toBe($type);
+})->with([
+    ['js', 'text/javascript'],
+    ['mjs', 'text/javascript'],
+    ['woff', 'font/woff'],
+    ['woff2', 'font/woff2'],
+    ['ttf', 'font/ttf'],
+    ['otf', 'font/otf'],
+    ['xhtml', 'application/xhtml+xml'],
+    ['webp', 'image/webp'],
+    ['avif', 'image/avif'],
+    ['wasm', 'application/wasm'],
+    ['jsonld', 'application/ld+json'],
+    ['webmanifest', 'application/manifest+json'],
+    ['webm', 'video/webm'],
+    ['opus', 'audio/ogg'],
+    ['flac', 'audio/flac'],
+    ['heic', 'image/heic'],
+    ['map', 'application/json'],
+    ['yaml', 'application/yaml'],
+    ['yml', 'application/yaml'],
+    ['vtt', 'text/vtt'],
+    ['m3u8', 'application/m3u'],
+    ['gltf', 'model/gltf+json'],
+    ['glb', 'model/gltf-binary'],
+]);
