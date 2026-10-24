@@ -73,10 +73,11 @@ function createRedisClient(
  * Create a client that routes commands across a Redis Cluster.
  *
  * @param list<RedisConfig|string> $seeds
- *     Seed nodes as "host:port" (or "[v6]:port"), a URI such as "tcp://host:port", or a RedisConfig.
+ *     Seed nodes as "host:port" (or "[v6]:port"), a URI such as "rediss://user:pass@host:port", or a RedisConfig.
  *     Must not be empty; the topology is discovered from the first reachable seed.
  * @param (\Closure(string):(RedisConfig|string))|null $configForEndpoint
- *     Builds the config for a "host:port" endpoint learned from the topology (defaults to a plain tcp:// URI).
+ *     Builds the config for a "host:port" endpoint learned from the topology. Defaults to the first seed's
+ *     options (auth, TLS, timeouts, retry policy) pointed at that endpoint.
  * @param (\Closure(\Closure(RedisResponse):void):ParserInterface)|null $parserFactory
  *     Optional parser factory used for every node connection.
  *
@@ -94,16 +95,40 @@ function createRedisClusterClient(
     $normalized = [];
 
     foreach ($seeds as $seed) {
-        if ($seed instanceof RedisConfig) {
-            $normalized[] = $seed;
-        } elseif (\is_string($seed) && $seed !== '') {
-            $normalized[] = \str_contains($seed, '://') ? $seed : 'tcp://' . $seed;
-        } else {
+        if (\is_string($seed) && $seed !== '') {
+            try {
+                $seed = RedisConfig::fromUri(\str_contains($seed, '://') ? $seed : 'tcp://' . $seed);
+            } catch (RedisException $exception) {
+                throw new \InvalidArgumentException('Invalid cluster seed: ' . $exception->getMessage(), 0, $exception);
+            }
+        }
+
+        if (!$seed instanceof RedisConfig) {
             throw new \InvalidArgumentException('Each cluster seed must be a non-empty string or a RedisConfig.');
         }
+
+        if (!\str_starts_with($seed->getConnectUri(), 'tcp://')) {
+            throw new \InvalidArgumentException('Cluster seeds must be TCP endpoints, got ' . $seed->getConnectUri());
+        }
+
+        if ($seed->getDatabase() !== 0) {
+            throw new \InvalidArgumentException('Redis Cluster only supports database 0.');
+        }
+
+        $normalized[] = $seed;
     }
 
-    $configForEndpoint ??= static fn (string $endpoint): string => 'tcp://' . $endpoint;
+    $template = $normalized[0];
+
+    $configForEndpoint ??= static function (string $endpoint) use ($template): RedisConfig {
+        $separator = \strrpos($endpoint, ':');
+
+        if ($separator === false) {
+            return $template->withEndpoint($endpoint, RedisConfig::DEFAULT_PORT);
+        }
+
+        return $template->withEndpoint(\substr($endpoint, 0, $separator), (int) \substr($endpoint, $separator + 1));
+    };
 
     $linkFactory = $parserFactory === null ? null : static function (RedisConfig|string $config) use ($parserFactory): RedisLink {
         $connector = createRedisConnector($config, null, $parserFactory);

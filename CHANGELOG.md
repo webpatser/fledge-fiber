@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **`createRedisClusterClient()` helper** next to `createRedisClient()`: builds a cluster-routing `RedisClient` from a list of seeds (`host:port`, URI or `RedisConfig`), with optional endpoint config and parser factory.
+- **`createRedisClusterClient()` helper** next to `createRedisClient()`: builds a cluster-routing `RedisClient` from a list of seeds (`host:port`, URI or `RedisConfig`), with optional endpoint config and parser factory. Nodes learned from the topology reuse the first seed's auth, TLS and timeout options; unix-socket seeds and seeds selecting a database other than 0 are rejected. `RedisConfig::withEndpoint()` points a config at another host and port.
 
 ## v13.38.0.2 - 2026-10-24
 

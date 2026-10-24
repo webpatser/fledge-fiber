@@ -288,6 +288,24 @@ final class RedisConfig
     }
 
     /**
+     * Same options (auth, TLS, timeouts, retry policy) against another TCP host and port.
+     * An IPv6 host may be given with or without brackets.
+     */
+    public function withEndpoint(string $host, int $port): self
+    {
+        if ($host !== '' && !\str_starts_with($host, '[') && \str_contains($host, ':')) {
+            $host = '[' . $host . ']';
+        }
+
+        return clone($this, [
+            'host' => $host,
+            'port' => $port,
+            'uri' => \sprintf('tcp://%s:%d', $host, $port),
+            'tlsContext' => null,
+        ]);
+    }
+
+    /**
      * When using the "redis" schemes the URI is parsed according to the rules defined by the provisional registration
      * documents approved by IANA. If the URI has a username or password in its "user-information" part, or a database
      * number in the "path" part, these values override the values of "username" / "password" / "database" if they are
