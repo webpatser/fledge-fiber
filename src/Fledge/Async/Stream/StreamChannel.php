@@ -36,6 +36,9 @@ final readonly class StreamChannel implements Channel
 
     /**
      * Creates a new channel from the given stream objects. Note that $read and $write can be the same object.
+     *
+     * The default serializer unserializes any class. For a peer that is not fully trusted, pass
+     * `new NativeSerializer([...classes])` (or `new NativeSerializer([])` for no objects) as hardening.
      */
     public function __construct(
         private ReadableStream $read,

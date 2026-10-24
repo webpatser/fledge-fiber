@@ -9,7 +9,12 @@ final class NativeSerializer implements Serializer
 
     /**
      * @param list<class-string>|null $allowedClasses List of allowed class names to be unserialized.
-     *  Null for any class.
+     *  Null (the default) allows any class, matching stock PHP and Laravel's cache default, so stored
+     *  Carbon instances, enums and DTOs round-trip. Null also lets anyone who can write the payload
+     *  (a shared Redis, a shared memory segment, a stream peer) instantiate gadget classes. As hardening,
+     *  pass the classes you store (or an empty array for none; objects then become __PHP_Incomplete_Class)
+     *  as the `serializer` argument of RedisCache, RedisParcel, SharedMemoryParcel, RedisSessionStorage,
+     *  LocalSessionStorage or StreamChannel. Enum cases always unserialize: PHP does not gate them.
      */
     public function __construct(?array $allowedClasses = null)
     {
