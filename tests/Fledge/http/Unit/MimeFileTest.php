@@ -70,14 +70,32 @@ it('serves the modern overrides', function (string $ext, string $type) {
     ['jsonld', 'application/ld+json'],
     ['webmanifest', 'application/manifest+json'],
     ['webm', 'video/webm'],
-    ['opus', 'audio/ogg'],
+    ['opus', 'audio/opus'],
     ['flac', 'audio/flac'],
     ['heic', 'image/heic'],
     ['map', 'application/json'],
     ['yaml', 'application/yaml'],
     ['yml', 'application/yaml'],
     ['vtt', 'text/vtt'],
-    ['m3u8', 'application/m3u'],
+    ['m3u8', 'application/vnd.apple.mpegurl'],
     ['gltf', 'model/gltf+json'],
     ['glb', 'model/gltf-binary'],
+]);
+
+it('keeps the established type for extensions the old list already mapped', function (string $ext, string $type) {
+    expect(loadedMimeTypes()[$ext])->toBe($type);
+})->with([
+    ['mp4', 'video/mp4'],
+    ['ico', 'image/x-icon'],
+    ['xml', 'text/xml'],
+    ['ics', 'text/calendar'],
+    ['avi', 'video/x-msvideo'],
+    ['wav', 'audio/x-wav'],
+    ['c', 'text/plain'],
+    ['mpp', 'application/vnd.ms-project'],
+    ['xlt', 'application/vnd.ms-excel'],
+    ['ts', 'video/mp2t'],
+    ['3gp', 'video/3gpp'],
+    ['gz', 'application/gzip'],
+    ['cjs', 'text/javascript'],
 ]);

@@ -7,7 +7,7 @@
 - **The HTTP/2 low-value frame flood limit is configurable.** `Http2Driver`, `Http1Driver` (h2c upgrade) and `DefaultHttpDriverFactory` accept `lowValueFrameLimit` (default `HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT`, 5000) and `lowValueFrameWindow` (default `HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW`, 10 seconds). Non-positive values throw a `ValueError`. `Http2Parser` takes the same two constructor arguments; its `LOW_VALUE_FRAME_LIMIT` and `LOW_VALUE_FRAME_WINDOW` constants stay as deprecated aliases of the `HttpDriver` defaults.
 
 ### Changed
-- **The bundled MIME type list is refreshed** from the symfony/mime map (241 to 1833 extensions, every existing extension kept). `js`/`mjs` are `text/javascript`, fonts are `font/woff`, `font/woff2`, `font/ttf` and `font/otf`, `xhtml` is `application/xhtml+xml`, and `webp`, `avif`, `wasm`, `webmanifest`, `jsonld` and friends are now known.
+- **The bundled MIME type list is refreshed** from the symfony/mime map (241 to 1833 extensions, every existing extension kept). Extensions already in the list keep their type unless the new one is the IANA registration or the established browser type (`cer`, `p12`/`pfx`, `p7m`/`p7c`/`p7s`, `ttc`, `jpm`, `stl`, `cat`, `wrl`/`vrml`, `exe`/`dll`, `xsl`/`xslt`, `mid`, `jfif`). `js`/`mjs` are `text/javascript`, fonts are `font/woff`, `font/woff2`, `font/ttf` and `font/otf`, `xhtml` is `application/xhtml+xml`, `opus` is `audio/opus`, `m3u8` is `application/vnd.apple.mpegurl`, `ts` is `video/mp2t`, and `webp`, `avif`, `wasm`, `webmanifest`, `jsonld` and friends are now known.
 - **`DocumentRoot::loadMimeFileTypes()` parses dotted, plus and dash subtypes in full.** `application/vnd.ms-excel` was truncated to `application/vnd`.
 
 ## v13.38.0.2 - 2026-10-24
