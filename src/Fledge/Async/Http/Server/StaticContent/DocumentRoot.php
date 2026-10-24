@@ -31,6 +31,9 @@ final class DocumentRoot implements RequestHandler
 
     private const READ_CHUNK_SIZE = 8192;
 
+    /** Maximum number of ranges accepted in one Range header. */
+    private const MAX_RANGES = 10;
+
     private bool $running = false;
 
     private ?RequestHandler $fallback = null;
@@ -418,7 +421,12 @@ final class DocumentRoot implements RequestHandler
         $ranges = [];
         $size = $fileInfo->size;
 
-        foreach (\explode(',', $rawRanges) as $range) {
+        $rangeParts = \explode(',', $rawRanges);
+        if (\count($rangeParts) > self::MAX_RANGES) {
+            return null;
+        }
+
+        foreach ($rangeParts as $range) {
             // If a range is missing the dash separator it's malformed; pull out here.
             if (!\str_contains($range, '-')) {
                 return null;
@@ -428,9 +436,8 @@ final class DocumentRoot implements RequestHandler
             [$startPos, $endPos] = \explode('-', \rtrim($range), 2);
 
             if ($startPos === '' && $endPos !== '') {
-                // The -1 is necessary and not a hack because byte ranges are inclusive and start
-                // at 0. DO NOT REMOVE THE -1.
-                $startPos = $size - (int) $endPos - 1;
+                // Suffix range: the last N bytes; clamp so N > size yields the whole file.
+                $startPos = \max(0, $size - (int) $endPos);
                 $endPos = $size - 1;
             } elseif ($endPos === '' && $startPos !== '') {
                 $startPos = (int) $startPos;
@@ -449,7 +456,28 @@ final class DocumentRoot implements RequestHandler
                 return null;
             }
 
-            $ranges[] = new Internal\ByteRange($startPos, $endPos);
+            $ranges[] = new Internal\ByteRange($startPos, \min($endPos, $size - 1));
+        }
+
+        if (\count($ranges) > 1) {
+            \usort($ranges, static fn (Internal\ByteRange $a, Internal\ByteRange $b) => $a->start <=> $b->start);
+
+            $total = 0;
+            $previousEnd = -1;
+            foreach ($ranges as $byteRange) {
+                // Overlapping ranges are a known amplification vector (RFC 7233 section 6.1).
+                if ($byteRange->start <= $previousEnd) {
+                    return null;
+                }
+
+                $previousEnd = $byteRange->end;
+                $total += $byteRange->end - $byteRange->start + 1;
+            }
+
+            // A multi-range set asking for more than the file itself is pointless.
+            if ($total > $size) {
+                return null;
+            }
         }
 
         return new Internal\ByteRangeRequest(
