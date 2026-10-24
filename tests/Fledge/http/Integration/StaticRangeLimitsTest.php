@@ -22,9 +22,7 @@ function withRangeServer(Closure $test): void
 
     $server = SocketHttpServer::createForDirectAccess(new NullLogger);
     $root = new DocumentRoot($server, new DefaultErrorHandler, $dir, new Filesystem(new BlockingFilesystemDriver));
-    // The package's default mime file is not shipped, so load a minimal one explicitly.
-    file_put_contents($dir.'/mime', "txt text/plain\n");
-    $root->loadMimeFileTypes($dir.'/mime');
+    // onStart() loads the bundled default mime file (DocumentRoot::DEFAULT_MIME_TYPE_FILE).
     [$server, $port] = startHttp1RawServer($root, $server);
 
     try {
@@ -32,7 +30,6 @@ function withRangeServer(Closure $test): void
     } finally {
         $server->stop();
         @unlink($dir.'/f.txt');
-        @unlink($dir.'/mime');
         @rmdir($dir);
     }
 }
@@ -80,5 +77,16 @@ it('rejects overlapping ranges', function () {
 it('accepts disjoint ranges', function () {
     withRangeServer(function (int $port) {
         expect(rawHttp1Status(rangeRequest($port, '0-1,5-6')))->toBe(206);
+    });
+});
+
+it('serves files with the bundled default mime types', function () {
+    expect(is_file(DocumentRoot::DEFAULT_MIME_TYPE_FILE))->toBeTrue();
+
+    withRangeServer(function (int $port) {
+        $response = rawHttp1Exchange($port, "GET /f.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+
+        expect(rawHttp1Status($response))->toBe(200)
+            ->and(strtolower($response))->toContain('content-type: text/plain');
     });
 });
