@@ -264,4 +264,4 @@ Follows Fledge versioning: `v13.x.y.z` where the first three digits match the La
 
 ## License
 
-Apache-2.0
+Apache-2.0. Portions are derived from [amphp](https://github.com/amphp) (MIT); see `LICENSE` for the original notice.
