@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.38.0.4 - 2026-10-25
+
+### Fixed
+- **`DocumentRoot` no longer answers `304 Not Modified` for a file that changed since `If-Modified-Since`.** The comparison was inverted, so browsers kept serving a stale copy until a forced refresh. It now sends 304 only when the file's mtime is not newer than the header, and ignores `If-Modified-Since` when `If-None-Match` is present (RFC 9110 13.1.3). Same bug as amphp/http-server-static-content#18.
+
 ## v13.38.0.3 - 2026-10-24
 
 ### Added
