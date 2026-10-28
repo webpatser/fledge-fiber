@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.39.0.1 - 2026-10-28
+
+### Changed
+- Mirror 'Broken pipe' in the Redis lost-connection retry list (Laravel 13.39.0).
+
 ## v13.38.0.4 - 2026-10-25
 
 ### Fixed

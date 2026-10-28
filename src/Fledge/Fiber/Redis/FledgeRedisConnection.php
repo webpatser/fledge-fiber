@@ -93,7 +93,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      * phpredis read timeout marker.
      */
     protected const array TRANSIENT_ERROR_MARKERS = [
-        'went away', 'socket', 'connection', 'Connection', 'read error on connection',
+        'went away', 'socket', 'connection', 'Connection', 'read error on connection', 'Broken pipe',
     ];
 
     /**
