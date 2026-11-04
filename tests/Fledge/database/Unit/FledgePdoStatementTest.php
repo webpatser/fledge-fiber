@@ -58,7 +58,7 @@ it('converts 1-based bindings to 0-based array', function () {
     $stmt->execute();
 });
 
-it('clears bindings after execute', function () {
+it('keeps bindings after execute, like PDO', function () {
     $mockStatement = Mockery::mock(SqlStatement::class);
     $mockStatement->shouldReceive('execute')->andReturn(new FakeRowResult([]));
 
@@ -67,7 +67,7 @@ it('clears bindings after execute', function () {
     $stmt->execute();
 
     $ref = new ReflectionProperty($stmt, 'bindings');
-    expect($ref->getValue($stmt))->toBeEmpty();
+    expect($ref->getValue($stmt))->toBe([1 => 'foo']);
 });
 
 it('fetches all rows as objects by default', function () {

@@ -1,5 +1,13 @@
 # Changelog
 
+## v13.40.0.3 - 2026-11-04
+
+### Fixed
+- **Re-executing a prepared statement through `FledgePdo` no longer returns wrong values on the pure-PHP MySQL driver (`fledge-mariadb`).** A second `execute()` could send NULL for a bound parameter, glue the old and new values together (`U1U2`), or reuse the old value. `FledgePdoStatement` now follows `pdo_mysql`: bound values stay for the next `execute()`, an array replaces them, and a rebind takes effect. A single execute costs no extra round trip.
+- **A connection or transaction statement no longer sends NULL when re-executed without rebinding.** The server drops long data on every execute, so such a statement now needs a new `bind()`, and without one `execute()` throws `Parameter 0 missing`. An execute that can't be encoded also drops the long data the server still holds. A raw `MysqlStatementPool` used without `FledgePdo` is unchanged: it replays its binds on every execute, and a new `bind()` appends unless `reset()` runs first.
+- **Repeated named parameters now bind every position.** `SELECT :a, :a` bound the first position twice and left the other empty, also when mixed with positional parameters.
+- **A bound parameter that also gets an arg no longer shifts the later values.** The server skips the value of a parameter with long data, so the arg landed on the next parameter. The bound value now wins and the arg isn't sent.
+
 ## v13.40.0.2 - 2026-11-04
 
 ### Fixed

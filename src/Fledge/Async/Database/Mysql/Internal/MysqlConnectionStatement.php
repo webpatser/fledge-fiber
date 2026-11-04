@@ -8,6 +8,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Database\Mysql\MysqlResult;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\SqlConnectionException;
+use Fledge\Async\Database\SqlQueryError;
 use Revolt\EventLoop;
 
 /** @internal */
@@ -110,20 +111,11 @@ final class MysqlConnectionStatement implements MysqlStatement
             if (!isset($this->byNamed[$paramId])) {
                 throw new \Error("Named parameter :$paramId is not defined for this prepared statement");
             }
-            $array = $this->byNamed[$paramId];
-            $i = \reset($array);
         }
 
-        do {
-            $realId = -1;
-            while (isset($this->named[++$realId]) || $i-- > 0) {
-                if (!\is_numeric($paramId) && isset($this->named[$realId]) && $this->named[$realId] === $paramId) {
-                    break;
-                }
-            }
-
+        foreach ($this->byNamed[$paramId] as $realId) {
             $this->getProcessor()->bindParam($this->statementId, $realId, $data);
-        } while (isset($array) && $i = \next($array));
+        }
 
         $prior = $this->prebound[$paramId] ?? '';
         $this->prebound[$paramId] = $prior . $data;
@@ -133,32 +125,55 @@ final class MysqlConnectionStatement implements MysqlStatement
     {
         $this->lastUsedAt = \time();
 
+        // Long data wins over an arg for the same parameter: the server skips the value of a parameter
+        // that has long data, so a value sent anyway would land on the next parameter.
         $prebound = $args = [];
         for ($unnamed = $i = 0; $i < $this->totalParamCount; $i++) {
             if (isset($this->named[$i])) {
                 $name = $this->named[$i];
-                if (\array_key_exists($name, $params)) {
-                    $args[$i] = $params[$name];
-                } elseif (!\array_key_exists($name, $this->prebound)) {
-                    throw new \Error("Named parameter '$name' missing for executing prepared statement");
-                } else {
+                if (\array_key_exists($name, $this->prebound)) {
                     $prebound[$i] = $this->prebound[$name];
+                } elseif (\array_key_exists($name, $params)) {
+                    $args[$i] = $params[$name];
+                } else {
+                    throw new \Error("Named parameter '$name' missing for executing prepared statement");
                 }
-            } elseif (\array_key_exists($unnamed, $params)) {
-                $args[$i] = $params[$unnamed];
-                $unnamed++;
-            } elseif (!\array_key_exists($unnamed, $this->prebound)) {
-                throw new \Error("Parameter $unnamed missing for executing prepared statement");
-            } else {
+            } elseif (\array_key_exists($unnamed, $this->prebound)) {
                 $prebound[$i] = $this->prebound[$unnamed++];
+            } elseif (\array_key_exists($unnamed, $params)) {
+                $args[$i] = $params[$unnamed++];
+            } else {
+                throw new \Error("Parameter $unnamed missing for executing prepared statement");
             }
         }
 
         // PREPARE_OK completes prepare() before the definitions arrive. Queue right away, behind the writes
         // of earlier binds: the task reads the definitions when it runs, once all of them are in.
-        return $this->getProcessor()
-            ->execute($this->statementId, $this->query, $this->result, $prebound, $args)
-            ->await();
+        $processor = $this->getProcessor();
+
+        // The server drops long data once an execute reaches it, so these binds are used up.
+        $hadBinds = $this->prebound !== [];
+        $this->prebound = [];
+
+        try {
+            return $processor
+                ->execute($this->statementId, $this->query, $this->result, $prebound, $args)
+                ->await();
+        } catch (SqlQueryError|SqlConnectionException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            // The execute never left, for example on a value that can't be encoded: the server still
+            // holds the long data, and would use it for the next execute.
+            if ($hadBinds) {
+                try {
+                    $this->reset();
+                } catch (\Throwable) {
+                    // The connection is gone, and the long data with it.
+                }
+            }
+
+            throw $exception;
+        }
     }
 
     public function getQuery(): string
@@ -168,6 +183,8 @@ final class MysqlConnectionStatement implements MysqlStatement
 
     public function reset(): void
     {
+        $this->prebound = [];
+
         $this->getProcessor()
             ->resetStmt($this->statementId)
             ->await();

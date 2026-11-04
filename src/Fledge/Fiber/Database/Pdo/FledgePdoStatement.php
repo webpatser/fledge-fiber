@@ -39,6 +39,11 @@ class FledgePdoStatement
     protected array $bindings = [];
 
     /**
+     * Whether a previous execute() may have left bound data on the driver statement.
+     */
+    protected bool $executed = false;
+
+    /**
      * The current fetch mode.
      */
     protected int $fetchMode = PDO::FETCH_OBJ;
@@ -122,27 +127,39 @@ class FledgePdoStatement
         }
 
         return $this->guard(function () use ($params): bool {
-            try {
-                $executeParams = $params ?? $this->buildExecuteParams();
-
-                // Workaround for Fledge Async MySQL sending string params as LONG_BLOB type,
-                // which breaks MariaDB native UUID columns. Pre-binding via bind()
-                // sends the data as VarString instead (see Fledge Async MySQL#142).
-                if ($this->statement instanceof MysqlStatement) {
-                    $this->prebindUuids($executeParams);
-                }
-
-                if ($this->statement !== null) {
-                    // Drop the previous result before executing again: PHP evaluates the
-                    // right-hand side before releasing the old value, so the stale result
-                    // would still pin a pooled connection while execute() waits for one.
-                    $this->result = null;
-                    $this->result = $this->statement->execute($executeParams);
-
-                    $this->pdo?->trackLastInsertId($this->result);
-                }
-            } finally {
+            // Like PDO, bound values stay for the next execute(), and an array replaces all of them.
+            if ($params !== null) {
                 $this->bindings = [];
+
+                foreach ($params as $key => $value) {
+                    $this->bindings[is_int($key) ? $key + 1 : $key] = $value;
+                }
+            }
+
+            $executeParams = $params ?? $this->buildExecuteParams();
+
+            // Workaround for Fledge Async MySQL sending string params as LONG_BLOB type,
+            // which breaks MariaDB native UUID columns. Pre-binding via bind()
+            // sends the data as VarString instead (see Fledge Async MySQL#142).
+            if ($this->statement instanceof MysqlStatement) {
+                // Pre-binds append on the driver statement, so start the next execute from nothing.
+                if ($this->executed) {
+                    $this->result = null;
+                    $this->statement->reset();
+                }
+
+                $this->executed = true;
+                $this->prebindUuids($executeParams);
+            }
+
+            if ($this->statement !== null) {
+                // Drop the previous result before executing again: PHP evaluates the
+                // right-hand side before releasing the old value, so the stale result
+                // would still pin a pooled connection while execute() waits for one.
+                $this->result = null;
+                $this->result = $this->statement->execute($executeParams);
+
+                $this->pdo?->trackLastInsertId($this->result);
             }
 
             return true;
@@ -311,21 +328,15 @@ class FledgePdoStatement
      * Build the execute parameter array from bound values.
      *
      * Fledge Async expects a 0-based positional array. Laravel's bindValues() uses
-     * 1-based integer keys. Named parameters (:name) are passed as-is.
+     * 1-based integer keys, which may have gaps: they collapse in key order. Named
+     * parameters (:name) are passed as-is.
      */
     protected function buildExecuteParams(): array
     {
-        if (empty($this->bindings)) {
-            return [];
-        }
+        $positional = array_filter($this->bindings, is_int(...), ARRAY_FILTER_USE_KEY);
+        ksort($positional);
 
-        if (array_all(array_keys($this->bindings), fn ($key): bool => is_int($key))) {
-            ksort($this->bindings);
-
-            return array_values($this->bindings);
-        }
-
-        return $this->bindings;
+        return array_values($positional) + array_diff_key($this->bindings, $positional);
     }
 
     /**
