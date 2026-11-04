@@ -21,6 +21,9 @@ final class MysqlConnectionStatement implements MysqlStatement
 
     private array $named = [];
 
+    /** @var list<int> positional index => real parameter id */
+    private array $positionalIds = [];
+
     /** @var array<string> */
     private array $prebound = [];
 
@@ -51,6 +54,12 @@ final class MysqlConnectionStatement implements MysqlStatement
         }
 
         $this->positionalParamCount = $positionalParamCount;
+
+        for ($realId = 0; $realId < $this->totalParamCount; $realId++) {
+            if (!isset($this->named[$realId])) {
+                $this->positionalIds[] = $realId;
+            }
+        }
 
         $this->lastUsedAt = \time();
     }
@@ -92,7 +101,11 @@ final class MysqlConnectionStatement implements MysqlStatement
             if ($paramId >= $this->positionalParamCount || $paramId < 0) {
                 throw new \Error("Parameter $paramId is not defined for this prepared statement");
             }
-            $i = $paramId;
+
+            $this->getProcessor()->bindParam($this->statementId, $this->positionalIds[$paramId], $data);
+            $this->prebound[$paramId] = ($this->prebound[$paramId] ?? '') . $data;
+
+            return;
         } else {
             if (!isset($this->byNamed[$paramId])) {
                 throw new \Error("Named parameter :$paramId is not defined for this prepared statement");
@@ -141,8 +154,10 @@ final class MysqlConnectionStatement implements MysqlStatement
             }
         }
 
+        // PREPARE_OK completes prepare() before the definitions arrive. Queue right away, behind the writes
+        // of earlier binds: the task reads the definitions when it runs, once all of them are in.
         return $this->getProcessor()
-            ->execute($this->statementId, $this->query, $this->result->params, $prebound, $args)
+            ->execute($this->statementId, $this->query, $this->result, $prebound, $args)
             ->await();
     }
 

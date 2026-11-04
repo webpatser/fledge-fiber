@@ -15,6 +15,7 @@ use Fledge\Async\Database\Mysql\MysqlDataType;
 use Fledge\Async\Database\Mysql\MysqlResult;
 use Fledge\Async\Stream\Parser;
 use Fledge\Async\Stream\Socket;
+use Fledge\Async\Stream\StreamException;
 use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
@@ -78,7 +79,7 @@ class ConnectionProcessor implements SqlTransientResource
     /** @var \SplQueue<DeferredFuture> */
     private readonly \SplQueue $deferreds;
 
-    /** @var \SplQueue<\Closure():void> */
+    /** @var \SplQueue<array{\Closure():void, DeferredFuture|null}> */
     private readonly \SplQueue $onReady;
 
     private ?MysqlResultProxy $result = null;
@@ -91,6 +92,7 @@ class ConnectionProcessor implements SqlTransientResource
     private int $serverCapabilities = 0;
     private string $authPluginName = '';
     private int $refcount = 1;
+    private int $writesInFlight = 0;
 
     private ConnectionState $connectionState = ConnectionState::Unconnected;
 
@@ -186,12 +188,29 @@ class ConnectionProcessor implements SqlTransientResource
         }
 
         if (!$this->onReady->isEmpty()) {
-            $this->onReady->shift()();
+            $this->onReady->shift()[0]();
             return;
         }
 
         $this->resetIds();
-        if ($this->socket instanceof ResourceStream) {
+        $this->releaseSocketIfIdle();
+    }
+
+    /**
+     * The socket holds the loop open while a write is suspended or anything still expects a reply. A write
+     * can outlive its command when an ERR arrives first, and then nothing calls ready() afterwards, so
+     * write() checks this as well. It does not start queued tasks: those belong to ready().
+     */
+    private function releaseSocketIfIdle(): void
+    {
+        if ($this->writesInFlight === 0
+            && $this->deferreds->isEmpty()
+            && $this->onReady->isEmpty()
+            && $this->parseCallback === null
+            && $this->packetCallback === null
+            && $this->result === null
+            && $this->socket instanceof ResourceStream
+        ) {
             $this->socket->unreference();
         }
     }
@@ -274,8 +293,9 @@ class ConnectionProcessor implements SqlTransientResource
 
     /**
      * @param \Closure():void $callback
+     * @param DeferredFuture|null $deferred Failed by free() if the connection is lost before the task runs.
      */
-    private function appendTask(\Closure $callback): void
+    private function appendTask(\Closure $callback, ?DeferredFuture $deferred = null): void
     {
         if ($this->packetCallback
             || $this->parseCallback
@@ -283,7 +303,7 @@ class ConnectionProcessor implements SqlTransientResource
             || !$this->deferreds->isEmpty()
             || $this->connectionState !== ConnectionState::Ready
         ) {
-            $this->onReady->push($callback);
+            $this->onReady->push([$callback, $deferred]);
         } else {
             $callback();
         }
@@ -319,8 +339,13 @@ class ConnectionProcessor implements SqlTransientResource
         $this->appendTask(function () use ($callback, $deferred) {
             $this->seqId = $this->compressionId = -1;
             $this->enqueueDeferred($deferred);
-            $callback();
-        });
+
+            try {
+                $callback();
+            } catch (StreamException $exception) {
+                $this->free($exception);
+            }
+        }, $deferred);
         return $deferred->getFuture();
     }
 
@@ -439,71 +464,88 @@ class ConnectionProcessor implements SqlTransientResource
 
     /** @see 14.7.6 COM_STMT_EXECUTE
      * prebound params: null-bit set, type MYSQL_TYPE_LONG_BLOB, no value
-     * $params is by-ref, because the actual result object might not yet have been filled completely with data upon
-     * call of this method ...
      *
-     * @param list<MysqlColumnDefinition> $params
+     * @param MysqlResultProxy $result Read when the task runs: it queues behind the prepare that fills it.
      * @param array<int, string> $prebound
      * @param array<int, mixed> $data
      */
-    public function execute(int $stmtId, string $query, array $params, array $prebound, array $data = []): Future
+    public function execute(int $stmtId, string $query, MysqlResultProxy $result, array $prebound, array $data = []): Future
     {
         $deferred = new DeferredFuture;
-        $this->appendTask(function () use ($stmtId, $query, $params, $prebound, $data, $deferred): void {
-            $payload = ["\x17"];
-            $payload[] = MysqlDataType::encodeInt32($stmtId);
-            $payload[] = \chr(0); // cursor flag // @TODO cursor types?!
-            $payload[] = MysqlDataType::encodeInt32(1);
-
-            $paramCount = \count($params);
-            $bound = (!empty($data) || !empty($prebound)) ? 1 : 0;
-            $types = [];
-            $values = [];
-
-            if ($paramCount) {
-                $args = $data + \array_fill(0, $paramCount, null);
-                \ksort($args);
-                $args = \array_slice($args, 0, $paramCount);
-                $paramList = \str_repeat("\0", ($paramCount + 7) >> 3);
-                foreach ($args as $paramId => $param) {
-                    if ($param === null) {
-                        $offset = ($paramId >> 3);
-                        $paramList[$offset] = $paramList[$offset] | \chr(1 << ($paramId & 0x7));
-                    } else {
-                        $bound = 1;
-                    }
-
-                    $paramType = $params[$paramId]->getType();
-
-                    if (isset($prebound[$paramId])) {
-                        $types[] = MysqlDataType::encodeInt16(
-                            MysqlEncodedValue::stringTypeFor($paramType)->value,
-                        );
-                        continue;
-                    }
-
-                    $encodedValue = MysqlEncodedValue::fromValue($param, $paramType);
-                    $types[] = MysqlDataType::encodeInt16($encodedValue->getType()->value);
-                    $values[] = $encodedValue->getBytes();
-                }
-
-                $payload[] = $paramList;
-                $payload[] = \chr($bound);
-                if ($bound) {
-                    $payload[] = \implode($types);
-                    $payload[] = \implode($values);
-                }
+        $this->appendTask(function () use ($stmtId, $query, $result, $prebound, $data, $deferred): void {
+            try {
+                $payload = $this->encodeExecute($stmtId, $result->params, $prebound, $data);
+            } catch (\Throwable $exception) {
+                // Nothing was written, so the connection is fine and only this command failed.
+                $deferred->error($exception);
+                $this->ready();
+                return;
             }
 
             $this->query = $query;
 
             $this->resetIds();
             $this->enqueueDeferred($deferred);
-            $this->write(\implode($payload));
             // apparently LOAD DATA LOCAL INFILE requests are not supported via prepared statements
             $this->packetCallback = $this->handleExecute(...);
-        });
+            $this->writeOrFree($payload);
+        }, $deferred);
         return $deferred->getFuture(); // do not use $this->startCommand(), that might unexpectedly reset the seqId!
+    }
+
+    /**
+     * @param list<MysqlColumnDefinition> $params
+     * @param array<int, string> $prebound
+     * @param array<int, mixed> $data
+     */
+    private function encodeExecute(int $stmtId, array $params, array $prebound, array $data): string
+    {
+        $payload = ["\x17"];
+        $payload[] = MysqlDataType::encodeInt32($stmtId);
+        $payload[] = \chr(0); // cursor flag // @TODO cursor types?!
+        $payload[] = MysqlDataType::encodeInt32(1);
+
+        $paramCount = \count($params);
+        $bound = (!empty($data) || !empty($prebound)) ? 1 : 0;
+        $types = [];
+        $values = [];
+
+        if ($paramCount) {
+            $args = $data + \array_fill(0, $paramCount, null);
+            \ksort($args);
+            $args = \array_slice($args, 0, $paramCount);
+            $paramList = \str_repeat("\0", ($paramCount + 7) >> 3);
+            foreach ($args as $paramId => $param) {
+                if ($param === null) {
+                    $offset = ($paramId >> 3);
+                    $paramList[$offset] = $paramList[$offset] | \chr(1 << ($paramId & 0x7));
+                } else {
+                    $bound = 1;
+                }
+
+                $paramType = $params[$paramId]->getType();
+
+                if (isset($prebound[$paramId])) {
+                    $types[] = MysqlDataType::encodeInt16(
+                        MysqlEncodedValue::stringTypeFor($paramType)->value,
+                    );
+                    continue;
+                }
+
+                $encodedValue = MysqlEncodedValue::fromValue($param, $paramType);
+                $types[] = MysqlDataType::encodeInt16($encodedValue->getType()->value);
+                $values[] = $encodedValue->getBytes();
+            }
+
+            $payload[] = $paramList;
+            $payload[] = \chr($bound);
+            if ($bound) {
+                $payload[] = \implode($types);
+                $payload[] = \implode($values);
+            }
+        }
+
+        return \implode($payload);
     }
 
     /** @see 14.7.7 COM_STMT_CLOSE */
@@ -513,7 +555,7 @@ class ConnectionProcessor implements SqlTransientResource
         $this->appendTask(function () use ($payload): void {
             if ($this->connectionState === ConnectionState::Ready) {
                 $this->resetIds();
-                $this->write($payload);
+                $this->writeOrFree($payload);
                 $this->resetIds(); // does not expect a reply - must be reset immediately
             }
             $this->ready();
@@ -524,8 +566,8 @@ class ConnectionProcessor implements SqlTransientResource
     public function listFields(string $table, string $like = "%"): Future
     {
         return $this->startCommand(function () use ($table, $like): void {
-            $this->write("\x04$table\0$like");
             $this->parseCallback = $this->handleFieldList(...);
+            $this->write("\x04$table\0$like");
         });
     }
 
@@ -576,8 +618,8 @@ class ConnectionProcessor implements SqlTransientResource
     public function statistics(): Future
     {
         return $this->startCommand(function (): void {
-            $this->write("\x09");
             $this->parseCallback = $this->readStatistics(...);
+            $this->write("\x09");
         });
     }
 
@@ -610,8 +652,8 @@ class ConnectionProcessor implements SqlTransientResource
         $this->appendTask(function () use ($payload, $deferred): void {
             $this->resetIds();
             $this->enqueueDeferred($deferred);
-            $this->write($payload);
-        });
+            $this->writeOrFree($payload);
+        }, $deferred);
         return $deferred->getFuture();
     }
 
@@ -623,8 +665,8 @@ class ConnectionProcessor implements SqlTransientResource
         $this->appendTask(function () use ($payload, $deferred): void {
             $this->resetIds();
             $this->enqueueDeferred($deferred);
-            $this->write($payload);
-        });
+            $this->writeOrFree($payload);
+        }, $deferred);
         return $deferred->getFuture();
     }
 
@@ -1013,8 +1055,10 @@ class ConnectionProcessor implements SqlTransientResource
             $this->query = null;
             $result = $this->result;
             $this->result = null;
-            $this->ready();
+            // ready() can run a queued task that suspends or throws in this fiber, and free() can no longer
+            // reach this result, so settle it first.
             $result->markDefinitionsFetched();
+            $this->ready();
 
             return;
         }
@@ -1080,19 +1124,24 @@ class ConnectionProcessor implements SqlTransientResource
         \assert($this->result !== null, 'Connection result was in invalid state');
 
         $deferred = $this->result->next ??= new DeferredFuture();
+        $moreResults = (bool) ($this->metadata->statusFlags & self::SERVER_MORE_RESULTS_EXISTS);
 
-        if ($this->metadata->statusFlags & self::SERVER_MORE_RESULTS_EXISTS) {
+        if ($moreResults) {
             $this->parseCallback = $this->handleQuery(...);
             $this->enqueueDeferred($deferred);
         } else {
             $this->parseCallback = null;
             $this->query = null;
             $deferred->complete();
-            $this->ready();
         }
 
         $this->result->complete();
         $this->result = null;
+
+        // Last, for the same reason as in prepareFields().
+        if (!$moreResults) {
+            $this->ready();
+        }
     }
 
     /** @see 14.6.4.1.1.3 Resultset Row */
@@ -1234,13 +1283,18 @@ class ConnectionProcessor implements SqlTransientResource
         $this->socket->close();
         $this->parser->cancel();
 
-        if (!$this->deferreds->isEmpty() || $this->result) {
+        if (!$this->deferreds->isEmpty() || !$this->onReady->isEmpty() || $this->result) {
             if (!$exception instanceof SqlConnectionException) {
                 $exception = new SqlConnectionException("Connection closed unexpectedly", 0, $exception ?? null);
             }
 
             while (!$this->deferreds->isEmpty()) {
                 $this->deferreds->shift()->error($exception);
+            }
+
+            // Tasks that never started will not run any more, so their commands would wait forever.
+            while (!$this->onReady->isEmpty()) {
+                $this->onReady->shift()[1]?->error($exception);
             }
 
             $this->result?->error($exception);
@@ -1253,16 +1307,44 @@ class ConnectionProcessor implements SqlTransientResource
         $this->seqId = $this->compressionId = -1;
     }
 
+    /**
+     * Write for a caller with no use for the exception: a command learns of the lost connection through its
+     * deferred, which free() fails unless a reply already settled it, and a statement close has nobody to tell.
+     */
+    private function writeOrFree(string $packet): void
+    {
+        try {
+            $this->write($packet);
+        } catch (StreamException $exception) {
+            $this->free($exception);
+        }
+    }
+
+    /**
+     * The write can suspend on a full buffer, and its watcher has to keep the loop alive until it finishes.
+     * Writes can overlap, so they are counted and only the last one to finish can release the socket.
+     */
     private function write(string $packet): void
     {
         \assert(!$this->socket->isClosed(), 'The connection was closed during a call to write');
 
-        while (\strlen($packet) >= self::MAX_PACKET_LENGTH) {
-            $this->sendPacket(\substr($packet, 0, self::MAX_PACKET_LENGTH));
-            $packet = \substr($packet, self::MAX_PACKET_LENGTH);
+        if ($this->socket instanceof ResourceStream) {
+            $this->socket->reference();
         }
 
-        $this->sendPacket($packet);
+        $this->writesInFlight++;
+
+        try {
+            while (\strlen($packet) >= self::MAX_PACKET_LENGTH) {
+                $this->sendPacket(\substr($packet, 0, self::MAX_PACKET_LENGTH));
+                $packet = \substr($packet, self::MAX_PACKET_LENGTH);
+            }
+
+            $this->sendPacket($packet);
+        } finally {
+            $this->writesInFlight--;
+            $this->releaseSocketIfIdle();
+        }
     }
 
     /**

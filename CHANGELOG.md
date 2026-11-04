@@ -1,5 +1,16 @@
 # Changelog
 
+## v13.40.0.2 - 2026-11-04
+
+### Fixed
+- **Prepared statements with long parameter lists no longer fail at random with error 1210 or 1835 on the pure-PHP MySQL driver (`fledge-mariadb`).** `execute` could read the parameter definitions before they had all arrived and size its packet from a partial list. It now reads them when its queued task runs.
+- **The driver no longer dies with `Event loop terminated` when a write suspends on a full socket buffer.** The socket stays referenced while any write is in flight, and is only unreferenced once nothing is pending.
+- **Lost connections and failed writes now reach waiting commands as a connection exception.** They used to hang or surface as an unhandled error on the loop. Commands still queued fail when the connection goes.
+- **A parameter that can't be encoded now fails only its own `execute()`.** It used to kill the connection and leave the caller hanging.
+
+### Changed
+- Binding positional parameters no longer rescans the parameter list, which cuts the time from first bind to last write by about 90% on 2813 parameters.
+
 ## v13.40.0.1 - 2026-11-04
 
 ### Fixed
