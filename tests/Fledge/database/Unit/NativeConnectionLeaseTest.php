@@ -133,8 +133,9 @@ function nativeLeaseFakePdo(int $id, array $rows = [], ?Closure $onQuery = null)
         public function rollBack(): bool
         {
             return $this->guard->run(function () {
+                // Through hit(), so $onQuery can fail the ROLLBACK itself.
+                $this->hit('rollback');
                 $this->open = false;
-                $this->log[] = 'rollback';
 
                 return true;
             });
@@ -666,6 +667,203 @@ it('rolls back a fiber\'s transaction records when COMMIT fails with a server er
     'server gone away (2006)' => ['SQLSTATE[HY000]: General error: 2006 MySQL server has gone away'],
     'deadlock on the last attempt' => ['SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction'],
 ]);
+
+it('keeps the shared pool and other fibers\' transactions when a rollback in one fiber loses the connection', function (int $level, int $toLevel) {
+    $goneAway = new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(4, [], function (string $sql, PDO $pdo) use ($goneAway) {
+        if (stripos($sql, 'rollback') === 0) {
+            // A dead connection no longer reports a transaction, so the pool
+            // would take it back as reusable unless the lease is discarded.
+            $pdo->open = false;
+
+            throw $goneAway;
+        }
+    });
+    $connection->setTransactionManager(new DatabaseTransactionsManager);
+    $events = [];
+
+    $a = async(function () use ($connection, $level, $toLevel, &$events) {
+        for ($i = 0; $i < $level; $i++) {
+            $connection->beginTransaction();
+        }
+
+        $connection->afterRollBack(function () use (&$events) {
+            $events[] = 'A after rollback';
+        });
+
+        $connection->unprepared('a1');
+        delay(0.005);
+
+        try {
+            $connection->rollBack($toLevel);
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        return [$error, $connection->transactionLevel()];
+    });
+
+    $b = async(function () use ($connection, &$events) {
+        try {
+            $connection->transaction(function ($c) use (&$events) {
+                $c->afterCommit(function () use (&$events) {
+                    $events[] = 'B after commit';
+                });
+
+                $c->unprepared('b1');
+                $c->unprepared('sleep 0.02');
+                $c->unprepared('b2');
+            });
+        } catch (Throwable $e) {
+            return $e;
+        }
+
+        return null;
+    });
+
+    [[$errorA, $levelA], $errorB] = await([$a, $b]);
+
+    expect($errorB)->toBeNull()
+        ->and($errorA)->toBe($goneAway)
+        ->and($levelA)->toBe(0)
+        ->and($pdos[2]->log)->toBe(['begin', 'b1', 'sleep 0.02', 'b2', 'commit'])
+        ->and($events)->toBe(['A after rollback', 'B after commit'])
+        ->and($connection->getRawPdo())->toBe($pool)
+        ->and($pool->isClosed())->toBeFalse()
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool)->toHaveCount(1);
+
+    // The lost connection never comes back out of the pool.
+    $connection->unprepared('after');
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->not->toContain('after')
+        ->and($pdos[2]->log)->toContain('after');
+})->with([
+    'full rollback' => [1, 0],
+    'full rollback of a nested transaction' => [2, 0],
+    'savepoint rollback' => [2, 1],
+]);
+
+it('keeps the shared pool for fibers when a rollback in the main context loses the connection', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(4, [], function (string $sql) {
+        if ($sql === 'rollback') {
+            throw new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+        }
+    });
+
+    $fiber = new Fiber(function () use ($connection) {
+        $connection->beginTransaction();
+        Fiber::suspend();
+        $connection->unprepared('fiber');
+        $connection->commit();
+    });
+
+    $fiber->start();
+
+    $connection->beginTransaction();
+
+    expect(fn () => $connection->rollBack())->toThrow(PDOException::class, 'gone away')
+        ->and($connection->transactionLevel())->toBe(0)
+        ->and($connection->getRawPdo())->toBe($pool);
+
+    $fiber->resume();
+
+    expect($fiber->isTerminated())->toBeTrue()
+        ->and($pdos[1]->log)->toBe(['begin', 'fiber', 'commit'])
+        ->and($pool->isLeased($pdos[2]))->toBeFalse()
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool)->toHaveCount(1);
+});
+
+it('leaves a replacement pool alone when a broken savepoint rollback follows a reconnect in another context', function () {
+    [$connection, $pool] = nativeLeaseSetup(4);
+
+    $freshPdo = nativeLeaseFakePdo(100);
+    $freshPool = new NativePdoPool(fn () => $freshPdo, 4, 60.0);
+    $factory = fn () => $freshPool;
+
+    $fiber = new Fiber(function () use ($connection) {
+        $connection->beginTransaction();
+        $connection->beginTransaction();
+        Fiber::suspend();
+
+        try {
+            $connection->rollBack(1);
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        return [$error, $connection->transactionLevel()];
+    });
+
+    $fiber->start();
+
+    // What DatabaseManager::reconnect() leaves behind: a lazy factory in the raw slot.
+    $connection->setPdo($factory);
+
+    $fiber->resume();
+
+    [$error, $level] = $fiber->getReturn();
+
+    expect($error)->toBeInstanceOf(LostConnectionException::class)
+        ->and($error->getMessage())->toContain('savepoint trans1')
+        ->and($level)->toBe(0)
+        ->and($pool->isClosed())->toBeTrue()
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($connection->getRawPdo())->toBe($factory);
+
+    $connection->unprepared('fresh');
+
+    expect($freshPdo->log)->toBe(['fresh'])
+        ->and($connection->getRawPdo())->toBe($freshPool);
+});
+
+it('rethrows a rollback failure that is not a lost connection and keeps the transaction open', function () {
+    $fail = true;
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], function (string $sql) use (&$fail) {
+        if ($sql === 'rollback' && $fail) {
+            $fail = false;
+
+            throw new PDOException('SQLSTATE[HY000]: General error: 1105 Unknown error');
+        }
+    });
+
+    $connection->beginTransaction();
+
+    expect(fn () => $connection->rollBack())->toThrow(PDOException::class, '1105')
+        ->and($connection->transactionLevel())->toBe(1)
+        ->and($pool->isLeased($pdos[1]))->toBeTrue()
+        ->and($connection->getRawPdo())->toBe($pool);
+
+    $connection->rollBack();
+
+    expect($connection->transactionLevel())->toBe(0)
+        ->and($pdos[1]->log)->toBe(['begin', 'rollback'])
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool->getIdleCount())->toBe(1);
+});
+
+it('keeps the stock behaviour for a raw PDO when a rollback loses the connection', function () {
+    [$connection] = nativeLeaseSetup(2);
+
+    $connection->setPdo(nativeLeaseFakePdo(50, [], function (string $sql) {
+        if ($sql === 'rollback') {
+            throw new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+        }
+    }));
+
+    $connection->beginTransaction();
+
+    expect(fn () => $connection->rollBack())->toThrow(PDOException::class, 'gone away')
+        ->and($connection->transactionLevel())->toBe(0)
+        ->and($connection->getRawPdo())->toBeNull();
+});
 
 /**
  * Two fibers on one stock (non-native) connection: B's transaction nests in

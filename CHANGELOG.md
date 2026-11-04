@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.40.0.1 - 2026-11-04
+
+### Fixed
+- **A lost connection during rollback no longer drops the shared native PDO pool.** Laravel 13.40.0 makes `handleRollBackException` null `$this->pdo` on a lost connection, and native connections keep the pool shared by every fiber in that slot, so one fiber's failed rollback killed the healthy transactions of the others. `UsesNativePdoPool` now overrides the handler to discard only the calling fiber's write lease. A raw PDO keeps the stock behaviour.
+
 ## v13.39.0.1 - 2026-10-28
 
 ### Changed

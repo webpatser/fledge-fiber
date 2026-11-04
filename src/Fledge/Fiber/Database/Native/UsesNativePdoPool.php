@@ -403,6 +403,44 @@ trait UsesNativePdoPool
     }
 
     /**
+     * A rollback that lost the connection: the stock handler nulls the raw
+     * write slot, but here that slot holds the pool (or the factory of a
+     * replacement pool) shared by every fiber. Only the calling fiber's write
+     * lease is dropped, so other fibers' transactions carry on and the next
+     * getPdo() leases a fresh PDO. A raw PDO really is one shared connection,
+     * so it keeps the stock behaviour.
+     *
+     * The lease goes before the manager rollback, so an afterRollBack callback
+     * that queries never runs on the lost connection.
+     *
+     * @return void
+     *
+     * @throws Throwable
+     */
+    protected function handleRollBackException(Throwable $e)
+    {
+        if ($this->pdo instanceof \PDO) {
+            parent::handleRollBackException($e);
+        }
+
+        if ($this->causedByLostConnection($e)) {
+            $this->transactions = 0;
+
+            $scope = $this->leaseScope(false);
+            $lease = $scope?->leases['write'] ?? null;
+
+            if ($lease !== null) {
+                unset($scope->leases['write']);
+                $lease->discard();
+            }
+
+            $this->transactionsManager?->rollback($this->getName(), $this->transactions);
+        }
+
+        throw $e;
+    }
+
+    /**
      * Run a SQL statement inside a lease scope.
      *
      * @param  string  $query
