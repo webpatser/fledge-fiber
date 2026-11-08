@@ -19,10 +19,12 @@ use Revolt\EventLoop\Internal\AbstractDriver;
  * fiberio only calls the waiter from inside a running fiber. One of those
  * fibers is the event loop's own: with HOOK_SLEEP on, Revolt's idle
  * usleep() until the next timer is hooked too. That fiber cannot park on
- * itself, so there the waiter blocks instead (see waitInLoopFiber()).
+ * itself, so there the waiter never suspends: a timer wait hands the sleep
+ * back to fiberio, which blocks, and a stream wait blocks in stream_select()
+ * (see waitInLoopFiber()).
  *
- * Copy of php-fiberio's src/RevoltWaiter.php, shipped here so the native
- * driver does not depend on the extension's PHP sources.
+ * This is the canonical Revolt waiter for php-fiberio, which no longer
+ * ships one from 0.3.0 on.
  */
 final class RevoltWaiter
 {
@@ -78,9 +80,11 @@ final class RevoltWaiter
     /**
      * Wait without suspending, for a call from the event loop fiber itself.
      *
-     * A timer call returns true ("woken early"): fiberio retries once and
-     * then sleeps the rest blocking, which is exactly the stock usleep()
-     * the loop asked for. A stream call blocks in stream_select() on the
+     * A timer call returns false ("deadline not reached") right away:
+     * fiberio retries once and then sleeps the remainder blocking, which is
+     * exactly the stock usleep() the loop asked for. True would mean "woken",
+     * which ends a hooked usleep() at once and makes the loop busy-spin on
+     * its idle sleep. A stream call blocks in stream_select() on the
      * watch-only dup.
      *
      * @param  resource|null  $stream
@@ -88,7 +92,7 @@ final class RevoltWaiter
     private static function waitInLoopFiber($stream, int $events, ?float $timeout): bool
     {
         if ($stream === null || $events === 0) {
-            return true;
+            return false;
         }
 
         $read = ($events & READABLE) ? [$stream] : null;

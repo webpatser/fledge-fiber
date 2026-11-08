@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `RevoltWaiter` is now the canonical waiter; php-fiberio 0.3.0 no longer ships its own.
+
+### Fixed
+- The Revolt event loop no longer busy-spins on idle timers under the fiberio sleep hook. `RevoltWaiter` reported a timer wait in the loop fiber as woken, so Revolt's idle `usleep()` returned at once.
+
 ## v13.40.0.3 - 2026-11-04
 
 ### Fixed
