@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v13.40.0.4 - 2026-11-08
 
 ### Changed
 - `RevoltWaiter` is now the canonical waiter; php-fiberio 0.3.0 no longer ships its own.

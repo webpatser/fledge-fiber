@@ -57,7 +57,7 @@ A pool of real `pdo_mysql` connections running on [php-fiberio](https://github.c
 | | `fledge-mariadb` / `fledge-mysql` | `fledge-mariadb-native` / `fledge-mysql-native` |
 |---|---|---|
 | Wire protocol | Implemented in PHP | Stock `pdo_mysql` (C) |
-| Extra requirements | None | `php-fiberio` 0.1.0+ (0.2.0+ for the hooks below), NTS PHP only |
+| Extra requirements | None | `php-fiberio` 0.1.0+ (0.2.0+ for the hooks below; 0.3.0 is current), NTS PHP only |
 | Transactions | Pinned per connection; other fibers get a `LogicException` | Per fiber, each on its own lease |
 | CPU per row, bulk read (10,000 rows) | 11.11 us | 0.63 us |
 | CPU per row, bulk read (20,000 rows) | 6.55 us | 0.19 us |
@@ -71,7 +71,7 @@ Both overlap concurrent I/O equally well; the native drivers cost far less CPU p
 pie install webpatser/php-fiberio
 ```
 
-- NTS builds of PHP only; the extension is v0.x. Source and releases: <https://github.com/webpatser/php-fiberio>.
+- NTS builds of PHP only; the extension is v0.x (0.3.0 is the latest; the C extension is unchanged since 0.2.x). Source and releases: <https://github.com/webpatser/php-fiberio>.
 - php-fiberio 0.1.0 or later is required. Earlier builds let warnings in other fibers throw `PDOException` while a connect is in flight. The hooks below need 0.2.0; with 0.1.0 the driver still works and simply enables the `tcp://`/`unix://` hook.
 - Without the extension the connector throws a `RuntimeException` naming the install command. Set `'fiberio' => 'optional'` to fall back to blocking PDO with one logged warning instead.
 
