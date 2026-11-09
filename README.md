@@ -57,7 +57,7 @@ A pool of real `pdo_mysql` connections running on [php-fiberio](https://github.c
 | | `fledge-mariadb` / `fledge-mysql` | `fledge-mariadb-native` / `fledge-mysql-native` |
 |---|---|---|
 | Wire protocol | Implemented in PHP | Stock `pdo_mysql` (C) |
-| Extra requirements | None | `php-fiberio` 0.1.0+ (0.2.0+ for the hooks below; 0.3.0 is current), NTS PHP only |
+| Extra requirements | None | `php-fiberio` 0.3.0+, NTS PHP only |
 | Transactions | Pinned per connection; other fibers get a `LogicException` | Per fiber, each on its own lease |
 | CPU per row, bulk read (10,000 rows) | 11.11 us | 0.63 us |
 | CPU per row, bulk read (20,000 rows) | 6.55 us | 0.19 us |
@@ -72,7 +72,7 @@ pie install webpatser/php-fiberio
 ```
 
 - NTS builds of PHP only; the extension is v0.x (0.3.0 is the latest; the C extension is unchanged since 0.2.x). Source and releases: <https://github.com/webpatser/php-fiberio>.
-- php-fiberio 0.1.0 or later is required. Earlier builds let warnings in other fibers throw `PDOException` while a connect is in flight. The hooks below need 0.2.0; with 0.1.0 the driver still works and simply enables the `tcp://`/`unix://` hook.
+- php-fiberio 0.3.0 or later is required.
 - Without the extension the connector throws a `RuntimeException` naming the install command. Set `'fiberio' => 'optional'` to fall back to blocking PDO with one logged warning instead.
 
 #### Configuration
@@ -109,7 +109,7 @@ To roll back, change `driver` back. `fledge-mysql` and `fledge-mariadb` keep the
 
 #### fiberio hooks (`FLEDGE_FIBERIO_HOOKS`)
 
-With php-fiberio 0.2.0 or later the extension can also make `sleep()` and friends, DNS lookups and `ssl://`/`tls://` client streams fiber-aware. The native connector enables them for the whole process through config `fledge-http.fiberio_hooks`, fed by the env var `FLEDGE_FIBERIO_HOOKS`:
+With php-fiberio 0.3.0 or later the extension can also make `sleep()` and friends, DNS lookups and `ssl://`/`tls://` client streams fiber-aware. The native connector enables them for the whole process through config `fledge-http.fiberio_hooks`, fed by the env var `FLEDGE_FIBERIO_HOOKS`:
 
 ```env
 FLEDGE_FIBERIO_HOOKS=sleep,dns,ssl   # default: all
@@ -119,14 +119,14 @@ FLEDGE_FIBERIO_HOOKS=sleep,dns,ssl   # default: all
 - Unknown names are ignored with one logged warning per process. If no valid name is left, the result is no hooks, never all.
 - Precedence: the connection's own `fiberio_hooks` key, then `fledge-http.fiberio_hooks` (env `FLEDGE_FIBERIO_HOOKS`), then `all`.
 - fiberio state is process-global and `enable()` runs once, so the first native connection to connect decides the hooks for the whole process. Set it app-wide through the env var rather than per connection.
-- Needs php-fiberio 0.2.0. On v0.1.0 the setting is ignored and `enable()` is called without a hooks argument; everything keeps working.
+- Needs php-fiberio 0.3.0.
 - The setting is read through config, so it survives `php artisan config:cache`. Run `config:cache` again after changing the env var.
 
 #### Caveats and migration notes
 
 **Requirements**
 - **TLS needs a cipher or CA.** Set `PDO::MYSQL_ATTR_SSL_CIPHER` (or a CA via `ATTR_SSL_CA`) in `options`. Unlike `fledge-mariadb`, `ATTR_SSL_VERIFY_SERVER_CERT => false` on its own connects in plain text.
-- **Use a socket or IP address, or enable the DNS hook.** Without the `dns` hook (php-fiberio 0.1.0, or `FLEDGE_FIBERIO_HOOKS` without `dns`), resolving a hostname blocks the whole process while connecting. With php-fiberio 0.2.0 and the `dns` hook, the lookup runs on a helper thread and only the calling fiber waits.
+- **Use a socket or IP address, or enable the DNS hook.** Without the `dns` hook (`FLEDGE_FIBERIO_HOOKS` without `dns`), resolving a hostname blocks the whole process while connecting. With the `dns` hook, the lookup runs on a helper thread and only the calling fiber waits.
 - **No benefit under FPM** without an event loop: requests run one at a time, so the pool just adds overhead.
 
 **Behaviour**
