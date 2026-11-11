@@ -8,6 +8,7 @@ Provides fiber-based database (MySQL, MariaDB, PostgreSQL), Redis, HTTP, WebSock
 
 - PHP 8.5+
 - [revolt/event-loop](https://github.com/revoltphp/event-loop) ^1.0
+- fledge-framework v13.42.0.1 and later require fledge-fiber 13.42.0.1 or later (earlier v13 frameworks work with any fiber v13 release)
 
 ## Installation
 
