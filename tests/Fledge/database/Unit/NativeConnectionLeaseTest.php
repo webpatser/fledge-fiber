@@ -748,6 +748,79 @@ it('keeps the shared pool and other fibers\' transactions when a rollback in one
     'savepoint rollback' => [2, 1],
 ]);
 
+it('keeps the shared pool and other fibers\' transactions when a commit in one fiber loses the connection', function () {
+    $goneAway = new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+    $failCommit = true;
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(4, [], function (string $sql, PDO $pdo) use ($goneAway, &$failCommit) {
+        if ($sql === 'commit' && $failCommit) {
+            $failCommit = false;
+            // A dead connection no longer reports a transaction, so the pool
+            // would take it back as reusable unless the lease is discarded.
+            $pdo->open = false;
+
+            throw $goneAway;
+        }
+    });
+    $connection->setTransactionManager(new DatabaseTransactionsManager);
+    $events = [];
+
+    $a = async(function () use ($connection, &$events) {
+        try {
+            $connection->transaction(function ($c) use (&$events) {
+                $c->afterRollBack(function () use (&$events) {
+                    $events[] = 'A after rollback';
+                });
+                $c->unprepared('a1');
+                delay(0.005);
+            });
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        return [$error, $connection->transactionLevel()];
+    });
+
+    $b = async(function () use ($connection, &$events) {
+        try {
+            $connection->transaction(function ($c) use (&$events) {
+                $c->afterCommit(function () use (&$events) {
+                    $events[] = 'B after commit';
+                });
+
+                $c->unprepared('b1');
+                $c->unprepared('sleep 0.02');
+                $c->unprepared('b2');
+            });
+        } catch (Throwable $e) {
+            return $e;
+        }
+
+        return null;
+    });
+
+    [[$errorA, $levelA], $errorB] = await([$a, $b]);
+
+    expect($errorB)->toBeNull()
+        ->and($errorA)->toBe($goneAway)
+        ->and($levelA)->toBe(0)
+        ->and($pdos[2]->log)->toBe(['begin', 'b1', 'sleep 0.02', 'b2', 'commit'])
+        ->and($events)->toBe(['A after rollback', 'B after commit'])
+        ->and($connection->getRawPdo())->toBe($pool)
+        ->and($pool->isClosed())->toBeFalse()
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool)->toHaveCount(1);
+
+    // The lost connection never comes back out of the pool.
+    $connection->unprepared('after');
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->not->toContain('after')
+        ->and($pdos[2]->log)->toContain('after');
+});
+
 it('keeps the shared pool for fibers when a rollback in the main context loses the connection', function () {
     [$connection, $pool, $pdos] = nativeLeaseSetup(4, [], function (string $sql) {
         if ($sql === 'rollback') {

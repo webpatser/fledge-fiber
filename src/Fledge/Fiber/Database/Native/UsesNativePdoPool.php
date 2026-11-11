@@ -382,6 +382,14 @@ trait UsesNativePdoPool
      * Revolt reuses a later afterCommit callback or after-commit job attaches
      * to the dead record and fires on an unrelated commit.
      *
+     * On a lost connection the stock handler also nulls the raw write slot,
+     * but here that slot holds the pool (or the factory of a replacement
+     * pool) shared by every fiber. The slot is put back and only the calling
+     * fiber's write lease is dropped, as handleRollBackException() does, so
+     * other fibers' transactions carry on and the dead PDO never returns to
+     * the pool. A raw PDO really is one shared connection, so it keeps the
+     * stock behaviour.
+     *
      * @param  int  $currentAttempt
      * @param  int  $maxAttempts
      * @return void
@@ -390,9 +398,23 @@ trait UsesNativePdoPool
      */
     protected function handleCommitTransactionException(Throwable $e, $currentAttempt, $maxAttempts)
     {
+        $raw = $this->pdo;
+
         try {
             parent::handleCommitTransactionException($e, $currentAttempt, $maxAttempts);
         } catch (Throwable $thrown) {
+            if ($raw !== null && ! $raw instanceof \PDO && $this->causedByLostConnection($thrown)) {
+                $this->pdo = $raw;
+
+                $scope = $this->leaseScope(false);
+                $lease = $scope?->leases['write'] ?? null;
+
+                if ($lease !== null) {
+                    unset($scope->leases['write']);
+                    $lease->discard();
+                }
+            }
+
             if ($this->transactions === 0) {
                 // The fiber-aware manager forgets the fiber once it holds nothing.
                 $this->transactionsManager?->rollback($this->getName(), 0);
