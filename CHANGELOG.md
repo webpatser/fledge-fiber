@@ -1,5 +1,11 @@
 # Changelog
 
+## v13.42.0.1 - 2026-11-11
+
+### Fixed
+- A lost-connection commit failure no longer drops the shared native PDO pool. Laravel v13.42.0 nulls the connection's PDO in `handleCommitTransactionException`; `UsesNativePdoPool` now restores the pool and discards only the failing fiber's write lease, so other fibers' transactions continue and the dead PDO is never reused.
+- This release is required with fledge-framework v13.42.0.1 and later (the framework declares a conflict with older fiber), and it stays compatible with earlier v13 frameworks.
+
 ## v13.40.0.4 - 2026-11-08
 
 ### Changed
