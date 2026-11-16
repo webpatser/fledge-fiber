@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- HTTP server: cookies are parsed once per request, so a request with thousands of `Cookie` header lines no longer causes quadratic work that stalls the event loop. Cookie header detection is an exact match.
+- MySQL: when TLS is configured and the server greeting does not advertise SSL support, the connection now fails with `SqlConnectionException` before any credentials are sent, instead of silently continuing unencrypted.
+
+### Fixed
+- Livewire: `fledge-livewire.concurrent` now defaults to false (config and code fallback), because Blade keeps section and stack state process-wide and concurrent renders can mix output. Opting in is at your own risk.
+- Redis: `pipeline(callable)` passes a pipeline to the callback and returns the reply list like phpredis; pipeline replies are returned in command order.
+- Guzzle handler: no response body cap unless `max_body_size` is given; `timeout` 0 means no timeout; `read_timeout` maps to the inactivity timeout; `connect_timeout` falls back to `timeout`, and to no limit when both are 0.
+- Redis: an error nested inside an array reply (for example one failing command in MULTI/EXEC) is returned in position as a `QueryException` instead of throwing in the parser and tearing down the shared connection. Top-level errors still throw. Behaviour change: `transaction()`/`exec()` results can now contain exception objects.
+
 ## v13.42.0.1 - 2026-11-11
 
 ### Fixed
