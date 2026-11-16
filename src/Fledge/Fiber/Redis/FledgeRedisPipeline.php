@@ -57,6 +57,11 @@ class FledgeRedisPipeline
 
         $this->commands = [];
 
-        return await($futures);
+        // await() keys the replies by command index but orders them by
+        // completion, so restore command order before returning a list.
+        $results = await($futures);
+        ksort($results);
+
+        return array_values($results);
     }
 }

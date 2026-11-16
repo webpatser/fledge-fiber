@@ -1,7 +1,33 @@
 <?php
 
+use Fledge\Async\Redis\Connection\RedisLink;
+use Fledge\Async\Redis\Protocol\RedisResponse;
+use Fledge\Async\Redis\Protocol\RedisValue;
+use Fledge\Async\Redis\RedisClient;
 use Fledge\Fiber\Redis\FledgeRedisConnection;
 use Fledge\Fiber\Redis\FledgeRedisPipeline;
+
+use function Fledge\Async\delay;
+
+/**
+ * Answers each command with its own name, completing earlier commands later
+ * so the replies arrive in reverse send order.
+ */
+final class ReversedReplyLink implements RedisLink
+{
+    /** @var list<string> */
+    public array $log = [];
+
+    public function execute(string $command, array $parameters): RedisResponse
+    {
+        $command = strtoupper($command);
+        $this->log[] = $command;
+
+        delay(0.04 - 0.01 * count($this->log));
+
+        return new RedisValue($command);
+    }
+}
 
 function createTestPipeline(): FledgeRedisPipeline
 {
@@ -52,4 +78,14 @@ it('supports method chaining', function () {
     $commands = $ref->getProperty('commands')->getValue($pipeline);
 
     expect($commands)->toHaveCount(3);
+});
+
+it('returns replies in command order when they complete out of order', function () {
+    $link = new ReversedReplyLink;
+    $pipeline = new FledgeRedisPipeline(new FledgeRedisConnection(new RedisClient($link)));
+
+    $result = $pipeline->set('a', 1)->get('a')->incr('b')->exec();
+
+    expect($link->log)->toBe(['SET', 'GET', 'INCR'])
+        ->and($result)->toBe(['SET', 'GET', 'INCR']);
 });

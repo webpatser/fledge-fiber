@@ -1,7 +1,33 @@
 <?php
 
+use Fledge\Async\Redis\Connection\RedisLink;
+use Fledge\Async\Redis\Protocol\RedisResponse;
+use Fledge\Async\Redis\Protocol\RedisValue;
+use Fledge\Async\Redis\RedisClient;
 use Fledge\Fiber\Redis\FledgeRedisConnection;
 use Fledge\Fiber\Redis\FledgeRedisPipeline;
+
+use function Fledge\Async\delay;
+
+/**
+ * Records the commands in the order they reach the link and answers GET
+ * with "v" and everything else with "OK".
+ */
+final class PipelineReplyLink implements RedisLink
+{
+    /** @var list<string> */
+    public array $log = [];
+
+    public function execute(string $command, array $parameters): RedisResponse
+    {
+        $command = strtoupper($command);
+        $this->log[] = trim($command.' '.implode(' ', $parameters));
+
+        delay(0.001);
+
+        return new RedisValue($command === 'GET' ? 'v' : 'OK');
+    }
+}
 
 /**
  * Create a testable connection without a real RedisClient.
@@ -46,12 +72,38 @@ it('returns pipeline when no callback given', function () {
     expect($conn->pipeline())->toBeInstanceOf(FledgeRedisPipeline::class);
 });
 
-it('executes pipeline callback directly', function () {
+it('hands a pipeline to the pipeline callback', function () {
+    $conn = createTestConnection();
+    $received = null;
+
+    $conn->pipeline(function ($pipe) use (&$received) {
+        $received = $pipe;
+    });
+
+    expect($received)->toBeInstanceOf(FledgeRedisPipeline::class);
+});
+
+it('returns an empty reply array for an empty pipeline callback', function () {
     $conn = createTestConnection();
 
-    $result = $conn->pipeline(fn ($c) => 'callback_result');
+    $result = $conn->pipeline(fn ($pipe) => 'ignored_callback_return');
 
-    expect($result)->toBe('callback_result');
+    expect($result)->toBe([]);
+});
+
+it('returns the exec reply array from the pipeline callback form', function () {
+    $link = new PipelineReplyLink;
+    $conn = new FledgeRedisConnection(new RedisClient($link));
+
+    $result = $conn->pipeline(function ($pipe) {
+        $pipe->set('k', 'v');
+        $pipe->get('k');
+
+        return 'ignored_callback_return';
+    });
+
+    expect($result)->toBe(['OK', 'v'])
+        ->and($link->log)->toBe(['SET k v', 'GET k']);
 });
 
 it('prefix with empty string returns key unchanged', function () {

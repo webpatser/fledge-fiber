@@ -574,18 +574,23 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     /**
      * Execute commands in a pipeline.
      *
-     * Fledge Async Redis implicitly pipelines commands via the event loop. When called
-     * with a callback, we simply execute it — the event loop batches commands
-     * on the socket naturally. For the no-callback case, return a pipeline
-     * accumulator that dispatches commands concurrently on exec().
+     * Fledge Async Redis implicitly pipelines commands via the event loop. With
+     * a callback (the phpredis contract) the callback receives a pipeline
+     * accumulator, and the reply array from its exec() is returned. Without a
+     * callback the pipeline accumulator itself is returned, to be finished
+     * with exec().
      */
     public function pipeline(?callable $callback = null)
     {
+        $pipeline = new FledgeRedisPipeline($this);
+
         if (is_null($callback)) {
-            return new FledgeRedisPipeline($this);
+            return $pipeline;
         }
 
-        return $callback($this) ?? [];
+        $callback($pipeline);
+
+        return $pipeline->exec();
     }
 
     /**
