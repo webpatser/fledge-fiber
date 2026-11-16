@@ -157,6 +157,45 @@ it('reports a TypeError during the update and rethrows it in debug mode', functi
     expect($handler->reported)->toHaveCount(1);
 });
 
+it('ships with concurrent fibers disabled by default', function () {
+    $shipped = require dirname(__DIR__, 4).'/src/Fledge/Fiber/config/fledge-livewire.php';
+
+    $container = new Illuminate\Container\Container;
+    $container->instance('config', new class(['fledge-livewire.concurrent' => $shipped['concurrent']])
+    {
+        public function __construct(private array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    });
+    Illuminate\Container\Container::setInstance($container);
+
+    $method = new ReflectionMethod(FiberHandleRequests::class, 'shouldUseFibers');
+
+    expect($shipped['concurrent'])->toBeFalse()
+        ->and($method->invoke(new FiberHandleRequests))->toBeFalse();
+});
+
+it('disables concurrent fibers when the config key is absent', function () {
+    $container = new Illuminate\Container\Container;
+    $container->instance('config', new class([])
+    {
+        public function __construct(private array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    });
+    Illuminate\Container\Container::setInstance($container);
+
+    $method = new ReflectionMethod(FiberHandleRequests::class, 'shouldUseFibers');
+
+    expect($method->invoke(new FiberHandleRequests))->toBeFalse();
+});
+
 it('reports a TypeError from a concurrent component before turning it into a 419', function () {
     $handler = bindTypeErrorContainer(debug: false);
 

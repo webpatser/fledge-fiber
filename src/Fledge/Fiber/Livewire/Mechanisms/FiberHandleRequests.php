@@ -204,7 +204,7 @@ class FiberHandleRequests extends HandleRequests
      */
     protected function shouldUseFibers(): bool
     {
-        if (! config('fledge-livewire.concurrent', true)) {
+        if (! config('fledge-livewire.concurrent', false)) {
             return false;
         }
 
