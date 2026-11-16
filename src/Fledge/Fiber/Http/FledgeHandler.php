@@ -38,6 +38,15 @@ use function Fledge\Async\delay;
  */
 class FledgeHandler
 {
+    /**
+     * Seconds used for TCP connect and TLS handshake when neither
+     * connect_timeout nor timeout is set (or both are 0). With only timeout
+     * set, connect and handshake use that value instead, as curl does. The
+     * async client has no "disabled" value for either, and a day stays well
+     * inside every event loop driver's timer range.
+     */
+    public const NO_CONNECT_TIMEOUT = 86400.0;
+
     protected ?HttpClient $client;
 
     protected AsyncClientFactory $factory;
@@ -172,16 +181,27 @@ class FledgeHandler
             $asyncRequest->setBody(BufferedContent::fromString($body, $contentType));
         }
 
-        // Map timeouts
-        if (isset($options['timeout']) && $options['timeout'] > 0) {
-            $asyncRequest->setTransferTimeout((float) $options['timeout']);
-            $asyncRequest->setInactivityTimeout((float) $options['timeout']);
-        }
+        // Map timeouts with Guzzle semantics: an absent or zero value waits
+        // indefinitely instead of inheriting the async client's 10 s defaults.
+        // The client treats a transfer or inactivity timeout of 0 as disabled.
+        $timeout = max(0.0, (float) ($options['timeout'] ?? 0));
+        $asyncRequest->setTransferTimeout($timeout);
 
-        if (isset($options['connect_timeout']) && $options['connect_timeout'] > 0) {
-            $asyncRequest->setTcpConnectTimeout((float) $options['connect_timeout']);
-            $asyncRequest->setTlsHandshakeTimeout((float) $options['connect_timeout']);
-        }
+        // read_timeout bounds the wait between reads, which is the client's
+        // inactivity timeout; without it the overall timeout covers that too.
+        $readTimeout = isset($options['read_timeout']) ? max(0.0, (float) $options['read_timeout']) : $timeout;
+        $asyncRequest->setInactivityTimeout($readTimeout);
+
+        // The transfer timeout only starts once a connection exists, while
+        // Guzzle and curl count connect time inside timeout. Without its own
+        // connect_timeout, connect and handshake therefore fall back to the
+        // overall timeout. TCP connect rejects 0 and the TLS handshake would
+        // time out at once, so when both are absent or 0 the long sentinel
+        // stands in for "no connect timeout".
+        $connectTimeout = (float) ($options['connect_timeout'] ?? 0);
+        $connectTimeout = $connectTimeout > 0 ? $connectTimeout : ($timeout > 0 ? $timeout : self::NO_CONNECT_TIMEOUT);
+        $asyncRequest->setTcpConnectTimeout($connectTimeout);
+        $asyncRequest->setTlsHandshakeTimeout($connectTimeout);
 
         // Protocol version. Guzzle stamps every PSR-7 request "1.1" unless the
         // caller passes the 'version' request option, where HTTP/2 arrives as
@@ -197,10 +217,11 @@ class FledgeHandler
             default => ['1.1'],
         });
 
-        // Body size limit (for large responses)
-        if (isset($options['max_body_size'])) {
-            $asyncRequest->setBodySizeLimit((int) $options['max_body_size']);
-        }
+        // Guzzle has no body cap, so neither do we unless max_body_size asks
+        // for one. PHP_INT_MAX rather than 0: the HTTP/2 flow-control window
+        // is sized from min(limit, 512 KiB) and stalls on a limit of 0.
+        $maxBodySize = (int) ($options['max_body_size'] ?? 0);
+        $asyncRequest->setBodySizeLimit($maxBodySize > 0 ? $maxBodySize : PHP_INT_MAX);
 
         // A string decode_content value advertises that encoding without any
         // automatic decompression: the DecompressResponse interceptor leaves

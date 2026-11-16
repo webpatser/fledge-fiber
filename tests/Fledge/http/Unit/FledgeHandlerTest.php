@@ -37,8 +37,53 @@ it('creates async request without timeouts', function () {
 
     $asyncRequest = $method->invoke($handler, $psr7Request, []);
 
+    // Guzzle defaults to no timeout and no body cap, so the async client's
+    // 10 s / 10 MiB defaults must not leak through.
     expect($asyncRequest->getUri()->__toString())->toBe('https://example.com')
-        ->and($asyncRequest->getMethod())->toBe('GET');
+        ->and($asyncRequest->getMethod())->toBe('GET')
+        ->and($asyncRequest->getTransferTimeout())->toBe(0.0)
+        ->and($asyncRequest->getInactivityTimeout())->toBe(0.0)
+        ->and($asyncRequest->getTcpConnectTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT)
+        ->and($asyncRequest->getBodySizeLimit())->toBe(PHP_INT_MAX);
+});
+
+it('does not cap the body size without max_body_size', function (array $options) {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $asyncRequest = $method->invoke($handler, new Request('GET', 'https://example.com'), $options);
+
+    expect($asyncRequest->getBodySizeLimit())->toBe(PHP_INT_MAX)
+        ->and($asyncRequest->getBodySizeLimit())->toBeGreaterThan(\Fledge\Async\Http\Client\Request::DEFAULT_BODY_SIZE_LIMIT);
+})->with([
+    'absent' => [[]],
+    'zero' => [['max_body_size' => 0]],
+]);
+
+it('maps read_timeout to the inactivity timeout', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $asyncRequest = $method->invoke($handler, new Request('GET', 'https://example.com'), [
+        'timeout' => 60,
+        'read_timeout' => 5,
+    ]);
+
+    expect($asyncRequest->getTransferTimeout())->toBe(60.0)
+        ->and($asyncRequest->getInactivityTimeout())->toBe(5.0);
+});
+
+it('maps read_timeout without an overall timeout', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $asyncRequest = $method->invoke($handler, new Request('GET', 'https://example.com'), [
+        'read_timeout' => 7.5,
+    ]);
+
+    expect($asyncRequest->getTransferTimeout())->toBe(0.0)
+        ->and($asyncRequest->getInactivityTimeout())->toBe(7.5);
 });
 
 it('creates async request with protocol version', function () {
@@ -138,6 +183,36 @@ it('maps connect_timeout to both TCP and TLS handshake timeout', function () {
         ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(3.0);
 });
 
+it('bounds connect and handshake by timeout without a connect_timeout', function (array $options) {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $psr7Request = new Request('GET', 'https://example.com');
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, $options);
+
+    // Guzzle and curl count connect time inside timeout, so a black-holed
+    // host must not outlive it while the transfer timer has not started.
+    expect($asyncRequest->getTransferTimeout())->toBe(5.0)
+        ->and($asyncRequest->getTcpConnectTimeout())->toBe(5.0)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(5.0);
+})->with([
+    'connect_timeout absent' => [['timeout' => 5]],
+    'connect_timeout zero' => [['timeout' => 5, 'connect_timeout' => 0]],
+]);
+
+it('prefers an explicit connect_timeout over timeout', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $psr7Request = new Request('GET', 'https://example.com');
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, ['timeout' => 30, 'connect_timeout' => 2]);
+
+    expect($asyncRequest->getTcpConnectTimeout())->toBe(2.0)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(2.0);
+});
+
 it('sets body size limit from max_body_size option', function () {
     $handler = new FledgeHandler;
     $method = new ReflectionMethod($handler, 'createAsyncRequest');
@@ -149,21 +224,23 @@ it('sets body size limit from max_body_size option', function () {
     expect($asyncRequest->getBodySizeLimit())->toBe(1048576);
 });
 
-it('does not set timeouts when they are zero', function () {
+it('treats zero timeouts as no timeout like guzzle', function () {
     $handler = new FledgeHandler;
     $method = new ReflectionMethod($handler, 'createAsyncRequest');
 
     $psr7Request = new Request('GET', 'https://example.com');
 
-    // Default timeouts should remain when 0 is passed
     $asyncRequest = $method->invoke($handler, $psr7Request, [
         'timeout' => 0,
         'connect_timeout' => 0,
     ]);
 
-    // The source checks `> 0`, so 0 should NOT override defaults
-    // Default transfer timeout is 10.0 in amphp/http-client
-    expect($asyncRequest->getTransferTimeout())->not->toBe(0.0);
+    // Transfer and inactivity timeouts of 0 are disabled in the client; TCP
+    // connect rejects 0, so connect and handshake get the long sentinel.
+    expect($asyncRequest->getTransferTimeout())->toBe(0.0)
+        ->and($asyncRequest->getInactivityTimeout())->toBe(0.0)
+        ->and($asyncRequest->getTcpConnectTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT);
 });
 
 it('invokeStats calls on_stats callback', function () {
