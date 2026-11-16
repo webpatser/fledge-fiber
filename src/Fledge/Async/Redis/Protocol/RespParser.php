@@ -135,9 +135,15 @@ final class RespParser implements ParserInterface
             throw new ProtocolException('Array nesting exceeds maximum depth of ' . self::MAX_DEPTH);
         }
 
+        // A nested error (e.g. one failed command inside EXEC) stays in its position as a
+        // QueryException value; unwrapping it here would throw inside the parser and tear
+        // down the shared connection. Only top-level error replies throw, via unwrap().
         $payload = [];
         for ($i = 0; $i < $count; $i++) {
-            $payload[] = (yield from self::parseValue(yield 1, yield self::CRLF, $depth + 1))->unwrap();
+            $value = yield from self::parseValue(yield 1, yield self::CRLF, $depth + 1);
+            $payload[] = $value instanceof RedisError
+                ? new QueryException($value->getMessage())
+                : $value->unwrap();
         }
 
         return new RedisValue($payload);

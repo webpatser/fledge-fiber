@@ -111,6 +111,16 @@ final class Resp3ExtensionParser implements ParserInterface
                 $value = $value->payload;
             }
 
+            // Same shape as RespParser: errors nested in an aggregate become
+            // QueryException values in their position instead of throwing.
+            if (\is_array($value)) {
+                \array_walk_recursive($value, static function (mixed &$item): void {
+                    if ($item instanceof \Resp3\RedisException) {
+                        $item = new QueryException($item->getMessage());
+                    }
+                });
+            }
+
             ($this->push)(new RedisValue($value));
         }
     }
