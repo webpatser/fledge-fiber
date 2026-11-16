@@ -152,7 +152,7 @@ final class Request extends HttpRequest
 
         parent::setHeader($name, $value);
 
-        if (\stripos($name, "cookie") === 0) {
+        if (\strcasecmp($name, "cookie") === 0) {
             $this->setCookiesFromHeaders();
         }
     }
@@ -173,8 +173,9 @@ final class Request extends HttpRequest
 
         parent::addHeader($name, $value);
 
-        if (\stripos($name, "cookie") === 0) {
-            $this->setCookiesFromHeaders();
+        // Fledge: parse only the added lines; re-parsing every cookie line on each add is quadratic per request.
+        if (\strcasecmp($name, "cookie") === 0) {
+            $this->addCookiesFromLines(\is_array($value) ? $value : [$value]);
         }
     }
 
@@ -185,7 +186,7 @@ final class Request extends HttpRequest
     {
         parent::removeHeader($name);
 
-        if (\stripos($name, "cookie") === 0) {
+        if (\strcasecmp($name, "cookie") === 0) {
             $this->cookies = [];
         }
     }
@@ -299,10 +300,18 @@ final class Request extends HttpRequest
     {
         $this->cookies = [];
 
-        $headers = $this->getHeaderArray("cookie");
+        $this->addCookiesFromLines($this->getHeaderArray("cookie"));
+    }
 
-        foreach ($headers as $line) {
-            $cookies = RequestCookie::fromHeader($line);
+    /**
+     * Merges cookies from the given header lines; later lines override earlier ones.
+     *
+     * @param array<string|int|float> $lines
+     */
+    private function addCookiesFromLines(array $lines): void
+    {
+        foreach ($lines as $line) {
+            $cookies = RequestCookie::fromHeader((string) $line);
             foreach ($cookies as $cookie) {
                 $this->cookies[$cookie->getName()] = $cookie;
             }
