@@ -1620,6 +1620,14 @@ class ConnectionProcessor implements SqlTransientResource
         }
 
         if ($this->config->getConnectContext()->getTlsContext() !== null) {
+            if (!($this->serverCapabilities & self::CLIENT_SSL)) {
+                // Fledge: refuse to continue in plaintext when TLS is configured (STARTTLS downgrade).
+                $this->free(new SqlConnectionException(
+                    'TLS is configured but the server does not support SSL (CLIENT_SSL missing from its greeting)'
+                ));
+                return;
+            }
+
             $this->capabilities |= self::CLIENT_SSL;
         }
 
