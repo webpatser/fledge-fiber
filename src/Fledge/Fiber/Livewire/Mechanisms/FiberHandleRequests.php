@@ -42,10 +42,10 @@ class FiberHandleRequests extends HandleRequests
         $maxSize = config('livewire.payload.max_size');
 
         if ($maxSize !== null) {
-            $contentLength = request()->header('Content-Length', 0);
+            $size = strlen(request()->getContent());
 
-            if ($contentLength > $maxSize) {
-                throw new \Livewire\Exceptions\PayloadTooLargeException($contentLength, $maxSize);
+            if ($size > $maxSize) {
+                throw new \Livewire\Exceptions\PayloadTooLargeException($size, $maxSize);
             }
         }
 

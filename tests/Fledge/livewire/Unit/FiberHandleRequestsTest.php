@@ -196,6 +196,47 @@ it('disables concurrent fibers when the config key is absent', function () {
     expect($method->invoke(new FiberHandleRequests))->toBeFalse();
 });
 
+if (! function_exists('request')) {
+    function request(?string $key = null, mixed $default = null): mixed
+    {
+        $request = Illuminate\Container\Container::getInstance()->make('request');
+
+        return $key === null ? $request : $request->input($key, $default);
+    }
+}
+
+it('measures the body, not the Content-Length header, against livewire.payload.max_size', function (?string $contentLength) {
+    $container = new Illuminate\Container\Container;
+    $container->instance('config', new class(['fledge-livewire.concurrent' => true, 'livewire.payload.max_size' => 1024])
+    {
+        public function __construct(private array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    });
+
+    $body = json_encode(['components' => [typeErrorPayload()], 'padding' => str_repeat('a', 4096)]);
+    $request = Illuminate\Http\Request::create('/livewire/update', 'POST', server: ['CONTENT_TYPE' => 'application/json'], content: $body);
+    $request->headers->remove('Content-Length');
+
+    if ($contentLength === null) {
+        $request->headers->set('Transfer-Encoding', 'chunked');
+    } else {
+        $request->headers->set('Content-Length', $contentLength);
+    }
+
+    $container->instance('request', $request);
+    Illuminate\Container\Container::setInstance($container);
+
+    expect(fn () => (new FiberHandleRequests)->handleUpdate())
+        ->toThrow(Livewire\Exceptions\PayloadTooLargeException::class);
+})->with([
+    'chunked body without Content-Length' => [null],
+    'understated Content-Length' => ['10'],
+]);
+
 it('reports a TypeError from a concurrent component before turning it into a 419', function () {
     $handler = bindTypeErrorContainer(debug: false);
 
