@@ -178,6 +178,9 @@ final readonly class FollowRedirects implements ApplicationInterceptor
     {
         $request = clone $originalRequest;
         $request->setMethod('GET');
+        // A redirect becomes a GET, which carries no body (as Guzzle and curl do for 301/302/303);
+        // never replay the original payload, least of all to a cross-origin Location.
+        $request->setBody('');
         $request->removeHeader('transfer-encoding');
         $request->removeHeader('content-length');
         $request->removeHeader('content-type');

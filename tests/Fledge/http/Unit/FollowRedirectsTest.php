@@ -46,6 +46,19 @@ it('strips credentials when a redirect downgrades https to http on the same host
         ->and($delegate->requests[1]->hasHeader('cookie'))->toBeFalse();
 });
 
+it('drops the request body when a POST is redirected to another origin', function () {
+    $delegate = redirectingDelegate('https://other.example/next');
+
+    $request = new Request('https://example.com/start', 'POST', 'secret=payload');
+
+    (new FollowRedirects(5))->request($request, new NullCancellation, $delegate);
+
+    expect($delegate->requests)->toHaveCount(2)
+        ->and($delegate->requests[1]->getMethod())->toBe('GET')
+        ->and($delegate->requests[1]->getBody()->getContentLength())->toBe(0)
+        ->and($delegate->requests[1]->getBody()->getContent()->read())->toBeNull();
+});
+
 it('keeps credentials on a same-origin redirect', function () {
     $delegate = redirectingDelegate('/next');
 
