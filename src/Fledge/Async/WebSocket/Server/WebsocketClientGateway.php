@@ -13,17 +13,40 @@ final class WebsocketClientGateway implements WebsocketGateway
     use ForbidCloning;
     use ForbidSerialization;
 
+    public const DEFAULT_MAX_QUEUED_BYTES = 16 * 1024 * 1024; // 16 MiB
+    public const DEFAULT_MAX_QUEUED_MESSAGES = 65536;
+
     /** @var array<int, WebsocketClient> Indexed by client ID. */
     private array $clients = [];
 
     /** @var array<int, Internal\SendQueue> Senders indexed by client ID. */
     private array $senders = [];
 
+    /**
+     * A client whose pending messages pass either limit (it stopped reading) is closed with POLICY_VIOLATION and
+     * its pending sends fail with {@see \Fledge\Async\WebSocket\WebsocketClosedException}.
+     *
+     * @param int|null $maxQueuedBytes Per client bytes of message data waiting to be written. Use null for no limit.
+     * @param int|null $maxQueuedMessages Per client number of messages waiting to be written. Use null for no limit.
+     */
+    public function __construct(
+        private readonly ?int $maxQueuedBytes = self::DEFAULT_MAX_QUEUED_BYTES,
+        private readonly ?int $maxQueuedMessages = self::DEFAULT_MAX_QUEUED_MESSAGES,
+    ) {
+        if ($maxQueuedBytes !== null && $maxQueuedBytes < 1) {
+            throw new \ValueError('The queued bytes limit must be positive or null');
+        }
+
+        if ($maxQueuedMessages !== null && $maxQueuedMessages < 1) {
+            throw new \ValueError('The queued messages limit must be positive or null');
+        }
+    }
+
     public function addClient(WebsocketClient $client): void
     {
         $id = $client->getId();
         $this->clients[$id] = $client;
-        $this->senders[$id] = new Internal\SendQueue($client);
+        $this->senders[$id] = new Internal\SendQueue($client, $this->maxQueuedBytes, $this->maxQueuedMessages);
 
         $client->onClose(function () use ($id): void {
             unset($this->clients[$id], $this->senders[$id]);
