@@ -51,6 +51,12 @@ final class Http2ConnectionProcessor implements Http2Processor
     // Seconds to wait for pong (PING with ACK) frame before closing the connection.
     private const PONG_TIMEOUT = 5;
 
+    /**
+     * Maximum number of control frames sent in reply to the server (PING ACK, SETTINGS ACK, RST_STREAM) that may wait
+     * in the write queue. Matches the max_outbound_ack default of libnghttp2 (used by curl).
+     */
+    public const DEFAULT_MAX_QUEUED_CONTROL_FRAMES = 1000;
+
     /** @var string 64-bit for ping. */
     private string $counter = "aaaaaaaa";
 
@@ -103,11 +109,22 @@ final class Http2ConnectionProcessor implements Http2Processor
     /** @var Queue<string> */
     private readonly Queue $frameQueue;
 
+    /** @var int Control frames queued in reply to the server and not yet taken by the write fiber. */
+    private int $queuedControlFrames = 0;
+
+    /**
+     * @param positive-int $maxQueuedControlFrames
+     */
     public function __construct(
         private readonly Socket $socket,
+        private readonly int $maxQueuedControlFrames = self::DEFAULT_MAX_QUEUED_CONTROL_FRAMES,
     ) {
         $this->hpack = new HPack();
         $this->frameQueue = new Queue();
+
+        if ($maxQueuedControlFrames < 1) {
+            throw new \ValueError('The maximum number of queued control frames must be a positive integer');
+        }
     }
 
     public function __destruct()
@@ -187,7 +204,7 @@ final class Http2ConnectionProcessor implements Http2Processor
 
     public function handlePing(string $data): void
     {
-        $this->writeFrame(Http2Parser::PING, Http2Parser::ACK, 0, $data)->ignore();
+        $this->writeControlFrame(Http2Parser::PING, Http2Parser::ACK, 0, $data);
     }
 
     public function handleShutdown(int $lastId, int $error, string $message): void
@@ -833,7 +850,7 @@ final class Http2ConnectionProcessor implements Http2Processor
             $this->applySetting($setting, $value);
         }
 
-        $this->writeFrame(Http2Parser::SETTINGS, Http2Parser::ACK)->ignore();
+        $this->writeControlFrame(Http2Parser::SETTINGS, Http2Parser::ACK);
 
         if ($this->settings) {
             $this->initialized = true;
@@ -1145,6 +1162,44 @@ final class Http2ConnectionProcessor implements Http2Processor
         return $this->frameQueue->pushAsync(Http2Parser::compileFrame($data, $type, $flags, $stream));
     }
 
+    /**
+     * Queues a control frame sent in reply to the server without awaiting it, so the read fiber never blocks on a
+     * server that does not read. The number of such frames waiting in the queue is bounded: past the limit the
+     * connection is closed with ENHANCE_YOUR_CALM, like libnghttp2 does on its max_outbound_ack limit.
+     */
+    private function writeControlFrame(
+        int $type,
+        int $flags = Http2Parser::NO_FLAG,
+        int $stream = 0,
+        string $data = ''
+    ): void {
+        if ($this->frameQueue->isComplete()) {
+            return;
+        }
+
+        if ($this->queuedControlFrames >= $this->maxQueuedControlFrames) {
+            if (!$this->socket->isClosed()) {
+                $this->handleConnectionException(new Http2ConnectionException(
+                    "Too many queued control frames, the server is not reading",
+                    Http2Parser::ENHANCE_YOUR_CALM
+                ));
+
+                // The write fiber is stuck on a peer that does not read; closing the socket releases the queue.
+                $this->socket->close();
+            }
+
+            return;
+        }
+
+        ++$this->queuedControlFrames;
+
+        $this->frameQueue->pushAsync(Http2Parser::compileFrame($data, $type, $flags, $stream))
+            ->finally(function (): void {
+                --$this->queuedControlFrames;
+            })
+            ->ignore();
+    }
+
     private function applySetting(int $setting, int $value): void
     {
         switch ($setting) {
@@ -1367,12 +1422,24 @@ final class Http2ConnectionProcessor implements Http2Processor
             $stream->body?->error($exception);
             $stream->body = null;
 
-            $this->writeFrame(
-                Http2Parser::RST_STREAM,
-                Http2Parser::NO_FLAG,
-                $streamId,
-                \pack("N", Http2Parser::CANCEL)
-            )->ignore();
+            if ($streamId & 1) {
+                // Client-initiated stream: bounded by the streams the client opened itself, so a mass cancellation
+                // against a healthy server must not count toward the control frame limit.
+                $this->writeFrame(
+                    Http2Parser::RST_STREAM,
+                    Http2Parser::NO_FLAG,
+                    $streamId,
+                    \pack("N", Http2Parser::CANCEL)
+                )->ignore();
+            } else {
+                // Pushed stream: the server opens these at will, so the reply counts toward the limit.
+                $this->writeControlFrame(
+                    Http2Parser::RST_STREAM,
+                    Http2Parser::NO_FLAG,
+                    $streamId,
+                    \pack("N", Http2Parser::CANCEL)
+                );
+            }
 
             if ($unprocessed) {
                 events()->requestRejected($stream->request);
