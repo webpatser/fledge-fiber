@@ -2,6 +2,8 @@
 
 namespace Fledge\Fiber\Redis;
 
+use Fledge\Async\Redis\Protocol\QueryException;
+
 use function Fledge\Async\async;
 use function Fledge\Async\Future\await;
 
@@ -41,7 +43,7 @@ class FledgeRedisPipeline
             $results = [];
 
             foreach ($this->commands as [$method, $parameters]) {
-                $results[] = $this->connection->command($method, $parameters);
+                $results[] = $this->run($method, $parameters);
             }
 
             $this->commands = [];
@@ -52,7 +54,7 @@ class FledgeRedisPipeline
         $futures = [];
 
         foreach ($this->commands as [$method, $parameters]) {
-            $futures[] = async(fn () => $this->connection->command($method, $parameters));
+            $futures[] = async(fn () => $this->run($method, $parameters));
         }
 
         $this->commands = [];
@@ -63,5 +65,27 @@ class FledgeRedisPipeline
         ksort($results);
 
         return array_values($results);
+    }
+
+    /**
+     * Run one queued command. Like phpredis, a Redis error reply or a nil
+     * reply (missing key, nil bulk or nil array) puts false in the command's
+     * slot, also nested inside an array reply (MGET elements). A BLPOP or
+     * BRPOP timeout gives an empty array, as in phpredis. Connection-level
+     * failures still throw.
+     */
+    protected function run(string $method, array $parameters): mixed
+    {
+        try {
+            $reply = $this->connection->command($method, $parameters);
+        } catch (QueryException) {
+            return false;
+        }
+
+        if ($reply === null) {
+            return in_array(strtolower($method), ['blpop', 'brpop'], true) ? [] : false;
+        }
+
+        return FledgeRedisConnection::toPhpRedisReply($reply, true);
     }
 }

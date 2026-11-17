@@ -130,6 +130,13 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
                     throw $e;
                 }
 
+                // Redis rejected the command while queueing it (wrong arity,
+                // unknown command): phpredis answers false and lets the
+                // following EXEC report EXECABORT, so do the same.
+                if ($e instanceof QueryException && $this->ownsTransaction()) {
+                    return false;
+                }
+
                 $transient = $e instanceof AsyncRedisException
                     && Str::contains($e->getMessage(), static::TRANSIENT_ERROR_MARKERS);
 
@@ -150,8 +157,18 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
                 $method, $this->parseParametersForEvent($parameters), $time, $this
             ));
 
-            return $result;
+            return $this->queuedReply(static::toPhpRedisReply($result));
         }
+    }
+
+    /**
+     * Inside this fiber's MULTI, phpredis answers every queued command with
+     * the client itself so calls chain (multi()->incr()->exec()). Mirror that
+     * by returning the connection for the QUEUED status reply.
+     */
+    protected function queuedReply(mixed $result): mixed
+    {
+        return $result === 'QUEUED' && $this->ownsTransaction() ? $this : $result;
     }
 
     /**
@@ -238,7 +255,9 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function setnx($key, $value)
     {
-        return (int) $this->command('setnx', [$key, $value]);
+        $result = $this->command('setnx', [$key, $value]);
+
+        return $result === $this ? $this : (int) $result;
     }
 
     /**
@@ -290,7 +309,9 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     public function hsetnx($hash, $key, $value)
     {
-        return (int) $this->command('hsetnx', [$hash, $key, $value]);
+        $result = $this->command('hsetnx', [$hash, $key, $value]);
+
+        return $result === $this ? $this : (int) $result;
     }
 
     /**
@@ -458,6 +479,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $result = $this->command('scan', $args);
 
+        if ($result === $this) {
+            return $this;
+        }
+
         if (! is_array($result)) {
             return false;
         }
@@ -486,6 +511,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         $result = $this->command('zscan', $args);
+
+        if ($result === $this) {
+            return $this;
+        }
 
         if (! is_array($result)) {
             return false;
@@ -516,6 +545,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $result = $this->command('hscan', $args);
 
+        if ($result === $this) {
+            return $this;
+        }
+
         if (! is_array($result)) {
             return false;
         }
@@ -544,6 +577,10 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         }
 
         $result = $this->command('sscan', $args);
+
+        if ($result === $this) {
+            return $this;
+        }
 
         if (! is_array($result)) {
             return false;
@@ -690,14 +727,28 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             // stray EXEC/DISCARD, but never inside another fiber's MULTI.
             $this->waitForTransactionGate();
 
-            return $this->client->execute($command);
+            return static::toPhpRedisReply($this->client->execute($command));
         }
 
         try {
-            return $this->client->execute($command);
+            $reply = $this->client->execute($command);
+        } catch (QueryException $e) {
+            // A command rejected while queueing makes Redis discard the
+            // transaction; phpredis returns false from exec() for it.
+            if ($command === 'EXEC' && str_starts_with($e->getMessage(), 'EXECABORT')) {
+                return false;
+            }
+
+            throw $e;
         } finally {
             $this->releaseTransaction();
         }
+
+        // A WATCH abort answers EXEC with nil, and phpredis has no null in
+        // EXEC replies: both become false.
+        return $command === 'EXEC'
+            ? (static::toPhpRedisReply($reply, true) ?? false)
+            : $reply;
     }
 
     /**
@@ -781,6 +832,11 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
                 $this->abortTransaction();
             }
 
+            // Rejected while queueing: false like phpredis, EXEC aborts.
+            if ($e instanceof QueryException && $this->ownsTransaction()) {
+                return false;
+            }
+
             throw $e;
         }
 
@@ -790,7 +846,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             'eval', $this->parseParametersForEvent([$script, $numberOfKeys, ...$arguments]), $time, $this
         ));
 
-        return $result;
+        // phpredis returns false for a nil script result (Lua nil or false).
+        return $this->queuedReply($result ?? false);
     }
 
     /**
@@ -803,19 +860,54 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     {
         $count = count($keys);
 
-        try {
-            $this->waitForTransactionGate();
+        // Inside MULTI an EVALSHA is only queued: a NOSCRIPT would surface at
+        // EXEC, too late for the fallback. Send the script itself instead.
+        if (! $this->ownsTransaction()) {
+            try {
+                $this->waitForTransactionGate();
 
-            return $this->client->execute('evalsha', sha1($script), $count, ...$keys, ...$this->flattenParameters($args));
-        } catch (QueryException $e) {
-            if (! str_starts_with($e->getMessage(), 'NOSCRIPT')) {
-                throw $e;
+                return static::toPhpRedisReply(
+                    $this->client->execute('evalsha', sha1($script), $count, ...$keys, ...$this->flattenParameters($args)),
+                    true
+                );
+            } catch (QueryException $e) {
+                if (! str_starts_with($e->getMessage(), 'NOSCRIPT')) {
+                    throw $e;
+                }
             }
         }
 
         $this->waitForTransactionGate();
 
-        return $this->client->execute('eval', $script, $count, ...$keys, ...$this->flattenParameters($args));
+        return static::toPhpRedisReply(
+            $this->client->execute('eval', $script, $count, ...$keys, ...$this->flattenParameters($args)),
+            true
+        );
+    }
+
+    /**
+     * Map error replies nested inside an array reply to false, the value
+     * phpredis puts in the slot of a failed command (EXEC, pipelines, EVAL
+     * tables, raw commands). With $nilToFalse nested nil replies become false
+     * too, as phpredis has no null inside EXEC, pipeline and EVAL replies.
+     * Top-level replies are returned as they are, and top-level error
+     * replies still throw.
+     */
+    public static function toPhpRedisReply(mixed $reply, bool $nilToFalse = false): mixed
+    {
+        if (! is_array($reply)) {
+            return $reply;
+        }
+
+        foreach ($reply as $key => $value) {
+            if ($value instanceof QueryException || ($nilToFalse && $value === null)) {
+                $reply[$key] = false;
+            } elseif (is_array($value)) {
+                $reply[$key] = static::toPhpRedisReply($value, $nilToFalse);
+            }
+        }
+
+        return $reply;
     }
 
     /**
@@ -899,7 +991,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $this->waitForTransactionGate();
 
-        return $this->client->execute($command, ...$parameters);
+        return $this->queuedReply(static::toPhpRedisReply($this->client->execute($command, ...$parameters)));
     }
 
     /**

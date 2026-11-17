@@ -178,6 +178,98 @@ it('does not hold a lock when not in a transaction', function () {
     expect($connection->ownsTransaction())->toBeFalse();
 });
 
+/**
+ * Answers queued commands with QUEUED like Redis does and EXEC with one
+ * reply per queued command.
+ */
+final class QueuingLink implements RedisLink
+{
+    /** @var list<string> */
+    public array $log = [];
+
+    private ?array $queued = null;
+
+    public function execute(string $command, array $parameters): RedisResponse
+    {
+        $command = strtoupper($command);
+        $this->log[] = trim($command.' '.implode(' ', $parameters));
+        delay(0.001);
+
+        if ($command === 'MULTI') {
+            $this->queued = [];
+
+            return new RedisValue('OK');
+        }
+
+        if ($command === 'EXEC') {
+            $replies = $this->queued;
+            $this->queued = null;
+
+            return new RedisValue($replies);
+        }
+
+        if ($this->queued !== null) {
+            $this->queued[] = $command === 'INCR' ? 1 : 'OK';
+
+            return new RedisValue('QUEUED');
+        }
+
+        return new RedisValue($command === 'INCR' ? 7 : 'OK');
+    }
+}
+
+it('chains queued commands after multi like phpredis', function () {
+    $link = new QueuingLink;
+    $connection = new FledgeRedisConnection(new RedisClient($link));
+
+    $result = $connection->multi()->set('a', 'v')->incr('b')->exec();
+
+    expect($result)->toBe(['OK', 1])
+        ->and($link->log)->toBe(['MULTI', 'SET a v', 'INCR b', 'EXEC'])
+        ->and($connection->ownsTransaction())->toBeFalse()
+        ->and($connection->incr('b'))->toBe(7);
+});
+
+it('returns the connection for queued commands in the transaction callback', function () {
+    $connection = new FledgeRedisConnection(new RedisClient(new QueuingLink));
+    $queued = [];
+
+    $result = $connection->transaction(function ($redis) use (&$queued) {
+        $queued[] = $redis->set('a', 'v');
+        $queued[] = $redis->incr('b');
+    });
+
+    expect($result)->toBe(['OK', 1])
+        ->and($queued)->toBe([$connection, $connection]);
+});
+
+it('returns the connection from casting and reshaping wrappers inside multi', function () {
+    $connection = new FledgeRedisConnection(new RedisClient(new QueuingLink));
+
+    $connection->multi();
+
+    expect($connection->setnx('a', 'v'))->toBe($connection)
+        ->and($connection->hsetnx('h', 'f', 'v'))->toBe($connection)
+        ->and($connection->scan(0))->toBe($connection)
+        ->and($connection->zscan('z', 0))->toBe($connection)
+        ->and($connection->hscan('h', 0))->toBe($connection)
+        ->and($connection->sscan('s', 0))->toBe($connection)
+        ->and($connection->exec())->toBe(['OK', 'OK', 'OK', 'OK', 'OK', 'OK']);
+});
+
+it('sends eval instead of evalsha inside the owning transaction', function () {
+    $link = new QueuingLink;
+    $connection = new FledgeRedisConnection(new RedisClient($link));
+
+    $connection->multi();
+    $queued = $connection->eval('return 1', 0);
+    $result = $connection->exec();
+
+    expect($queued)->toBe($connection)
+        ->and($result)->toBe(['OK'])
+        ->and($link->log)->toBe(['MULTI', 'EVAL return 1 0', 'EXEC']);
+});
+
 it('releases the transaction lock when a command inside multi fails on the connection', function () {
     $link = new class implements RedisLink
     {
