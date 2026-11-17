@@ -21,12 +21,19 @@ final class StreamingFormParser
     use ForbidCloning;
     use ForbidSerialization;
 
+    /** Default cap on the header block of a single multipart part, in bytes. */
+    public const DEFAULT_PART_HEADER_SIZE_LIMIT = 16384;
+
     /** @var int Prevent requests from creating arbitrary many fields causing lot of processing time */
     private readonly int $fieldCountLimit;
 
-    public function __construct(?int $fieldCountLimit = null)
+    /** @var int Prevent a multipart part from buffering an unbounded header block */
+    private readonly int $partHeaderSizeLimit;
+
+    public function __construct(?int $fieldCountLimit = null, ?int $partHeaderSizeLimit = null)
     {
         $this->fieldCountLimit = $fieldCountLimit ?? (int) \ini_get('max_input_vars') ?: 1000;
+        $this->partHeaderSizeLimit = $partHeaderSizeLimit ?? self::DEFAULT_PART_HEADER_SIZE_LIMIT;
     }
 
     /**
@@ -90,13 +97,26 @@ final class StreamingFormParser
 
             while (\substr_compare($buffer, "--\r\n", $offset)) {
                 $offset += 2;
+                $searchPos = $offset;
 
-                while (($end = \strpos($buffer, "\r\n\r\n", $offset)) === false) {
+                // The header block runs from $offset up to the blank line; it may be at most partHeaderSizeLimit bytes
+                // however the reads fall. Unterminated, up to 3 trailing bytes may be the start of the blank line.
+                while (($end = \strpos($buffer, "\r\n\r\n", $searchPos)) === false) {
+                    if (\strlen($buffer) - $offset > $this->partHeaderSizeLimit + 3) {
+                        throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Multipart part headers too large");
+                    }
+
+                    // Resume the search just before the new data so a split CRLFCRLF is still found.
+                    $searchPos = \max($offset, \strlen($buffer) - 3);
                     $buffer .= $chunk = $body->read();
 
                     if ($chunk === null) {
                         throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Request body ended unexpectedly");
                     }
+                }
+
+                if ($end - $offset > $this->partHeaderSizeLimit) {
+                    throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Multipart part headers too large");
                 }
 
                 if ($fieldCount++ === $this->fieldCountLimit) {
@@ -164,7 +184,8 @@ final class StreamingFormParser
                 $queue = null;
                 $offset = $end + \strlen($boundarySeparator);
 
-                while (\strlen($buffer) < 4) {
+                // Need the 4 bytes after the delimiter ("--\r\n" or "\r\n" plus the next headers) to decide.
+                while (\strlen($buffer) < $offset + 4) {
                     $buffer .= $chunk = $body->read();
 
                     if ($chunk === null) {
@@ -188,6 +209,7 @@ final class StreamingFormParser
         try {
             $buffer = "";
             $nextPos = 0; // For Psalm
+            $scanPos = 0; // Bytes of $buffer already known to hold no "=" or "&".
 
             while (null !== $chunk = $body->read()) {
                 if ($chunk === "") {
@@ -198,11 +220,39 @@ final class StreamingFormParser
 
                 parse_parameter:
 
-                $equalPos = \strpos($buffer, "=");
-                if ($equalPos !== false) {
-                    $fieldName = \urldecode(\substr($buffer, 0, $equalPos));
-                    $buffer = \substr($buffer, $equalPos + 1);
+                // A key ends at whichever of "=" or "&" comes first (as parse_str does); each byte is scanned once.
+                $keyEnd = $scanPos + \strcspn($buffer, "=&", $scanPos);
+                if ($keyEnd === \strlen($buffer)) {
+                    $scanPos = $keyEnd;
+                    continue;
+                }
 
+                $scanPos = 0;
+                $fieldName = \urldecode(\substr($buffer, 0, $keyEnd));
+                $hasValue = $buffer[$keyEnd] === "=";
+                $buffer = \substr($buffer, $keyEnd + 1);
+
+                if ($fieldName === "") {
+                    // parse_str drops an empty key and its value; skip up to the next "&".
+                    while ($hasValue && false === ($nextPos = \strpos($buffer, "&"))) {
+                        $buffer = "";
+                        $chunk = $body->read();
+
+                        if ($chunk === null) {
+                            return;
+                        }
+
+                        $buffer = $chunk;
+                    }
+
+                    if ($hasValue) {
+                        $buffer = \substr($buffer, $nextPos + 1);
+                    }
+
+                    goto parse_parameter;
+                }
+
+                if ($hasValue) {
                     $queue = new Queue();
 
                     if ($fieldCount++ === $this->fieldCountLimit) {
@@ -215,6 +265,28 @@ final class StreamingFormParser
                     ));
 
                     while (false === ($nextPos = \strpos($buffer, "&"))) {
+                        // The buffer holds no "&", so all of it belongs to this value. Flush it except an escape
+                        // that may be cut off at the end ("%" or "%X"); the buffer then never grows past two bytes
+                        // plus one read, and the "&" search above only covers that.
+                        $length = \strlen($buffer);
+                        $keep = 0;
+                        if ($length > 0 && $buffer[$length - 1] === "%") {
+                            $keep = 1;
+                        } elseif ($length > 1 && $buffer[$length - 2] === "%") {
+                            $keep = 2;
+                        }
+
+                        if ($length > $keep) {
+                            $chunk = \substr($buffer, 0, $length - $keep);
+                            $buffer = \substr($buffer, $length - $keep);
+
+                            try {
+                                $queue->push(\urldecode($chunk));
+                            } catch (DisposedException) {
+                                // Ignore and continue consuming this field.
+                            }
+                        }
+
                         $chunk = $body->read();
 
                         if ($chunk === null) {
@@ -230,22 +302,6 @@ final class StreamingFormParser
                         }
 
                         $buffer .= $chunk;
-
-                        $lastEncodedPos = \strrpos($buffer, "%", -2);
-                        $chunk = $buffer;
-
-                        if ($lastEncodedPos !== false) {
-                            $chunk = \substr($chunk, 0, $lastEncodedPos);
-                            $buffer = \substr($buffer, $lastEncodedPos);
-                        } else {
-                            $buffer = "";
-                        }
-
-                        try {
-                            $queue->push(\urldecode($chunk));
-                        } catch (DisposedException) {
-                            // Ignore and continue consuming this field.
-                        }
                     }
 
                     try {
@@ -262,14 +318,6 @@ final class StreamingFormParser
                     goto parse_parameter;
                 }
 
-                $nextPos = \strpos($buffer, "&");
-                if ($nextPos === false) {
-                    continue;
-                }
-
-                $fieldName = \urldecode(\substr($buffer, 0, $nextPos));
-                $buffer = \substr($buffer, $nextPos + 1);
-
                 if ($fieldCount++ === $this->fieldCountLimit) {
                     throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
                 }
@@ -279,12 +327,13 @@ final class StreamingFormParser
                 goto parse_parameter;
             }
 
-            if ($buffer) {
-                if ($fieldCount + 1 === $this->fieldCountLimit) {
+            // A trailing key without "=" or "&"; compare to "" so a key named "0" is kept.
+            if ($buffer !== "" && ($fieldName = \urldecode($buffer)) !== "") {
+                if ($fieldCount === $this->fieldCountLimit) {
                     throw new HttpErrorException(HttpStatus::BAD_REQUEST, "Maximum number of variables exceeded");
                 }
 
-                $source->push(new StreamedField(\urldecode($buffer)));
+                $source->push(new StreamedField($fieldName));
             }
         } catch (\Throwable $e) {
             $queue?->error($e);
