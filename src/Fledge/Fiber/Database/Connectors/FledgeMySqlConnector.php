@@ -68,8 +68,16 @@ class FledgeMySqlConnector implements ConnectorInterface
     /**
      * Build the TLS-enabled connect context when PDO MySQL SSL options are configured.
      *
-     * Returns null (plaintext, matching pdo_mysql defaults) when no SSL option
-     * is present or the connection uses a unix socket.
+     * TLS is requested when any of SSL_CA, SSL_CAPATH, SSL_CERT, SSL_KEY or
+     * SSL_CIPHER is present in the options, whatever its value (null, false,
+     * '' and 0 included). This matches pdo_mysql, which requests TLS for each
+     * of these keys on its own and then refuses a server without TLS, so
+     * filtering empty values would silently downgrade to plaintext.
+     * SSL_VERIFY_SERVER_CERT never requests TLS; it only modifies the
+     * verification of an otherwise requested TLS context.
+     *
+     * Returns null (plaintext) when TLS is not requested or the connection
+     * uses a unix socket.
      */
     protected function buildConnectContext(array $config): ?ConnectContext
     {
@@ -87,7 +95,6 @@ class FledgeMySqlConnector implements ConnectorInterface
             \Pdo\Mysql::ATTR_SSL_CERT,
             \Pdo\Mysql::ATTR_SSL_KEY,
             \Pdo\Mysql::ATTR_SSL_CIPHER,
-            \Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT,
         ];
 
         if (! array_any($sslOptions, fn ($option) => array_key_exists($option, $options))) {
@@ -96,30 +103,46 @@ class FledgeMySqlConnector implements ConnectorInterface
 
         $tls = (new ClientTlsContext)->withPeerName($host);
 
-        if (isset($options[\Pdo\Mysql::ATTR_SSL_CA])) {
-            $tls = $tls->withCaFile($options[\Pdo\Mysql::ATTR_SSL_CA]);
+        // Only non-empty strings reach the TLS context. An empty, null, false or 0
+        // value still requests TLS (above) but leaves the setting at its default,
+        // so an empty CA falls back to the system trust store, not an empty cafile.
+        $ca = $this->sslOptionValue($options, \Pdo\Mysql::ATTR_SSL_CA);
+        $caPath = $this->sslOptionValue($options, \Pdo\Mysql::ATTR_SSL_CAPATH);
+        $cert = $this->sslOptionValue($options, \Pdo\Mysql::ATTR_SSL_CERT);
+        $key = $this->sslOptionValue($options, \Pdo\Mysql::ATTR_SSL_KEY);
+        $cipher = $this->sslOptionValue($options, \Pdo\Mysql::ATTR_SSL_CIPHER);
+
+        if ($ca !== null) {
+            $tls = $tls->withCaFile($ca);
         }
 
-        if (isset($options[\Pdo\Mysql::ATTR_SSL_CAPATH])) {
-            $tls = $tls->withCaPath($options[\Pdo\Mysql::ATTR_SSL_CAPATH]);
+        if ($caPath !== null) {
+            $tls = $tls->withCaPath($caPath);
         }
 
-        if (isset($options[\Pdo\Mysql::ATTR_SSL_CERT])) {
-            $cert = $options[\Pdo\Mysql::ATTR_SSL_CERT];
-            $key = $options[\Pdo\Mysql::ATTR_SSL_KEY] ?? $cert;
-
-            $tls = $tls->withCertificate(new Certificate($cert, $key));
+        if ($cert !== null) {
+            $tls = $tls->withCertificate(new Certificate($cert, $key ?? $cert));
         }
 
-        if (isset($options[\Pdo\Mysql::ATTR_SSL_CIPHER])) {
-            $tls = $tls->withCiphers($options[\Pdo\Mysql::ATTR_SSL_CIPHER]);
+        if ($cipher !== null) {
+            $tls = $tls->withCiphers($cipher);
         }
 
-        if (($options[\Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT] ?? true) === false) {
+        if (($config['options'][\Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT] ?? true) === false) {
             $tls = $tls->withoutPeerVerification();
         }
 
         return (new ConnectContext)->withTlsContext($tls);
+    }
+
+    /**
+     * The value of a PDO MySQL SSL option when it is a non-empty string, otherwise null.
+     */
+    protected function sslOptionValue(array $options, int $option): ?string
+    {
+        $value = $options[$option] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     protected function createPool(MysqlConfig $config, array $appConfig): MysqlConnectionPool
