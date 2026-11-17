@@ -41,6 +41,9 @@ final class Http1Parser
     public const TRAILERS_START = 4;
     public const TRAILERS = 5;
 
+    /** Upper bound for a chunk-size line without its CRLF; chunk extensions are not accepted. */
+    private const MAX_CHUNK_SIZE_LINE_BYTES = 1024;
+
     /** @var \WeakReference<Response>|null */
     private ?\WeakReference $responseRef = null;
 
@@ -401,6 +404,12 @@ final class Http1Parser
         determine_chunk_size:
         {
             if (false === ($lineEndPos = \strpos($this->buffer, "\r\n"))) {
+                // A chunk-size line is a few hex digits; without this cap a peer that never sends
+                // CRLF grows the buffer without bound, past both the header and the body limits.
+                if (\strlen($this->buffer) > self::MAX_CHUNK_SIZE_LINE_BYTES) {
+                    throw new ParseException('Chunk size line too long', HttpStatus::BAD_REQUEST);
+                }
+
                 return false;
             }
 
@@ -410,6 +419,12 @@ final class Http1Parser
 
             $line = \substr($this->buffer, 0, $lineEndPos);
             $hex = \strtolower(\trim(\ltrim($line, '0'))) ?: '0';
+
+            // 15 hex digits always fit in a 64-bit int; beyond that hexdec() returns a float.
+            if (\strlen($hex) > 15) {
+                throw new ParseException('Chunk size too large', HttpStatus::BAD_REQUEST);
+            }
+
             $dec = \hexdec($hex);
 
             if ($hex !== \dechex($dec)) {
@@ -435,6 +450,10 @@ final class Http1Parser
             }
 
             if ($bufferLength >= $this->chunkLengthRemaining + 2) {
+                if (\substr($this->buffer, $this->chunkLengthRemaining, 2) !== "\r\n") {
+                    throw new ParseException('Chunk data not terminated by CRLF', HttpStatus::BAD_REQUEST);
+                }
+
                 $chunk = \substr($this->buffer, 0, $this->chunkLengthRemaining);
                 $this->buffer = \substr($this->buffer, $this->chunkLengthRemaining + 2);
                 $this->chunkLengthRemaining = null;
