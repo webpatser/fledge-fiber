@@ -39,13 +39,11 @@ use function Fledge\Async\delay;
 class FledgeHandler
 {
     /**
-     * Seconds used for TCP connect and TLS handshake when neither
-     * connect_timeout nor timeout is set (or both are 0). With only timeout
-     * set, connect and handshake use that value instead, as curl does. The
-     * async client has no "disabled" value for either, and a day stays well
-     * inside every event loop driver's timer range.
+     * Seconds used for TCP connect and TLS handshake when connect_timeout is
+     * absent or 0. This is curl's built-in connect timeout, which applies
+     * when Guzzle sets none. A positive timeout still caps it, as curl does.
      */
-    public const NO_CONNECT_TIMEOUT = 86400.0;
+    public const NO_CONNECT_TIMEOUT = 300.0;
 
     protected ?HttpClient $client;
 
@@ -193,13 +191,17 @@ class FledgeHandler
         $asyncRequest->setInactivityTimeout($readTimeout);
 
         // The transfer timeout only starts once a connection exists, while
-        // Guzzle and curl count connect time inside timeout. Without its own
-        // connect_timeout, connect and handshake therefore fall back to the
-        // overall timeout. TCP connect rejects 0 and the TLS handshake would
-        // time out at once, so when both are absent or 0 the long sentinel
-        // stands in for "no connect timeout".
+        // Guzzle and curl count connect time inside timeout. An absent or 0
+        // connect_timeout means curl's built-in 300 s connect timeout (TCP
+        // connect rejects 0, and a 0 handshake would time out at once). curl
+        // caps the connect phase at a positive total timeout, so the smaller
+        // of the two wins.
         $connectTimeout = (float) ($options['connect_timeout'] ?? 0);
-        $connectTimeout = $connectTimeout > 0 ? $connectTimeout : ($timeout > 0 ? $timeout : self::NO_CONNECT_TIMEOUT);
+        $connectTimeout = $connectTimeout > 0 ? $connectTimeout : self::NO_CONNECT_TIMEOUT;
+
+        if ($timeout > 0) {
+            $connectTimeout = min($connectTimeout, $timeout);
+        }
         $asyncRequest->setTcpConnectTimeout($connectTimeout);
         $asyncRequest->setTlsHandshakeTimeout($connectTimeout);
 

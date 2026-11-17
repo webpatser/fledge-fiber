@@ -213,6 +213,21 @@ it('prefers an explicit connect_timeout over timeout', function () {
         ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(2.0);
 });
 
+it('caps connect_timeout at timeout like curl', function (array $options, float $expected) {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $psr7Request = new Request('GET', 'https://example.com');
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, $options);
+
+    expect($asyncRequest->getTcpConnectTimeout())->toBe($expected)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe($expected);
+})->with([
+    'connect_timeout above timeout' => [['timeout' => 5, 'connect_timeout' => 10], 5.0],
+    'connect_timeout below timeout' => [['timeout' => 30, 'connect_timeout' => 10], 10.0],
+]);
+
 it('sets body size limit from max_body_size option', function () {
     $handler = new FledgeHandler;
     $method = new ReflectionMethod($handler, 'createAsyncRequest');
@@ -235,13 +250,30 @@ it('treats zero timeouts as no timeout like guzzle', function () {
         'connect_timeout' => 0,
     ]);
 
-    // Transfer and inactivity timeouts of 0 are disabled in the client; TCP
-    // connect rejects 0, so connect and handshake get the long sentinel.
+    // Transfer and inactivity timeouts of 0 are disabled in the client; a 0
+    // connect_timeout means curl's built-in 300 s connect timeout.
     expect($asyncRequest->getTransferTimeout())->toBe(0.0)
         ->and($asyncRequest->getInactivityTimeout())->toBe(0.0)
         ->and($asyncRequest->getTcpConnectTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT)
         ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(FledgeHandler::NO_CONNECT_TIMEOUT);
 });
+
+it('uses curl\'s 300 s connect default without a connect_timeout', function (array $options) {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $asyncRequest = $method->invoke($handler, new Request('GET', 'https://example.com'), $options);
+
+    // A timeout above 300 s does not lift curl's connect default.
+    expect(FledgeHandler::NO_CONNECT_TIMEOUT)->toBe(300.0)
+        ->and($asyncRequest->getTcpConnectTimeout())->toBe(300.0)
+        ->and($asyncRequest->getTlsHandshakeTimeout())->toBe(300.0);
+})->with([
+    'no timeouts' => [[]],
+    'null connect_timeout' => [['connect_timeout' => null]],
+    'timeout above the default' => [['timeout' => 900]],
+    'timeout above the default, connect_timeout zero' => [['timeout' => 900, 'connect_timeout' => 0]],
+]);
 
 it('invokeStats calls on_stats callback', function () {
     $handler = new FledgeHandler;
