@@ -4,6 +4,7 @@ namespace Fledge\Fiber\Database\Connectors;
 
 use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\MysqlConnectionPool;
+use Fledge\Async\Database\SqlException;
 use Fledge\Async\Stream\Certificate;
 use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
@@ -62,7 +63,62 @@ class FledgeMySqlConnector implements ConnectorInterface
             $mysqlConfig = $mysqlConfig->withSqlMode($sqlMode);
         }
 
+        // Fledge only: refuse to fetch the server's RSA key over plaintext (see MysqlConfig::withSecureKeyRetrieval()).
+        if (! empty($config['secure_key_retrieval'])) {
+            $mysqlConfig = $mysqlConfig->withSecureKeyRetrieval();
+        }
+
+        return $this->applyPdoOptions($mysqlConfig, $config['options'] ?? []);
+    }
+
+    /**
+     * Map the pdo_mysql options for LOCAL INFILE and the server public key, read as pdo_mysql reads them.
+     * PDO::MYSQL_ATTR_* and Pdo\Mysql::ATTR_* share their integer values, so either spelling works.
+     */
+    protected function applyPdoOptions(MysqlConfig $mysqlConfig, array $options): MysqlConfig
+    {
+        // Without pdo_mysql neither constant can be spelled, so no such option can be set.
+        if ($options === [] || ! class_exists(\Pdo\Mysql::class)) {
+            return $mysqlConfig;
+        }
+
+        if (! empty($options[\Pdo\Mysql::ATTR_LOCAL_INFILE])) {
+            $mysqlConfig = $mysqlConfig->withLocalInfile();
+        }
+
+        $directory = $options[\Pdo\Mysql::ATTR_LOCAL_INFILE_DIRECTORY] ?? null;
+
+        if (is_string($directory) && $directory !== '') {
+            $mysqlConfig = $mysqlConfig->withLocalInfileDirectory($directory);
+        }
+
+        $keyPath = $options[\Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY] ?? null;
+
+        if (is_string($keyPath) && $keyPath !== '') {
+            $mysqlConfig = $mysqlConfig->withKey($this->readServerPublicKey($keyPath));
+        }
+
         return $mysqlConfig;
+    }
+
+    /**
+     * PDO::MYSQL_ATTR_SERVER_PUBLIC_KEY is a path to a PEM file, MysqlConfig::withKey() takes the PEM itself.
+     * A key that cannot be used fails the connect, as in mysqlnd, rather than asking the server for one.
+     */
+    protected function readServerPublicKey(string $path): string
+    {
+        $pem = is_file($path) && is_readable($path) ? file_get_contents($path) : false;
+
+        if ($pem === false || openssl_pkey_get_public($pem) === false) {
+            // An SqlException, not SqlConnectionException: the PDO shim would report the latter as
+            // "server has gone away" and drop this message. 2000 is CR_UNKNOWN_ERROR.
+            throw new SqlException(sprintf(
+                'Unable to load the MySQL server public key from %s (PDO::MYSQL_ATTR_SERVER_PUBLIC_KEY)',
+                $path,
+            ), 2000);
+        }
+
+        return $pem;
     }
 
     /**

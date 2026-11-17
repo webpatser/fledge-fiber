@@ -1,14 +1,188 @@
 <?php
 
 use Fledge\Async\Database\Mysql\Internal\MysqlCommandResult;
+use Fledge\Async\Database\Mysql\MysqlConfig;
+use Fledge\Async\Database\Mysql\MysqlConnectionPool;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\Mysql\MysqlTransaction;
 use Fledge\Async\Database\SqlConnectionPool;
+use Fledge\Async\TimeoutCancellation;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
+use Revolt\EventLoop;
 use Tests\Fledge\database\Stubs\FakeRowResult;
 
+use function Fledge\Async\async;
+
 afterEach(fn () => Mockery::close());
+
+function pdoQuotePacket(string $payload, int $seq): string
+{
+    return substr(pack('V', strlen($payload)), 0, 3).chr($seq & 0xff).$payload;
+}
+
+/**
+ * Runs a scripted MySQL server that answers the handshake and every query with an OK packet carrying
+ * the status flags of that connection ($statusFlags, or $statusFlags[n] for the n-th connection), and
+ * closes on COM_QUIT. Builds a FledgeMySqlPdo on a real MysqlConnectionPool, hands it and the pool to
+ * $client, then closes the pooled connections.
+ *
+ * @param int|list<int> $statusFlags
+ */
+function withQuoteServer(int|array $statusFlags, string $charset, Closure $client): mixed
+{
+    $server = stream_socket_server('tcp://127.0.0.1:0');
+    $port = (int) substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
+    $watchers = [];
+    $accepted = 0;
+
+    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$watchers, &$accepted, $statusFlags): void {
+        $conn = stream_socket_accept($server, 0);
+        stream_set_blocking($conn, false);
+        $statusFlags = is_array($statusFlags) ? $statusFlags[min($accepted, count($statusFlags) - 1)] : $statusFlags;
+        $accepted++;
+
+        $capabilities = 0x00000200 | 0x00008000 | 0x00080000; // PROTOCOL_41 | SECURE_CONNECTION | PLUGIN_AUTH
+        fwrite($conn, pdoQuotePacket(
+            "\x0a8.0.40\0".pack('V', 1).'abcdefgh'."\0".pack('v', $capabilities & 0xffff)."\x21"
+            .pack('v', $statusFlags).pack('v', $capabilities >> 16).chr(21).str_repeat("\0", 10)
+            ."ijklmnopqrst\0mysql_native_password\0",
+            0,
+        ));
+        $ok = "\x00\x00\x00".pack('v', $statusFlags)."\x00\x00";
+        $buffer = '';
+
+        $watchers[] = EventLoop::onReadable($conn, static function (string $id, $conn) use (&$buffer, $ok): void {
+            $chunk = fread($conn, 65536);
+            if ($chunk === '' || $chunk === false) {
+                EventLoop::cancel($id);
+                fclose($conn);
+
+                return;
+            }
+
+            $buffer .= $chunk;
+
+            while (strlen($buffer) >= 4) {
+                $length = unpack('V', substr($buffer, 0, 3)."\0")[1];
+                if (strlen($buffer) < 4 + $length) {
+                    break;
+                }
+
+                $seq = ord($buffer[3]);
+                $payload = substr($buffer, 4, $length);
+                $buffer = substr($buffer, 4 + $length);
+
+                if ($payload === "\x01") {
+                    EventLoop::cancel($id);
+                    fclose($conn);
+
+                    return;
+                }
+
+                fwrite($conn, pdoQuotePacket($ok, $seq + 1));
+            }
+        });
+    });
+
+    $pool = new MysqlConnectionPool(new MysqlConfig('127.0.0.1', $port, 'app', 'secret', charset: $charset));
+
+    try {
+        return async(static fn () => $client(new FledgeMySqlPdo($pool), $pool))->await(new TimeoutCancellation(5));
+    } finally {
+        while ($pool->getIdleConnectionCount() > 0) {
+            async(static fn () => $pool->extractConnection()->close())->await(new TimeoutCancellation(2));
+        }
+        $pool->close();
+
+        foreach ($watchers as $watcher) {
+            EventLoop::cancel($watcher);
+        }
+        fclose($server);
+    }
+}
+
+it('doubles quotes instead of backslash escaping when the server reports NO_BACKSLASH_ESCAPES', function () {
+    $quoted = withQuoteServer(0x0202, '', static fn (FledgeMySqlPdo $pdo) => [
+        $pdo->quote("' OR 1=1 -- "),
+        $pdo->quote('a\\b'),
+        $pdo->quote("\\' OR 1=1 -- "),
+    ]);
+
+    expect($quoted)->toBe([
+        "''' OR 1=1 -- '",
+        "'a\\b'",
+        "'\\'' OR 1=1 -- '",
+    ]);
+});
+
+it('backslash escapes like mysqlnd but doubles quotes when the server does not report NO_BACKSLASH_ESCAPES', function () {
+    $quoted = withQuoteServer(0x0002, 'utf8mb4', static fn (FledgeMySqlPdo $pdo) => [
+        $pdo->quote("it's"),
+        $pdo->quote("a\\b\n\"\0\x1a"),
+        $pdo->quote('héllo'),
+        $pdo->quote("\\' OR 1=1 -- "),
+    ]);
+
+    // '' instead of mysqlnd's \' (same value): it stays a quote if the query lands on a NO_BACKSLASH_ESCAPES session.
+    expect($quoted)->toBe([
+        "'it''s'",
+        "'a\\\\b\\n\\\"\\0\\Z'",
+        "'héllo'",
+        "'\\\\'' OR 1=1 -- '",
+    ]);
+});
+
+it('doubles quotes and backslashes when the pooled sessions disagree on NO_BACKSLASH_ESCAPES', function () {
+    $quoted = withQuoteServer([0x0002, 0x0202], '', static function (FledgeMySqlPdo $pdo, MysqlConnectionPool $pool): array {
+        // Two queries in flight at once make the pool open a second connection, which reports the other mode.
+        $first = async(static fn () => $pool->query('DO 1'));
+        $second = async(static fn () => $pool->query('DO 2'));
+        $first->await();
+        $second->await();
+
+        return [$pool->getConnectionCount(), $pool->isBackslashEscapingDisabled(), $pdo->quote("a\\' OR 1=1 -- ")];
+    });
+
+    expect($quoted)->toBe([2, null, "'a\\\\'' OR 1=1 -- '"]);
+});
+
+it('escapes per character of a multibyte connection charset so a lead byte cannot swallow the escape', function (string $charset) {
+    $quoted = withQuoteServer(0x0002, $charset, static fn (FledgeMySqlPdo $pdo) => [
+        $pdo->quote("\x95' OR 1=1 -- "),
+        $pdo->quote("\x95\x5c"),
+    ]);
+
+    // 0x95 leads a two byte character in each of these charsets; 0x27 is no valid trail, 0x5C is.
+    expect($quoted)->toBe([
+        "'\\\x95'' OR 1=1 -- '",
+        "'\x95\x5c'",
+    ]);
+})->with(['gbk', 'gb18030', 'sjis', 'cp932']);
+
+it('keeps a gb18030 four byte character intact', function () {
+    $quoted = withQuoteServer(0x0002, 'gb18030', static fn (FledgeMySqlPdo $pdo) => [
+        $pdo->quote("\x81\x30\x81\x30' OR 1=1 -- "),
+        $pdo->quote("\x81\x30\x81\x30\\"),
+    ]);
+
+    expect($quoted)->toBe([
+        "'\x81\x30\x81\x30'' OR 1=1 -- '",
+        "'\x81\x30\x81\x30\\\\'",
+    ]);
+});
+
+it('escapes per character of a big5 connection', function () {
+    $quoted = withQuoteServer(0x0002, 'big5', static fn (FledgeMySqlPdo $pdo) => [
+        $pdo->quote("\xa5' OR 1=1 -- "),
+        $pdo->quote("\xa5\x5c"),
+    ]);
+
+    expect($quoted)->toBe([
+        "'\\\xa5'' OR 1=1 -- '",
+        "'\xa5\x5c'",
+    ]);
+});
 
 it('prepares and returns FledgePdoStatement', function () {
     $mockStmt = Mockery::mock(MysqlStatement::class);
@@ -142,7 +316,7 @@ it('quotes strings with MySQL escaping', function () {
     $pdo = new FledgeMySqlPdo($mockPool);
 
     expect($pdo->quote('hello'))->toBe("'hello'")
-        ->and($pdo->quote("it's"))->toBe("'it\\'s'")
+        ->and($pdo->quote("it's"))->toBe("'it''s'")
         ->and($pdo->quote("line\nbreak"))->toBe("'line\\nbreak'");
 });
 

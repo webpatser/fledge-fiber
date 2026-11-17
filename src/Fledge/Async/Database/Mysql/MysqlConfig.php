@@ -68,8 +68,12 @@ final class MysqlConfig extends SqlConfig
     }
 
     /**
-     * @param string $key Private key to use for sha256_password auth method
+     * @param string $key Pinned server RSA public key (PEM) for sha256_password and for caching_sha2_password
+     *     full authentication over an unencrypted connection; like PDO::MYSQL_ATTR_SERVER_PUBLIC_KEY
      * @param int $maxPacketSize Largest (multi-packet) payload accepted from the server, in bytes
+     * @param string|null $localInfileDirectory Without $useLocalInfile, only files inside this directory are
+     *     sent for LOAD DATA LOCAL INFILE; like PDO::MYSQL_ATTR_LOCAL_INFILE_DIRECTORY
+     * @param bool $secureKeyRetrieval Fledge only, see withSecureKeyRetrieval()
      */
     public function __construct(
         string $host,
@@ -85,6 +89,8 @@ final class MysqlConfig extends SqlConfig
         private string $key = '',
         private bool $useLocalInfile = false,
         private int $maxPacketSize = self::DEFAULT_MAX_PACKET_SIZE,
+        private ?string $localInfileDirectory = null,
+        private bool $secureKeyRetrieval = false,
     ) {
         if ($maxPacketSize < 1) {
             throw new \ValueError('The maximum packet size must be at least 1 byte');
@@ -130,6 +136,21 @@ final class MysqlConfig extends SqlConfig
     public function withoutLocalInfile(): self
     {
         return clone($this, ['useLocalInfile' => false]);
+    }
+
+    public function getLocalInfileDirectory(): ?string
+    {
+        return $this->localInfileDirectory;
+    }
+
+    /**
+     * Without withLocalInfile(), allow LOAD DATA LOCAL INFILE for files inside $directory only. As in
+     * mysqlnd, withLocalInfile() ignores the restriction, but the directory must still be openable.
+     * Pass null to remove it.
+     */
+    public function withLocalInfileDirectory(?string $directory): self
+    {
+        return clone($this, ['localInfileDirectory' => $directory]);
     }
 
     public function getMaxPacketSize(): int
@@ -193,5 +214,21 @@ final class MysqlConfig extends SqlConfig
     public function withKey(string $key): self
     {
         return clone($this, ['key' => $key]);
+    }
+
+    public function isSecureKeyRetrievalEnabled(): bool
+    {
+        return $this->secureKeyRetrieval;
+    }
+
+    /**
+     * Fledge only, off by default (pdo_mysql behaviour). When on, caching_sha2_password full authentication
+     * and sha256_password over a connection without TLS and without a key from withKey() fail instead of
+     * fetching the server's RSA public key, which an attacker on the path could replace. With TLS, a unix
+     * socket or a pinned key the setting changes nothing.
+     */
+    public function withSecureKeyRetrieval(bool $enabled = true): self
+    {
+        return clone($this, ['secureKeyRetrieval' => $enabled]);
     }
 }

@@ -67,6 +67,14 @@ final class SocketMysqlConnection implements MysqlConnection
         return $this->processor->getConfig();
     }
 
+    /**
+     * Whether the server reported NO_BACKSLASH_ESCAPES for this session in its last status flags.
+     */
+    public function isBackslashEscapingDisabled(): bool
+    {
+        return $this->processor->isBackslashEscapingDisabled();
+    }
+
     public function getTransactionIsolation(): SqlTransactionIsolation
     {
         return $this->transactionIsolation;

@@ -3,6 +3,7 @@
 namespace Fledge\Async\Database\Mysql;
 
 use Fledge\Async\Database\SqlCommonConnectionPool;
+use Fledge\Async\Database\SqlConnection;
 use Fledge\Async\Database\SqlConnector;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
@@ -13,6 +14,9 @@ use Fledge\Async\Database\SqlTransaction;
  */
 final class MysqlConnectionPool extends SqlCommonConnectionPool implements MysqlConnection
 {
+    /** @var \WeakMap<SqlConnection, true> Every connection handed out by pop(), to read its session state. */
+    private \WeakMap $seen;
+
     /**
      * @param positive-int $maxConnections
      * @param positive-int $idleTimeout
@@ -24,7 +28,61 @@ final class MysqlConnectionPool extends SqlCommonConnectionPool implements Mysql
         int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
         ?SqlConnector $connector = null,
     ) {
+        $this->seen = new \WeakMap();
+
         parent::__construct($config, $connector ?? mysqlConnector(), $maxConnections, $idleTimeout);
+    }
+
+    protected function pop(): SqlConnection
+    {
+        $connection = parent::pop();
+        $this->seen[$connection] = true;
+
+        return $connection;
+    }
+
+    /**
+     * Whether the server reports NO_BACKSLASH_ESCAPES for the pool's sessions, as mysqlnd reads it from the
+     * last status flags before escaping: true when every open connection reports it, false when none does,
+     * null when they disagree or the state cannot be read. Opens a connection when none is open yet, as a
+     * pdo_mysql handle is connected before quote() runs.
+     */
+    public function isBackslashEscapingDisabled(): ?bool
+    {
+        $states = $this->backslashEscapingStates();
+
+        if ($states === []) {
+            $this->push($this->pop());
+            $states = $this->backslashEscapingStates();
+        }
+
+        if (\in_array(null, $states, true)) {
+            return null;
+        }
+
+        if (\in_array(true, $states, true)) {
+            return \in_array(false, $states, true) ? null : true;
+        }
+
+        return \in_array(false, $states, true) ? false : null;
+    }
+
+    /**
+     * @return list<bool|null>
+     */
+    private function backslashEscapingStates(): array
+    {
+        $states = [];
+
+        foreach ($this->seen as $connection => $_) {
+            if ($connection->isClosed()) {
+                continue;
+            }
+
+            $states[] = $connection instanceof SocketMysqlConnection ? $connection->isBackslashEscapingDisabled() : null;
+        }
+
+        return $states;
     }
 
     protected function createResult(SqlResult $result, \Closure $release): MysqlResult

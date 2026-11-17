@@ -91,12 +91,18 @@ class ConnectionProcessor implements SqlTransientResource
     private int $capabilities = 0;
     private int $serverCapabilities = 0;
     private string $authPluginName = '';
+
+    /** Fledge: set when the client asked the server for its RSA public key, cleared when one arrives. */
+    private bool $publicKeyRequested = false;
     private int $refcount = 1;
     private int $writesInFlight = 0;
 
     private ConnectionState $connectionState = ConnectionState::Unconnected;
 
     private ?DeferredFuture $paused = null;
+
+    /** Client-side LOCAL INFILE failure, reported once the server answers the empty terminator packet. */
+    private ?\Throwable $localInfileError = null;
 
     private const MAX_PACKET_SIZE = 0xffffff;
     private const MAX_UNCOMPRESSED_BUFLEN = 0xfffffb;
@@ -137,6 +143,7 @@ class ConnectionProcessor implements SqlTransientResource
     private const OK_PACKET = 0x00;
     private const EXTRA_AUTH_PACKET = 0x01;
     private const LOCAL_INFILE_REQUEST = 0xfb;
+    private const CR_LOAD_DATA_LOCAL_INFILE_REJECTED = 2068; // client error number used by libmysqlclient and mysqlnd
     private const AUTH_SWITCH_PACKET = 0xfe;
     private const EOF_PACKET = 0xfe;
     private const ERR_PACKET = 0xff;
@@ -312,6 +319,15 @@ class ConnectionProcessor implements SqlTransientResource
     public function getMetadata(): MysqlConnectionMetadata
     {
         return clone $this->metadata;
+    }
+
+    /**
+     * Whether the server reported SERVER_STATUS_NO_BACKSLASH_ESCAPES in its last status flags, the
+     * session state mysqlnd consults when escaping strings.
+     */
+    public function isBackslashEscapingDisabled(): bool
+    {
+        return (bool) ($this->metadata->statusFlags & self::SERVER_STATUS_NO_BACKSLASH_ESCAPES);
     }
 
     public function getConfig(): MysqlConfig
@@ -687,7 +703,7 @@ class ConnectionProcessor implements SqlTransientResource
             $this->capabilities |= self::CLIENT_COMPRESS;
         }
 
-        if ($this->config->isLocalInfileEnabled()) {
+        if ($this->config->isLocalInfileEnabled() || $this->config->getLocalInfileDirectory() !== null) {
             $this->capabilities |=  self::CLIENT_LOCAL_INFILE;
         }
     }
@@ -899,6 +915,7 @@ class ConnectionProcessor implements SqlTransientResource
         $offset = 1;
         $this->authPluginName = MysqlDataType::decodeNullTerminatedString($packet, $offset);
         $this->authPluginData = \substr($packet, $offset);
+        $this->publicKeyRequested = false; // a request made for the previous plugin does not carry over
         $this->sendAuthSwitchResponse();
     }
 
@@ -912,7 +929,7 @@ class ConnectionProcessor implements SqlTransientResource
     {
         EventLoop::queue(function () use ($packet): void {
             try {
-                $filePath = \substr($packet, 1);
+                $filePath = $this->resolveLocalInfilePath(\substr($packet, 1));
                 /** @var \Fledge\Async\File\File $fileHandle */
                 if (!\function_exists("Fledge\Async\\File\\openFile")) {
                     throw new \Error("fledge-fiber/file must be installed for LOCAL INFILE queries");
@@ -925,14 +942,88 @@ class ConnectionProcessor implements SqlTransientResource
                 }
                 $this->write("");
             } catch (\Throwable $e) {
-                $this->dequeueDeferred()->error(new SqlConnectionException("Failed to transfer a file to the server", 0, $e));
+                if ($this->socket->isClosed()) {
+                    return; // free() has failed the pending query
+                }
+
+                $this->rejectLocalInfile($e instanceof SqlException
+                    ? $e
+                    : new SqlException("Failed to transfer a file to the server", 0, $e));
             }
         });
+    }
+
+    /**
+     * Ends the transfer with the empty packet so the server answers and the connection stays usable; the
+     * query then fails with $error instead of the server's reply.
+     */
+    private function rejectLocalInfile(\Throwable $error): void
+    {
+        $this->localInfileError = $error;
+
+        try {
+            $this->write("");
+        } catch (StreamException) {
+            // The connection is gone; free() fails the pending query.
+        }
+    }
+
+    /**
+     * Mirrors mysqlnd_handle_local_infile(): a configured directory must be openable, and it restricts the
+     * real path only when withLocalInfile() is off (with LOCAL INFILE enabled the directory is ignored).
+     */
+    private function resolveLocalInfilePath(string $filePath): string
+    {
+        // No file system call accepts a NUL byte; refuse it as a refusal, not as a transfer failure.
+        if (\str_contains($filePath, "\0")) {
+            throw new SqlException(
+                "Unable to open file: the LOAD DATA LOCAL INFILE file name contains a NUL byte",
+                self::CR_LOAD_DATA_LOCAL_INFILE_REJECTED,
+            );
+        }
+
+        $directory = $this->config->getLocalInfileDirectory();
+        if ($directory === null) {
+            return $filePath;
+        }
+
+        $realDirectory = \realpath($directory);
+
+        if ($realDirectory === false || !\is_dir($realDirectory) || !\is_readable($realDirectory)) {
+            throw new SqlException("cannot open local_infile_directory", self::CR_LOAD_DATA_LOCAL_INFILE_REJECTED);
+        }
+
+        if ($this->config->isLocalInfileEnabled()) {
+            return $filePath;
+        }
+
+        $realPath = \realpath($filePath);
+
+        if ($realPath === false
+            || !\str_starts_with($realPath, \rtrim($realDirectory, \DIRECTORY_SEPARATOR) . \DIRECTORY_SEPARATOR)
+        ) {
+            throw new SqlException(
+                "LOAD DATA LOCAL INFILE DIRECTORY restriction in effect. Unable to open file",
+                self::CR_LOAD_DATA_LOCAL_INFILE_REJECTED,
+            );
+        }
+
+        return $realPath;
     }
 
     /** @see 14.6.4.1.1 Text Resultset */
     private function handleQuery(string $packet): void
     {
+        if ($this->localInfileError !== null) {
+            // Server reply (OK or ERR) to the empty packet that ended a refused or failed LOCAL INFILE transfer.
+            $error = $this->localInfileError;
+            $this->localInfileError = null;
+            $this->parseCallback = null;
+            $this->dequeueDeferred()->error($error);
+            $this->ready();
+            return;
+        }
+
         switch (\ord($packet[0])) {
             case self::OK_PACKET:
                 $this->parseOk($packet);
@@ -955,10 +1046,13 @@ class ConnectionProcessor implements SqlTransientResource
                 }
                 return;
             case self::LOCAL_INFILE_REQUEST:
-                if ($this->config->isLocalInfileEnabled()) {
+                if ($this->config->isLocalInfileEnabled() || $this->config->getLocalInfileDirectory() !== null) {
                     $this->handleLocalInfileRequest($packet);
                 } else {
-                    $this->dequeueDeferred()->error(new SqlConnectionException("Unexpected LOCAL_INFILE_REQUEST packet"));
+                    $this->rejectLocalInfile(new SqlException(
+                        "LOAD DATA LOCAL INFILE is forbidden, check related settings like mysqli.allow_local_infile|mysqli.local_infile_directory or Pdo\\Mysql::ATTR_LOCAL_INFILE|Pdo\\Mysql::ATTR_LOCAL_INFILE_DIRECTORY",
+                        self::CR_LOAD_DATA_LOCAL_INFILE_REJECTED,
+                    ));
                 }
                 return;
             case self::ERR_PACKET:
@@ -1502,6 +1596,12 @@ class ConnectionProcessor implements SqlTransientResource
                     /** @see 14.2.5 Connection Phase Packets (AuthMoreData) */
                     switch ($this->authPluginName) {
                         case "sha256_password":
+                            // Fledge: a key is only taken after the client asked for it, which it never does
+                            // with a pinned key, so a server cannot replace the pin with its own key.
+                            if (!$this->consumePublicKeyRequest()) {
+                                $this->free($this->unrequestedPublicKey());
+                                return;
+                            }
                             $key = \substr($packet, 1);
                             $this->config = $this->config->withKey($key);
                             $this->sendHandshake();
@@ -1513,14 +1613,36 @@ class ConnectionProcessor implements SqlTransientResource
                                 case 4: // fast auth failure
                                     if ($this->isSecureTransport()) {
                                         $this->write($this->config->getPassword() . "\0");
+                                    } elseif ($this->config->getKey() !== '') {
+                                        // Pinned key, as PDO::MYSQL_ATTR_SERVER_PUBLIC_KEY: never ask the server.
+                                        $this->write($this->sha256Auth(
+                                            $this->config->getPassword() ?? '',
+                                            $this->authPluginData,
+                                            $this->config->getKey(),
+                                        ));
+                                    } elseif ($this->config->isSecureKeyRetrievalEnabled()) {
+                                        $this->free($this->plaintextKeyRetrievalRefused());
+                                        return;
                                     } else {
+                                        $this->publicKeyRequested = true;
                                         $this->write("\x02");
                                     }
                                     break;
                                 case 0x2d: // certificate
+                                    // Fledge: only the key answering our own 0x02 request, as mysqlnd reads it.
+                                    if (!$this->consumePublicKeyRequest()) {
+                                        $this->free($this->unrequestedPublicKey());
+                                        return;
+                                    }
                                     $pubkey = \substr($packet, 1);
                                     $this->write($this->sha256Auth($this->config->getPassword() ?? '', $this->authPluginData, $pubkey));
                                     break;
+                                default:
+                                    $this->free(new SqlConnectionException(
+                                        "Unexpected caching_sha2_password AuthMoreData packet (0x"
+                                        . \bin2hex(\substr($packet, 1, 1)) . ")"
+                                    ));
+                                    return;
                             }
                             break;
                         default:
@@ -1570,8 +1692,12 @@ class ConnectionProcessor implements SqlTransientResource
 
     private function sha256Auth(string $pass, string $scramble, string $key): string
     {
+        // The nonce is 20 bytes; $scramble may carry the greeting's trailing NUL. Password plus NUL is
+        // XORed with the nonce repeated, as mysqlnd_xor_string() does.
+        $scramble = \substr($scramble, 0, 20);
+
         \openssl_public_encrypt(
-            "$pass\0" ^ \str_repeat($scramble, (int) \ceil(\strlen($pass) / \strlen($scramble))),
+            "$pass\0" ^ \str_repeat($scramble, \intdiv(\strlen($pass) + 1, \strlen($scramble)) + 1),
             $auth,
             PublicKeyCache::loadKey($key),
             \OPENSSL_PKCS1_OAEP_PADDING,
@@ -1668,9 +1794,19 @@ class ConnectionProcessor implements SqlTransientResource
             $payload[] = MysqlDataType::encodeInt(\strlen($auth));
             $payload[] = $auth;
         } elseif ($this->capabilities & self::CLIENT_SECURE_CONNECTION) {
+            // Fledge: a 1-byte length cannot frame a longer response (a 2048-bit RSA block is 256 bytes).
+            if (\strlen($auth) > 0xff) {
+                $this->free($this->unframeableAuthResponse(\strlen($auth), 'a 1-byte length (255 bytes at most)'));
+                return;
+            }
             $payload[] = \chr(\strlen($auth));
             $payload[] = $auth;
         } else {
+            // Fledge: a NUL-terminated response cannot carry binary data that contains a NUL byte.
+            if (\str_contains($auth, "\0")) {
+                $this->free($this->unframeableAuthResponse(\strlen($auth), 'a NUL-terminated string'));
+                return;
+            }
             $payload[] = "$auth\0";
         }
 
@@ -1698,6 +1834,45 @@ class ConnectionProcessor implements SqlTransientResource
         return ($this->capabilities & self::CLIENT_SSL) !== 0 || $this->config->getHost()[0] === "/";
     }
 
+    /**
+     * Fledge: with secure key retrieval on, the server's RSA public key is never fetched over a
+     * plaintext connection, where an attacker could substitute their own key and decrypt the password.
+     */
+    /**
+     * True once per key request the client sent; a key packet without one is refused.
+     */
+    private function consumePublicKeyRequest(): bool
+    {
+        $requested = $this->publicKeyRequested;
+        $this->publicKeyRequested = false;
+
+        return $requested;
+    }
+
+    private function unframeableAuthResponse(int $length, string $form): SqlConnectionException
+    {
+        return new SqlConnectionException(
+            "The {$this->authPluginName} auth response is {$length} bytes, but the server only accepts {$form} "
+            . "in the handshake response (no CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA); refusing to send it truncated"
+        );
+    }
+
+    private function unrequestedPublicKey(): SqlConnectionException
+    {
+        return new SqlConnectionException(
+            "Refusing a server RSA public key that was not requested during {$this->authPluginName} authentication; "
+            . "the server or a host on the path tried to supply the key used to encrypt the password"
+        );
+    }
+
+    private function plaintextKeyRetrievalRefused(): SqlConnectionException
+    {
+        return new SqlConnectionException(
+            "Refusing to fetch the server's RSA public key for {$this->authPluginName} over a plaintext connection; "
+            . "enable TLS, pin the server public key with MysqlConfig::withKey(), or turn secure key retrieval off"
+        );
+    }
+
     private function getAuthData(): string
     {
         $password = $this->config->getPassword() ?? "";
@@ -1723,6 +1898,10 @@ class ConnectionProcessor implements SqlTransientResource
                     if ($key !== '') {
                         return $this->sha256Auth($password, $this->authPluginData, $key);
                     }
+                    if (!$this->isSecureTransport() && $this->config->isSecureKeyRetrievalEnabled()) {
+                        throw $this->plaintextKeyRetrievalRefused();
+                    }
+                    $this->publicKeyRequested = true;
                     return "\x01";
                 case "caching_sha2_password":
                     return self::sha2Auth($password, $this->authPluginData);

@@ -1,6 +1,7 @@
 <?php
 
 use Fledge\Async\Database\Mysql\MysqlConfig;
+use Fledge\Async\Database\SqlException;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 
 it('builds config with host and port', function () {
@@ -271,13 +272,28 @@ it('maps ssl ciphers into the tls context', function () {
         ->toBe('ECDHE-RSA-AES128-GCM-SHA256');
 });
 
-it('disables peer verification when verify server cert is false', function () {
+it('does not request tls when verify server cert is false on its own', function () {
     $connector = new FledgeMySqlConnector;
     $method = new ReflectionMethod($connector, 'buildConfig');
 
     $config = $method->invoke($connector, [
         'host' => 'db.example.com',
         'options' => [Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => false],
+    ]);
+
+    expect($config->getConnectContext()->getTlsContext())->toBeNull();
+});
+
+it('disables peer verification when verify server cert is false next to an ssl ca', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db.example.com',
+        'options' => [
+            Pdo\Mysql::ATTR_SSL_CA => '/certs/ca.pem',
+            Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT => false,
+        ],
     ]);
 
     $tls = $config->getConnectContext()->getTlsContext();
@@ -326,4 +342,96 @@ it('builds config with all fields empty strings', function () {
     expect($config->getUser())->toBe('')
         ->and($config->getPassword())->toBe('')
         ->and($config->getDatabase())->toBe('');
+});
+
+it('leaves local infile and the server public key at their defaults without options', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['host' => 'db', 'options' => []]);
+
+    expect($config->isLocalInfileEnabled())->toBeFalse()
+        ->and($config->getLocalInfileDirectory())->toBeNull()
+        ->and($config->getKey())->toBe('');
+});
+
+it('maps PDO local infile options like pdo_mysql', function (int|string|bool $value, bool $enabled) {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, ['host' => 'db', 'options' => [Pdo\Mysql::ATTR_LOCAL_INFILE => $value]]);
+
+    expect($config->isLocalInfileEnabled())->toBe($enabled);
+})->with([
+    'true' => [true, true],
+    'one' => [1, true],
+    'false' => [false, false],
+    'zero' => [0, false],
+]);
+
+it('maps the PDO local infile directory', function () {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $config = $method->invoke($connector, [
+        'host' => 'db',
+        'options' => [Pdo\Mysql::ATTR_LOCAL_INFILE_DIRECTORY => '/srv/imports'],
+    ]);
+
+    expect($config->getLocalInfileDirectory())->toBe('/srv/imports')
+        ->and($config->isLocalInfileEnabled())->toBeFalse();
+});
+
+it('pins the server public key read from the PDO server public key path', function () {
+    $pem = openssl_pkey_get_details(openssl_pkey_new([
+        'private_key_bits' => 2048,
+        'private_key_type' => OPENSSL_KEYTYPE_RSA,
+    ]))['key'];
+    $path = tempnam(sys_get_temp_dir(), 'fledge-mysql-key-');
+    file_put_contents($path, $pem);
+
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    try {
+        $config = $method->invoke($connector, [
+            'host' => 'db',
+            'options' => [Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY => $path],
+        ]);
+    } finally {
+        unlink($path);
+    }
+
+    expect($config->getKey())->toBe($pem);
+});
+
+it('fails instead of fetching the key from the server when the public key file cannot be used', function (string $contents) {
+    $connector = new FledgeMySqlConnector;
+    $method = new ReflectionMethod($connector, 'buildConfig');
+
+    $path = sys_get_temp_dir().'/fledge-mysql-key-'.bin2hex(random_bytes(4));
+    if ($contents !== '') {
+        file_put_contents($path, $contents);
+    }
+
+    try {
+        expect(fn () => $method->invoke($connector, [
+            'host' => 'db',
+            'options' => [Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY => $path],
+        ]))->toThrow(SqlException::class, $path);
+    } finally {
+        if (file_exists($path)) {
+            unlink($path);
+        }
+    }
+})->with([
+    'missing file' => '',
+    'not a public key' => 'not a pem key',
+]);
+
+it('fails the Laravel connect when the public key file is missing', function () {
+    expect(fn () => (new FledgeMySqlConnector)->connect([
+        'host' => '127.0.0.1',
+        'options' => [Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY => '/nonexistent/fledge/server-key.pem'],
+    ]))->toThrow(PDOException::class, '/nonexistent/fledge/server-key.pem');
 });
