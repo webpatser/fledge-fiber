@@ -9,8 +9,13 @@
 ### Fixed
 - Livewire: `fledge-livewire.concurrent` now defaults to false (config and code fallback), because Blade keeps section and stack state process-wide and concurrent renders can mix output. Opting in is at your own risk.
 - Redis: `pipeline(callable)` passes a pipeline to the callback and returns the reply list like phpredis; pipeline replies are returned in command order.
-- Guzzle handler: no response body cap unless `max_body_size` is given; `timeout` 0 means no timeout; `read_timeout` maps to the inactivity timeout; `connect_timeout` falls back to `timeout`, and to no limit when both are 0.
-- Redis: an error nested inside an array reply (for example one failing command in MULTI/EXEC) is returned in position as a `QueryException` instead of throwing in the parser and tearing down the shared connection. Top-level errors still throw. Behaviour change: `transaction()`/`exec()` results can now contain exception objects.
+- Guzzle handler: no response body cap unless `max_body_size` is given; `timeout` 0 means no timeout; `read_timeout` maps to the inactivity timeout; `connect_timeout` is capped at `timeout`, and without either the connect limit is curl's 300 s default.
+- Redis: an error nested inside an array reply (for example one failing command in MULTI/EXEC) is returned in position as a `QueryException` instead of throwing in the parser and tearing down the shared connection. A top-level error reply outside a transaction still throws `QueryException`, where phpredis returns `false`. Such a failed command is `false` in its slot in `transaction()`/`exec()`, `eval` and raw array replies (as in phpredis); the low-level client still carries the exception.
+- Redis: reply shapes in pipelines match phpredis: a failed command, a nil reply and nested nils (`MGET` elements) are `false` in their slot, and a `BLPOP` or `BRPOP` timeout is `[]`. Connection errors still throw.
+- Redis: `exec()` returns one reply per command with failed commands, nil replies and nested nils as `false`; a WATCH-aborted `EXEC` returns `false`; a command rejected while queueing returns `false` and the following `EXECABORT` makes `exec()` return `false`.
+- Redis: while a `MULTI` is open, queued commands (also through `setnx`, `hsetnx` and the scan wrappers) return the connection instead of `'QUEUED'`, so `multi()->incr()->exec()` chains.
+- Redis: `eval` inside an open `MULTI` is sent as `EVAL` instead of `EVALSHA`, so the `NOSCRIPT` fallback is not needed; a nil result and nils inside result tables are `false`.
+- MySQL: TLS is requested when any of `ATTR_SSL_CA`, `ATTR_SSL_CAPATH`, `ATTR_SSL_CERT`, `ATTR_SSL_KEY` or `ATTR_SSL_CIPHER` is present in the options, whatever its value (`null` and `''` included), matching `pdo_mysql`; `ATTR_SSL_VERIFY_SERVER_CERT` alone never enables TLS.
 
 ## v13.42.0.1 - 2026-11-11
 

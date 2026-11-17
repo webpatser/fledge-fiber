@@ -41,7 +41,7 @@ The drivers aim for config parity with Laravel's stock drivers. Everything below
 
 ### Database
 
-Honored beyond the basics: Postgres `sslcert`/`sslkey`/`sslrootcert` and `keepalives*` (libpq connection string), Postgres session settings (`isolation_level`, `timezone`, `search_path`/`schema`, `synchronous_commit`, `charset`) via libpq startup `-c` options so `DISCARD ALL` on pool checkout restores instead of wipes them, MySQL/MariaDB TLS via `Pdo\Mysql::ATTR_SSL_CA`/`ATTR_SSL_CAPATH`/`ATTR_SSL_CERT`/`ATTR_SSL_KEY`/`ATTR_SSL_CIPHER`/`ATTR_SSL_VERIFY_SERVER_CERT` in `options` (TLS is skipped for unix sockets), `ATTR_INIT_COMMAND` (runs on every new pooled connection), and per-connection `isolation_level`/`timezone` on MySQL through `SessionInitializingConnector`.
+Honored beyond the basics: Postgres `sslcert`/`sslkey`/`sslrootcert` and `keepalives*` (libpq connection string), Postgres session settings (`isolation_level`, `timezone`, `search_path`/`schema`, `synchronous_commit`, `charset`) via libpq startup `-c` options so `DISCARD ALL` on pool checkout restores instead of wipes them, MySQL/MariaDB TLS via `Pdo\Mysql::ATTR_SSL_CA`/`ATTR_SSL_CAPATH`/`ATTR_SSL_CERT`/`ATTR_SSL_KEY`/`ATTR_SSL_CIPHER` in `options` (any of these present in `options` requests TLS, whatever its value; `ATTR_SSL_VERIFY_SERVER_CERT` alone never requests TLS and only modifies verification; TLS is skipped for unix sockets), `ATTR_INIT_COMMAND` (runs on every new pooled connection), and per-connection `isolation_level`/`timezone` on MySQL through `SessionInitializingConnector`.
 
 Explicitly unsupported PDO attributes: `ATTR_CASE` (server column names always), `ATTR_ERRMODE` (the shim always throws, Laravel's default), `ATTR_ORACLE_NULLS`, `ATTR_STRINGIFY_FETCHES` (native types from the wire), `ATTR_EMULATE_PREPARES` (statements are always server-prepared), `ATTR_PERSISTENT` (pooling replaces it).
 
@@ -126,7 +126,7 @@ FLEDGE_FIBERIO_HOOKS=sleep,dns,ssl   # default: all
 #### Caveats and migration notes
 
 **Requirements**
-- **TLS needs a cipher or CA.** Set `PDO::MYSQL_ATTR_SSL_CIPHER` (or a CA via `ATTR_SSL_CA`) in `options`. Unlike `fledge-mariadb`, `ATTR_SSL_VERIFY_SERVER_CERT => false` on its own connects in plain text.
+- **TLS needs one of the TLS options.** The native drivers use stock `pdo_mysql`, which requests TLS when any of `ATTR_SSL_CA`, `ATTR_SSL_CAPATH`, `ATTR_SSL_CERT`, `ATTR_SSL_KEY` or `ATTR_SSL_CIPHER` is present in `options`, whatever its value. `ATTR_SSL_VERIFY_SERVER_CERT => false` on its own connects in plain text. `fledge-mariadb` uses the same trigger as `fledge-mysql` (its connector extends the MySQL one), so both behave alike.
 - **Use a socket or IP address, or enable the DNS hook.** Without the `dns` hook (`FLEDGE_FIBERIO_HOOKS` without `dns`), resolving a hostname blocks the whole process while connecting. With the `dns` hook, the lookup runs on a helper thread and only the calling fiber waits.
 - **No benefit under FPM** without an event loop: requests run one at a time, so the pool just adds overhead.
 
@@ -229,6 +229,56 @@ With `allow_redirects.referer` enabled, Guzzle 7 sends the full previous URL (pa
 1. Set the `FLEDGE_HTTP_*` flag of the affected integration to `false` (or `'client' => ['fledge' => false]` for one mailer), run `php artisan config:cache`, and restart workers (Octane, queue, Torque) so long-lived processes pick it up.
 2. To drop the global Guzzle handler as well, call `Factory::globalHandler(null)`.
 3. Native database driver: change `driver` back to `fledge-mariadb`/`fledge-mysql`, or switch single fiberio hooks off with `FLEDGE_FIBERIO_HOOKS` (for example `FLEDGE_FIBERIO_HOOKS=none`), then `config:cache` and restart workers.
+
+## Differences from stock Laravel
+
+Where the Fledge drivers deliberately or unavoidably behave differently from Laravel's stock drivers, as implemented.
+
+### Database
+
+- **MySQL/MariaDB TLS is requested when a TLS option is present.** `fledge-mysql` and `fledge-mariadb` request TLS when at least one of `Pdo\Mysql::ATTR_SSL_CA`, `ATTR_SSL_CAPATH`, `ATTR_SSL_CERT`, `ATTR_SSL_KEY` or `ATTR_SSL_CIPHER` is present in `options`, whatever its value (`null` and `''` included), like `pdo_mysql`, which then refuses a server without TLS.
+- **No TLS offered means no connection.** When TLS is requested and the server greeting does not advertise SSL support, the connection fails with `SqlConnectionException` before any credentials are sent; it never falls back to plaintext.
+- **`ATTR_SSL_VERIFY_SERVER_CERT` alone does not enable TLS.** It only modifies verification (`false` skips peer verification) once one of the options above has requested TLS.
+
+### Redis
+
+These reply shapes match phpredis; the differences listed after them do not:
+
+- Inside `MULTI`, a queued command returns the connection (also through `setnx`, `hsetnx` and the scan wrappers), so `multi()->set()->incr()->exec()` chains.
+- `exec()` returns one reply per queued command. Failed commands, nil replies and nested nils are `false`.
+- A WATCH-aborted `EXEC` returns `false`.
+- A command Redis rejects while queueing (wrong arity, unknown command) returns `false`, and the following `EXECABORT` makes `exec()` return `false`.
+- In a pipeline, a failed command, a nil reply and nested nils (`MGET` elements) are `false`, and a `BLPOP` or `BRPOP` timeout is `[]`.
+- Inside an open transaction `eval` is sent as `EVAL` (an `EVALSHA` would only be queued, so its `NOSCRIPT` fallback could not run). A nil result and nils inside result tables are `false`.
+- Commands through `__call` (for example `fcall`) map errors nested in an array reply to `false`.
+- Connection errors still throw.
+
+Remaining differences:
+
+- `executeRaw` keeps a nil reply and nested nils as `null`, and inside `MULTI` it still throws when Redis rejects the command while queueing.
+- Direct `command()` calls outside a pipeline and a transaction keep nested nils as `null`, as Laravel's own `mget` wrapper returns them.
+- A `BLPOP` or `BRPOP` timeout inside `EXEC` is `false`, not `[]`.
+- Timeouts of other blocking commands in a pipeline (`BZPOPMIN`, `BZPOPMAX`) are `false`, where phpredis returns `[]`.
+- A top-level error reply outside a transaction throws `QueryException`; phpredis returns `false` (for example `incr` on a non-integer, an `eval` that returns an error, `rawCommand` with an unknown command).
+- Status replies are `'OK'` in Fledge and `true` in phpredis (`set`, `setex`, `hmset`, also in `exec()` and pipeline slots). `multi()->set()->get(missing)->exec()` gives `[true, false]` in phpredis and `['OK', false]` in Fledge.
+- A top-level nil from a command without a Laravel wrapper (`hget`, `lpop`, `zscore` and others through `__call`) is `null` in Fledge and `false` in phpredis.
+- `hmget` returns `null` for missing fields in Fledge and `false` on stock Laravel.
+- `bzpopmin` outside a pipeline: a timeout is `null` in Fledge and `[]` in phpredis.
+- A pipeline run inside an open `MULTI` returns the connection in each slot (phpredis raises a fatal error there).
+- In a pipeline `HMGET` returns a list, where phpredis returns an array keyed by field.
+
+### HTTP
+
+- `read_timeout` maps to the client's inactivity timeout (the wait between reads).
+- `max_body_size` caps the response body; without it there is no cap, as with Guzzle.
+- `connect_timeout` is capped at `timeout` when both are positive, as curl does. Without a `connect_timeout` (absent or 0) the connect and TLS handshake limit is 300 s, curl's own default, which a positive `timeout` still caps.
+- Connect time and transfer time add up: the transfer timeout only starts once a connection exists, and connect and TLS handshake each get `connect_timeout`. With Laravel's defaults (`connect_timeout` 10, `timeout` 30) the worst case is roughly 50 s (10 s connect, 10 s TLS handshake, 30 s transfer), where curl stops at 30 s.
+- `stream => true` without `read_timeout` uses `timeout` as the idle bound.
+
+### Livewire
+
+- **Concurrent component updates are off by default** (`fledge-livewire.concurrent` is `false`). Blade and Livewire rendering rely on global state (view data stacks, component and slot stacks, shared sections) that interleaving fibers can corrupt.
+- To opt in, publish the config (`php artisan vendor:publish --tag=fledge-livewire-config`) and set `concurrent` to `true`, only when every component updated in one request is known to be safe to render interleaved. `max_concurrent` (default 10) limits how many components update at once.
 
 ## What's included
 
