@@ -122,6 +122,10 @@ final class Http1Driver extends AbstractHttpDriver
                     return;
                 }
 
+                // Re-arm the idle timeout before waiting for the next request's headers; a response path that
+                // never re-armed it (HEAD, a bodyless handler) must not leave the connection without one.
+                $this->updateTimeout();
+
                 $contentLength = null;
                 $isChunked = false;
                 $searchPos = 0;
@@ -926,6 +930,8 @@ final class Http1Driver extends AbstractHttpDriver
             $chunk = null; // Required for the finally, not directly overwritten, even if your IDE says otherwise.
 
             if ($request?->getMethod() === "HEAD") {
+                $this->updateTimeout();
+
                 if ($shouldClose) {
                     $this->writableStream->end();
                 }
