@@ -147,6 +147,15 @@ FLEDGE_FIBERIO_HOOKS=sleep,dns,ssl   # default: all
 - **Pool size is per pool.** `pool_size` applies to each pool (write, read and direct), so a read/write split can open 2 to 3 times that many connections.
 - **Octane.** The `DisconnectFromDatabases` listener closes the pool, which fails open transactions of other in-flight requests when running a fiber server.
 - **Crashes.** A fiberio crash is a C-level crash and takes the worker down. Keep it to workers you can restart (Octane, queue workers) and treat the v0.x version as such.
+- **`quote()` doubles single quotes.** `pdo_mysql` writes `\'` for a single quote, Fledge writes `''`, because the statement may run on another pooled connection than the one `quote()` looked at. To honour `NO_BACKSLASH_ESCAPES` it may open a pooled connection to read the server's SQL mode. The result is safe on any connection unless every known connection reports `NO_BACKSLASH_ESCAPES` and the statement then runs on a connection without it, which only happens when the application changes `sql_mode` itself.
+- **`secure_key_retrieval` exists only in Fledge and is off by default.** Like `pdo_mysql`, `fledge-mysql` and `fledge-mariadb` fetch the server's RSA key for `caching_sha2_password` full authentication and `sha256_password` over a connection without TLS, where a host on the path could substitute its own key. TLS, a pinned key (`Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY`, a PEM file path) or this option avoids that; with the option on, such a connect fails instead of fetching the key:
+
+  ```php
+  'options' => [Pdo\Mysql::ATTR_SERVER_PUBLIC_KEY => '/path/to/server-public.pem'],
+  // or
+  'secure_key_retrieval' => true,
+  ```
+- **LOCAL INFILE follows mysqlnd.** `Pdo\Mysql::ATTR_LOCAL_INFILE` allows it; `ATTR_LOCAL_INFILE_DIRECTORY` alone allows only files whose real path lies inside that directory (a strict `realpath` check; with `ATTR_LOCAL_INFILE` on the directory is ignored but must still be openable). A refused request fails the query with error 2068 and leaves the connection usable.
 
 ### Redis
 
@@ -274,6 +283,14 @@ Remaining differences:
 - `connect_timeout` is capped at `timeout` when both are positive, as curl does. Without a `connect_timeout` (absent or 0) the connect and TLS handshake limit is 300 s, curl's own default, which a positive `timeout` still caps.
 - Connect time and transfer time add up: the transfer timeout only starts once a connection exists, and connect and TLS handshake each get `connect_timeout`. With Laravel's defaults (`connect_timeout` 10, `timeout` 30) the worst case is roughly 50 s (10 s connect, 10 s TLS handshake, 30 s transfer), where curl stops at 30 s.
 - `stream => true` without `read_timeout` uses `timeout` as the idle bound.
+- **The HTTP/2 client limits queued control frames.** A server that floods PING, SETTINGS or pushed streams without reading the replies gets the connection closed (`ENHANCE_YOUR_CALM`) at 1000 queued control frames. The limit cannot be set from client configuration.
+- **Redirects in the async HTTP client's own follower** (`FollowRedirects`; not used on Laravel's HTTP client path, where Guzzle follows redirects): the request body is dropped on every redirect, a non-GET request is not followed on 307 and 308, and a HEAD request becomes a GET.
+- **The streaming form parser returns raw key names** (not on the Laravel request path). PHP rewrites spaces and dots in names and builds arrays from brackets; this parser only URL-decodes the key. Multipart parsing requires the body to start with the boundary (no preamble) and CRLF line endings (no bare LF).
+- **Multipart part headers are capped at 16384 bytes by default** (`StreamingFormParser::DEFAULT_PART_HEADER_SIZE_LIMIT`); a larger header block is answered with 400. Pass `partHeaderSizeLimit` to the `StreamingFormParser` constructor to change it.
+
+### WebSocket
+
+- **The server caps what queues up behind a slow client.** Each client may have 16 MiB and 65,536 messages waiting by default; past either, the client is closed with 1008 and its pending sends fail with `WebsocketClosedException`. The caps are per client, there is no global cap. Pass `null` for `maxQueuedBytes` or `maxQueuedMessages` to `WebsocketClientGateway` to disable one. A single message larger than the byte cap is still delivered to a client with an empty queue.
 
 ### Livewire
 

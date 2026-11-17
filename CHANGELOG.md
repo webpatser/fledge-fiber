@@ -5,6 +5,18 @@
 ### Security
 - HTTP server: cookies are parsed once per request, so a request with thousands of `Cookie` header lines no longer causes quadratic work that stalls the event loop. Cookie header detection is an exact match.
 - MySQL: when TLS is configured and the server greeting does not advertise SSL support, the connection now fails with `SqlConnectionException` before any credentials are sent, instead of silently continuing unencrypted.
+- MySQL: a server RSA public key is accepted only after the client requested one; a key packet that was not requested fails the connect (`caching_sha2_password` and `sha256_password`). A key pinned with `withKey()` is used for the RSA password encryption and is never replaced by a server-supplied key.
+- MySQL: `quote()` always doubles single quotes, honours the server's `NO_BACKSLASH_ESCAPES` mode and escapes per character for the multi-byte charsets big5, gbk, gb18030, sjis and cp932.
+- MySQL: LOCAL INFILE follows mysqlnd's rules (`withLocalInfile()` and `withLocalInfileDirectory()`); a refused or failed request ends the transfer with the empty packet, so the connection stays usable, and the query fails with client error 2068.
+- HTTP server: the header block of a multipart part is capped (default 16384 bytes, `partHeaderSizeLimit` on `StreamingFormParser`); a larger one is answered with 400. The idle timeout is re-armed after a HEAD response, so keep-alive connections are closed when idle.
+- HTTP client: an HTTP/2 server that floods PING, SETTINGS or pushed streams without reading the replies gets the connection closed with `ENHANCE_YOUR_CALM` once 1000 control frames wait in the write queue. Redirects no longer carry the request body. The HTTP/1 chunked decoder caps the chunk-size line at 1024 bytes, requires CRLF after chunk data and rejects chunk sizes over 15 hex digits.
+- WebSocket server: each client has a send queue cap (16 MiB and 65,536 messages by default); overflow closes the client with 1008 (policy violation) and fails its pending sends.
+- Livewire: the payload size limit is enforced on the actual body length instead of the `Content-Length` header.
+
+### Added
+- `MysqlConfig::withSecureKeyRetrieval()` and the connection config key `secure_key_retrieval` (default false): without TLS and without a pinned key, authentication that needs the server's RSA key fails instead of fetching it.
+- `MysqlConfig::withLocalInfileDirectory()`. The connector maps `Pdo\Mysql::ATTR_LOCAL_INFILE`, `ATTR_LOCAL_INFILE_DIRECTORY` and `ATTR_SERVER_PUBLIC_KEY` (a PEM file path) from `options`.
+- `WebsocketClientGateway` constructor arguments `maxQueuedBytes` and `maxQueuedMessages` (null for no limit); `Http2ConnectionProcessor` constructor argument `maxQueuedControlFrames`.
 
 ### Fixed
 - Livewire: `fledge-livewire.concurrent` now defaults to false (config and code fallback), because Blade keeps section and stack state process-wide and concurrent renders can mix output. Opting in is at your own risk.
@@ -16,6 +28,9 @@
 - Redis: while a `MULTI` is open, queued commands (also through `setnx`, `hsetnx` and the scan wrappers) return the connection instead of `'QUEUED'`, so `multi()->incr()->exec()` chains.
 - Redis: `eval` inside an open `MULTI` is sent as `EVAL` instead of `EVALSHA`, so the `NOSCRIPT` fallback is not needed; a nil result and nils inside result tables are `false`.
 - MySQL: TLS is requested when any of `ATTR_SSL_CA`, `ATTR_SSL_CAPATH`, `ATTR_SSL_CERT`, `ATTR_SSL_KEY` or `ATTR_SSL_CIPHER` is present in the options, whatever its value (`null` and `''` included), matching `pdo_mysql`; `ATTR_SSL_VERIFY_SERVER_CERT` alone never enables TLS.
+- MySQL: RSA password encryption for passwords of 20 or more characters. The `sha256_password` handshake response no longer gets a truncated length for an RSA block over 255 bytes; when the server does not allow the length-encoded form the connect fails instead.
+- WebSocket server: a send to a closed client fails at once with `WebsocketClosedException` instead of hanging.
+- HTTP server form parser: urlencoded bodies split across reads, keys without `=`, a trailing key named `0`, the field count limit (off by one) and multipart bodies arriving in small reads.
 
 ## v13.42.0.1 - 2026-11-11
 
