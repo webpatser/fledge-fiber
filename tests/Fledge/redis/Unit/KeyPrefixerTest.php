@@ -1,5 +1,6 @@
 <?php
 
+use Fledge\Async\Redis\Command\CommandKeySpec;
 use Fledge\Async\Redis\Connection\RedisLink;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
@@ -83,6 +84,171 @@ it('prefixes key positions with phpredis OPT_PREFIX semantics', function (string
     'PING untouched' => ['PING', [], []],
     'FLUSHDB untouched' => ['FLUSHDB', ['ASYNC'], ['ASYNC']],
 ]);
+
+/*
+ * Key positions as Redis reports them through COMMAND GETKEYS, which is also
+ * what phpredis OPT_PREFIX rewrites for these commands. Each row is checked
+ * against both the prefixer and the cluster slot key extraction.
+ */
+dataset('numkeys and multi-key shapes', [
+    'BITOP destination and sources' => [
+        'BITOP',
+        ['AND', 'dest', 'a', 'b'],
+        ['AND', 'prefix.dest', 'prefix.a', 'prefix.b'],
+        ['dest', 'a', 'b'],
+    ],
+    'BITOP NOT' => ['BITOP', ['NOT', 'dest', 'src'], ['NOT', 'prefix.dest', 'prefix.src'], ['dest', 'src']],
+    'LMPOP numkeys first' => [
+        'LMPOP',
+        [2, 'a', 'b', 'LEFT', 'COUNT', 3],
+        [2, 'prefix.a', 'prefix.b', 'LEFT', 'COUNT', 3],
+        ['a', 'b'],
+    ],
+    'ZMPOP numkeys first' => ['ZMPOP', [1, 'z', 'MIN'], [1, 'prefix.z', 'MIN'], ['z']],
+    'SINTERCARD numkeys first' => [
+        'SINTERCARD',
+        [2, 'a', 'b', 'LIMIT', 5],
+        [2, 'prefix.a', 'prefix.b', 'LIMIT', 5],
+        ['a', 'b'],
+    ],
+    'ZINTERCARD numkeys first' => ['ZINTERCARD', [1, 'z', 'LIMIT', 5], [1, 'prefix.z', 'LIMIT', 5], ['z']],
+    'ZUNION numkeys first' => [
+        'ZUNION',
+        [2, 'a', 'b', 'WEIGHTS', 1, 2, 'WITHSCORES'],
+        [2, 'prefix.a', 'prefix.b', 'WEIGHTS', 1, 2, 'WITHSCORES'],
+        ['a', 'b'],
+    ],
+    'ZINTER numkeys first' => ['ZINTER', [2, 'a', 'b'], [2, 'prefix.a', 'prefix.b'], ['a', 'b']],
+    'ZDIFF numkeys first' => ['ZDIFF', [2, 'a', 'b'], [2, 'prefix.a', 'prefix.b'], ['a', 'b']],
+    'ZRANGESTORE destination and source' => [
+        'ZRANGESTORE',
+        ['dst', 'src', 0, -1],
+        ['prefix.dst', 'prefix.src', 0, -1],
+        ['dst', 'src'],
+    ],
+    'BLMPOP timeout and direction untouched' => [
+        'BLMPOP',
+        [5, 2, 'a', 'b', 'RIGHT', 'COUNT', 2],
+        [5, 2, 'prefix.a', 'prefix.b', 'RIGHT', 'COUNT', 2],
+        ['a', 'b'],
+    ],
+    'BZMPOP timeout and direction untouched' => [
+        'BZMPOP',
+        [0.5, 1, 'z', 'MAX'],
+        [0.5, 1, 'prefix.z', 'MAX'],
+        ['z'],
+    ],
+    'SUBSTR single key, offsets untouched' => ['SUBSTR', ['k', 0, 5], ['prefix.k', 0, 5], ['k']],
+    'SORT_RO source only' => ['SORT_RO', ['list', 'BY', 'w_*'], ['prefix.list', 'BY', 'w_*'], ['list']],
+    'MIGRATE single key, host untouched' => [
+        'MIGRATE',
+        ['10.0.0.1', 6379, 'k', 0, 5000, 'COPY'],
+        ['10.0.0.1', 6379, 'prefix.k', 0, 5000, 'COPY'],
+        ['k'],
+    ],
+    'MIGRATE KEYS option after AUTH named KEYS' => [
+        'MIGRATE',
+        ['10.0.0.1', 6379, '', 0, 5000, 'REPLACE', 'AUTH', 'KEYS', 'KEYS', 'a', 'b'],
+        ['10.0.0.1', 6379, '', 0, 5000, 'REPLACE', 'AUTH', 'KEYS', 'KEYS', 'prefix.a', 'prefix.b'],
+        ['a', 'b'],
+    ],
+    'MIGRATE KEYS option after AUTH2' => [
+        'MIGRATE',
+        ['h', 6379, '', 0, 5000, 'AUTH2', 'user', 'pw', 'KEYS', 'a'],
+        ['h', 6379, '', 0, 5000, 'AUTH2', 'user', 'pw', 'KEYS', 'prefix.a'],
+        ['a'],
+    ],
+    'XGROUP CREATE key after subcommand' => [
+        'XGROUP',
+        ['CREATE', 's', 'g', '$', 'MKSTREAM'],
+        ['CREATE', 'prefix.s', 'g', '$', 'MKSTREAM'],
+        ['s'],
+    ],
+    'XGROUP SETID' => ['XGROUP', ['SETID', 's', 'g', '0'], ['SETID', 'prefix.s', 'g', '0'], ['s']],
+    'XGROUP DESTROY' => ['XGROUP', ['DESTROY', 's', 'g'], ['DESTROY', 'prefix.s', 'g'], ['s']],
+    'XGROUP CREATECONSUMER' => ['XGROUP', ['CREATECONSUMER', 's', 'g', 'c'], ['CREATECONSUMER', 'prefix.s', 'g', 'c'], ['s']],
+    'XGROUP DELCONSUMER' => ['XGROUP', ['delconsumer', 's', 'g', 'c'], ['delconsumer', 'prefix.s', 'g', 'c'], ['s']],
+    'XGROUP HELP keyless' => ['XGROUP', ['HELP'], ['HELP'], []],
+    'XINFO STREAM' => ['XINFO', ['STREAM', 's', 'FULL'], ['STREAM', 'prefix.s', 'FULL'], ['s']],
+    'XINFO GROUPS' => ['XINFO', ['GROUPS', 's'], ['GROUPS', 'prefix.s'], ['s']],
+    'XINFO CONSUMERS' => ['XINFO', ['CONSUMERS', 's', 'g'], ['CONSUMERS', 'prefix.s', 'g'], ['s']],
+    'XINFO HELP keyless' => ['XINFO', ['HELP'], ['HELP'], []],
+    'GEORADIUS STORE destination' => [
+        'GEORADIUS',
+        ['geo', 15, 37, 200, 'km', 'COUNT', 5, 'ANY', 'ASC', 'STORE', 'dst'],
+        ['prefix.geo', 15, 37, 200, 'km', 'COUNT', 5, 'ANY', 'ASC', 'STORE', 'prefix.dst'],
+        ['geo', 'dst'],
+    ],
+    'GEORADIUS STOREDIST destination' => [
+        'GEORADIUS',
+        ['geo', 15, 37, 200, 'km', 'STOREDIST', 'dst'],
+        ['prefix.geo', 15, 37, 200, 'km', 'STOREDIST', 'prefix.dst'],
+        ['geo', 'dst'],
+    ],
+    'GEORADIUSBYMEMBER member named store, STOREDIST destination' => [
+        'GEORADIUSBYMEMBER',
+        ['geo', 'store', 100, 'km', 'STOREDIST', 'dst'],
+        ['prefix.geo', 'store', 100, 'km', 'STOREDIST', 'prefix.dst'],
+        ['geo', 'dst'],
+    ],
+    'GEORADIUS_RO source only' => [
+        'GEORADIUS_RO',
+        ['geo', 15, 37, 200, 'km', 'WITHDIST'],
+        ['prefix.geo', 15, 37, 200, 'km', 'WITHDIST'],
+        ['geo'],
+    ],
+    'GEORADIUSBYMEMBER_RO source only' => [
+        'GEORADIUSBYMEMBER_RO',
+        ['geo', 'm', 100, 'km'],
+        ['prefix.geo', 'm', 100, 'km'],
+        ['geo'],
+    ],
+    'GEOSEARCHSTORE destination and source' => [
+        'GEOSEARCHSTORE',
+        ['dst', 'src', 'FROMMEMBER', 'm', 'BYRADIUS', 10, 'km', 'STOREDIST'],
+        ['prefix.dst', 'prefix.src', 'FROMMEMBER', 'm', 'BYRADIUS', 10, 'km', 'STOREDIST'],
+        ['dst', 'src'],
+    ],
+    'OBJECT ENCODING routes by key' => ['OBJECT', ['ENCODING', 'k'], ['ENCODING', 'prefix.k'], ['k']],
+    'OBJECT FREQ routes by key' => ['OBJECT', ['FREQ', 'k'], ['FREQ', 'prefix.k'], ['k']],
+    'OBJECT IDLETIME routes by key' => ['OBJECT', ['IDLETIME', 'k'], ['IDLETIME', 'prefix.k'], ['k']],
+    'OBJECT REFCOUNT routes by key' => ['OBJECT', ['refcount', 'k'], ['refcount', 'prefix.k'], ['k']],
+    'OBJECT HELP keyless' => ['OBJECT', ['HELP'], ['HELP'], []],
+    'MEMORY USAGE routes by key' => [
+        'MEMORY',
+        ['USAGE', 'k', 'SAMPLES', 5],
+        ['USAGE', 'prefix.k', 'SAMPLES', 5],
+        ['k'],
+    ],
+    'MEMORY STATS keyless' => ['MEMORY', ['STATS'], ['STATS'], []],
+    'XREADGROUP group named streams' => [
+        'XREADGROUP',
+        ['GROUP', 'streams', 'c', 'COUNT', 1, 'STREAMS', 's1', '>'],
+        ['GROUP', 'streams', 'c', 'COUNT', 1, 'STREAMS', 'prefix.s1', '>'],
+        ['s1'],
+    ],
+    'XREADGROUP consumer named STREAMS with options' => [
+        'XREADGROUP',
+        ['GROUP', 'g', 'STREAMS', 'BLOCK', 0, 'NOACK', 'STREAMS', 'a', 'b', '>', '>'],
+        ['GROUP', 'g', 'STREAMS', 'BLOCK', 0, 'NOACK', 'STREAMS', 'prefix.a', 'prefix.b', '>', '>'],
+        ['a', 'b'],
+    ],
+    'XREAD options before STREAMS' => [
+        'XREAD',
+        ['COUNT', 2, 'BLOCK', 0, 'STREAMS', 'a', '0-0'],
+        ['COUNT', 2, 'BLOCK', 0, 'STREAMS', 'prefix.a', '0-0'],
+        ['a'],
+    ],
+]);
+
+it('prefixes only the Redis key positions of numkeys and multi-key commands', function (string $command, array $args, array $prefixed, array $keys) {
+    expect((new KeyPrefixer('prefix.'))->apply($command, $args))->toBe($prefixed);
+})->with('numkeys and multi-key shapes');
+
+it('extracts only the Redis key positions for cluster slot routing', function (string $command, array $args, array $prefixed, array $keys) {
+    expect(CommandKeySpec::extract($command, $args))->toBe($keys)
+        ->and(CommandKeySpec::extract(strtolower($command), $args))->toBe($keys);
+})->with('numkeys and multi-key shapes');
 
 it('prefixes the SCAN MATCH value when scan prefixing is enabled', function () {
     $prefixer = new KeyPrefixer('prefix.', scanPrefix: true);

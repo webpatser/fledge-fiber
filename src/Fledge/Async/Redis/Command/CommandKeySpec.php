@@ -7,7 +7,7 @@ namespace Fledge\Async\Redis\Command;
  * prefixer. mapKeys() rewrites every routing-key position through a mapper;
  * extract() collects the routing keys for slot hashing; mapPrefixTargets()
  * additionally covers positions phpredis OPT_PREFIX rewrites that are not
- * routing keys (KEYS patterns, pub/sub channels, OBJECT subcommand keys).
+ * routing keys (KEYS patterns, pub/sub channels).
  */
 final class CommandKeySpec
 {
@@ -18,8 +18,8 @@ final class CommandKeySpec
     private const TOPOLOGY = [
         'PING', 'ECHO', 'AUTH', 'HELLO', 'SELECT', 'QUIT', 'RESET',
         'INFO', 'TIME', 'DBSIZE', 'LASTSAVE', 'WAIT', 'LATENCY',
-        'CLUSTER', 'CONFIG', 'CLIENT', 'COMMAND', 'DEBUG', 'MEMORY',
-        'SCRIPT', 'FUNCTION', 'OBJECT', 'SHUTDOWN', 'SAVE', 'BGSAVE',
+        'CLUSTER', 'CONFIG', 'CLIENT', 'COMMAND', 'DEBUG',
+        'SCRIPT', 'FUNCTION', 'SHUTDOWN', 'SAVE', 'BGSAVE',
         'BGREWRITEAOF', 'SLAVEOF', 'REPLICAOF', 'FAILOVER', 'ACL',
         'MONITOR', 'SUBSCRIBE', 'UNSUBSCRIBE', 'PSUBSCRIBE', 'PUNSUBSCRIBE',
         'PUBLISH', 'PUBSUB',
@@ -46,22 +46,54 @@ final class CommandKeySpec
     private const EVEN_INDEXED = ['MSET', 'MSETNX'];
 
     /** All but the last argument are keys: BLPOP k [k ...] timeout */
-    private const ALL_BUT_LAST = ['BLPOP', 'BRPOP', 'BZPOPMIN', 'BZPOPMAX', 'BLMPOP', 'BZMPOP'];
+    private const ALL_BUT_LAST = ['BLPOP', 'BRPOP', 'BZPOPMIN', 'BZPOPMAX'];
+
+    /** Every argument after the first is a key: BITOP op dest src [src ...] */
+    private const ALL_AFTER_FIRST = ['BITOP'];
 
     /** First two arguments are keys: RENAME src dst, SMOVE src dst member */
     private const TWO_KEYS = [
         'RENAME', 'RENAMENX', 'COPY', 'SMOVE', 'LMOVE', 'BLMOVE',
-        'RPOPLPUSH', 'BRPOPLPUSH', 'GEOSEARCHSTORE', 'LCS', 'SORT_RO', 'SUBSTR',
+        'RPOPLPUSH', 'BRPOPLPUSH', 'GEOSEARCHSTORE', 'LCS', 'ZRANGESTORE',
     ];
 
-    /** Script commands: script-or-name, numkeys, key1..keyN, arg... */
-    private const NUMKEYS_AT_1 = ['EVAL', 'EVALSHA', 'EVAL_RO', 'EVALSHA_RO', 'FCALL', 'FCALL_RO'];
+    /** Numkeys first: LMPOP numkeys key1..keyN LEFT|RIGHT, ZUNION numkeys key1..keyN ... */
+    private const NUMKEYS_AT_0 = ['LMPOP', 'ZMPOP', 'SINTERCARD', 'ZINTERCARD', 'ZUNION', 'ZINTER', 'ZDIFF'];
+
+    /**
+     * Numkeys second, first argument is not a key: EVAL script numkeys
+     * key1..keyN arg..., BLMPOP timeout numkeys key1..keyN LEFT|RIGHT.
+     */
+    private const NUMKEYS_AT_1 = [
+        'EVAL', 'EVALSHA', 'EVAL_RO', 'EVALSHA_RO', 'FCALL', 'FCALL_RO',
+        'BLMPOP', 'BZMPOP',
+    ];
 
     /** Store commands: destination, numkeys, key1..keyN, options... */
     private const STORE_NUMKEYS = ['ZUNIONSTORE', 'ZINTERSTORE', 'ZDIFFSTORE'];
 
     /** Stream reads: ... STREAMS key1..keyN id1..idN */
     private const STREAMS = ['XREAD', 'XREADGROUP'];
+
+    /**
+     * Container commands whose key follows the subcommand: XGROUP CREATE key
+     * group ..., XINFO STREAM key, OBJECT ENCODING key, MEMORY USAGE key.
+     * Subcommands not listed here (HELP, MEMORY STATS, ...) carry no key, so
+     * the cluster link routes them to a random master.
+     */
+    private const SUBCOMMAND_KEY_AT_1 = [
+        'XGROUP' => ['CREATE', 'SETID', 'DESTROY', 'CREATECONSUMER', 'DELCONSUMER'],
+        'XINFO' => ['STREAM', 'GROUPS', 'CONSUMERS'],
+        'OBJECT' => ['ENCODING', 'FREQ', 'IDLETIME', 'REFCOUNT'],
+        'MEMORY' => ['USAGE'],
+    ];
+
+    /**
+     * GEORADIUS family with optional STORE / STOREDIST destination keys,
+     * mapped to the index where the options start. The _RO forms take no
+     * STORE and use the default first-key rule.
+     */
+    private const GEORADIUS_OPTIONS_AT = ['GEORADIUS' => 5, 'GEORADIUSBYMEMBER' => 4];
 
     /**
      * Channel-carrying commands, consulted only by the key prefixer:
@@ -120,16 +152,40 @@ final class CommandKeySpec
             return $args;
         }
 
+        if (\in_array($upper, self::NUMKEYS_AT_0, true)) {
+            return self::mapNumKeysRange($args, $mapper, numKeysAt: 0, includeFirst: false);
+        }
+
         if (\in_array($upper, self::NUMKEYS_AT_1, true)) {
-            return self::mapNumKeysRange($args, $mapper, includeFirst: false);
+            return self::mapNumKeysRange($args, $mapper, numKeysAt: 1, includeFirst: false);
         }
 
         if (\in_array($upper, self::STORE_NUMKEYS, true)) {
-            return self::mapNumKeysRange($args, $mapper, includeFirst: true);
+            return self::mapNumKeysRange($args, $mapper, numKeysAt: 1, includeFirst: true);
+        }
+
+        if (\in_array($upper, self::ALL_AFTER_FIRST, true)) {
+            return self::mapIndices($args, $mapper, static fn (int $i) => $i > 0);
         }
 
         if (\in_array($upper, self::STREAMS, true)) {
-            return self::mapStreamsKeys($args, $mapper);
+            return self::mapStreamsKeys($args, $mapper, group: $upper === 'XREADGROUP');
+        }
+
+        if (isset(self::SUBCOMMAND_KEY_AT_1[$upper])) {
+            $subcommand = isset($args[0]) ? \strtoupper((string) $args[0]) : '';
+
+            return \in_array($subcommand, self::SUBCOMMAND_KEY_AT_1[$upper], true)
+                ? self::mapIndex($args, 1, $mapper)
+                : $args;
+        }
+
+        if (isset(self::GEORADIUS_OPTIONS_AT[$upper])) {
+            return self::mapGeoRadiusKeys($args, $mapper, self::GEORADIUS_OPTIONS_AT[$upper]);
+        }
+
+        if ($upper === 'MIGRATE') {
+            return self::mapMigrateKeys($args, $mapper);
         }
 
         if (\in_array($upper, self::ALL_ARGS, true)) {
@@ -215,7 +271,6 @@ final class CommandKeySpec
             $upper === 'HSCAN' || $upper === 'SSCAN' || $upper === 'ZSCAN',
             $upper === 'SORT' || $upper === 'SORT_RO',
             $upper === 'GETEX' => self::mapIndex($args, 0, $mapper),
-            $upper === 'OBJECT' => \count($args) >= 2 ? self::mapIndex($args, 1, $mapper) : $args,
             default => self::mapKeys($upper, $args, $mapper),
         };
     }
@@ -249,16 +304,17 @@ final class CommandKeySpec
     }
 
     /**
-     * EVAL/FCALL and Z*STORE shapes: [first, numkeys, key1..keyN, rest...].
-     * When $includeFirst is set the first argument (the store destination)
-     * is a key as well.
+     * Numkeys shapes: [numkeys, key1..keyN, rest...] for LMPOP/ZUNION and
+     * friends, [first, numkeys, key1..keyN, rest...] for EVAL/FCALL,
+     * BLMPOP/BZMPOP and Z*STORE. When $includeFirst is set the first argument
+     * (the store destination) is a key as well.
      *
      * @param  list<int|string|float>  $args
      * @return list<int|string|float>
      */
-    private static function mapNumKeysRange(array $args, \Closure $mapper, bool $includeFirst): array
+    private static function mapNumKeysRange(array $args, \Closure $mapper, int $numKeysAt, bool $includeFirst): array
     {
-        if (\count($args) < 2 || !\is_numeric($args[1])) {
+        if (!\array_key_exists($numKeysAt, $args) || !\is_numeric($args[$numKeysAt])) {
             return $args;
         }
 
@@ -266,10 +322,11 @@ final class CommandKeySpec
             $args[0] = $mapper($args[0]);
         }
 
-        $numKeys = (int) $args[1];
-        $end = \min(2 + $numKeys, \count($args));
+        $start = $numKeysAt + 1;
+        $numKeys = (int) $args[$numKeysAt];
+        $end = \min($start + $numKeys, \count($args));
 
-        for ($i = 2; $i < $end; $i++) {
+        for ($i = $start; $i < $end; $i++) {
             $args[$i] = $mapper($args[$i]);
         }
 
@@ -277,21 +334,36 @@ final class CommandKeySpec
     }
 
     /**
-     * XREAD / XREADGROUP: ... STREAMS key1..keyN id1..idN.
+     * XREAD [COUNT n] [BLOCK ms] STREAMS key1..keyN id1..idN and
+     * XREADGROUP GROUP group consumer [COUNT n] [BLOCK ms] [NOACK] STREAMS ...
+     * The fixed GROUP arguments and the option values are skipped before the
+     * STREAMS keyword is matched, so a group, consumer or option value named
+     * "streams" is not mistaken for it.
      *
      * @param  list<int|string|float>  $args
      * @return list<int|string|float>
      */
-    private static function mapStreamsKeys(array $args, \Closure $mapper): array
+    private static function mapStreamsKeys(array $args, \Closure $mapper, bool $group): array
     {
         $streamsAt = null;
+        $count = \count($args);
+        $i = 0;
 
-        foreach ($args as $i => $value) {
-            if (\is_string($value) && \strcasecmp($value, 'STREAMS') === 0) {
+        if ($group && isset($args[0]) && \strcasecmp((string) $args[0], 'GROUP') === 0) {
+            $i = 3;
+        }
+
+        while ($i < $count) {
+            $token = \strtoupper((string) $args[$i]);
+
+            if ($token === 'STREAMS') {
                 $streamsAt = $i;
 
                 break;
             }
+
+            // COUNT and BLOCK carry a value; NOACK and unknown flags do not.
+            $i += ($token === 'COUNT' || $token === 'BLOCK') ? 2 : 1;
         }
 
         if ($streamsAt === null) {
@@ -308,6 +380,70 @@ final class CommandKeySpec
 
         for ($i = $streamsAt + 1, $end = $streamsAt + 1 + $half; $i < $end; $i++) {
             $args[$i] = $mapper($args[$i]);
+        }
+
+        return $args;
+    }
+
+    /**
+     * GEORADIUS key lon lat radius unit [options] and GEORADIUSBYMEMBER key
+     * member radius unit [options]: the source key plus the value of every
+     * STORE / STOREDIST option. Options are walked from $optionsAt so a
+     * member named "store" is not mistaken for the option.
+     *
+     * @param  list<int|string|float>  $args
+     * @return list<int|string|float>
+     */
+    private static function mapGeoRadiusKeys(array $args, \Closure $mapper, int $optionsAt): array
+    {
+        $args = self::mapIndex($args, 0, $mapper);
+        $count = \count($args);
+
+        for ($i = $optionsAt; $i < $count; $i++) {
+            $token = \strtoupper((string) $args[$i]);
+
+            if ($token === 'COUNT') {
+                $i++;
+            } elseif (($token === 'STORE' || $token === 'STOREDIST') && $i + 1 < $count) {
+                $args[$i + 1] = $mapper($args[$i + 1]);
+                $i++;
+            }
+        }
+
+        return $args;
+    }
+
+    /**
+     * MIGRATE host port key|"" db timeout [COPY] [REPLACE] [AUTH pw]
+     * [AUTH2 user pw] [KEYS key...]: the key at index 2, or, when that is
+     * the empty string, every argument after the KEYS option. The host is
+     * never a key.
+     *
+     * @param  list<int|string|float>  $args
+     * @return list<int|string|float>
+     */
+    private static function mapMigrateKeys(array $args, \Closure $mapper): array
+    {
+        if (!\array_key_exists(2, $args)) {
+            return $args;
+        }
+
+        if ((string) $args[2] !== '') {
+            return self::mapIndex($args, 2, $mapper);
+        }
+
+        $count = \count($args);
+
+        for ($i = 5; $i < $count; $i++) {
+            $token = \strtoupper((string) $args[$i]);
+
+            if ($token === 'AUTH') {
+                $i++;
+            } elseif ($token === 'AUTH2') {
+                $i += 2;
+            } elseif ($token === 'KEYS') {
+                return self::mapIndices($args, $mapper, static fn (int $j) => $j > $i);
+            }
         }
 
         return $args;
