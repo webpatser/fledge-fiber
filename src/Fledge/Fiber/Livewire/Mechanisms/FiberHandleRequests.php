@@ -3,6 +3,7 @@
 namespace Fledge\Fiber\Livewire\Mechanisms;
 
 use Fledge\Async\Sync\LocalSemaphore;
+use Livewire\Features\SupportReactiveProps\SupportReactiveProps;
 use Livewire\Features\SupportScriptsAndAssets\SupportScriptsAndAssets;
 use Livewire\Mechanisms\HandleRequests\HandleRequests;
 use Livewire\Mechanisms\HandleRequests\StreamedResponse;
@@ -110,8 +111,31 @@ class FiberHandleRequests extends HandleRequests
         $semaphore = new LocalSemaphore($maxConcurrent);
 
         $futures = [];
+        $errors = [];
+        $results = [];
 
         foreach ($requestPayload as $key => $componentPayload) {
+            // A component with #[Reactive] props reads the params its parent
+            // stored while rendering. Run it as stock Livewire does: after
+            // every earlier component finished, before any later one starts.
+            if ($this->hasReactiveProps($componentPayload)) {
+                $this->awaitFutures($futures, $errors, $results);
+
+                if ($errors !== []) {
+                    break;
+                }
+
+                try {
+                    $results[$key] = $this->processComponent($componentPayload);
+                } catch (\Throwable $e) {
+                    $errors[$key] = $e;
+
+                    break;
+                }
+
+                continue;
+            }
+
             $futures[$key] = async(function () use ($semaphore, $componentPayload) {
                 $lock = $semaphore->acquire();
 
@@ -123,7 +147,7 @@ class FiberHandleRequests extends HandleRequests
             });
         }
 
-        [$errors, $results] = awaitAll($futures);
+        $this->awaitFutures($futures, $errors, $results);
         ksort($results);
 
         // Build component responses, inserting error responses for failed components
@@ -133,7 +157,7 @@ class FiberHandleRequests extends HandleRequests
             if (isset($errors[$key])) {
                 $e = $errors[$key];
 
-                if ($e instanceof \TypeError && ! config('app.debug')) {
+                if ($e instanceof \TypeError && ! config('app.debug') && ! $this->shouldPropagateExceptions) {
                     report($e);
 
                     abort(419);
@@ -149,6 +173,32 @@ class FiberHandleRequests extends HandleRequests
     }
 
     /**
+     * Await the pending futures, merge their outcome and clear the list.
+     */
+    protected function awaitFutures(array &$futures, array &$errors, array &$results): void
+    {
+        if ($futures === []) {
+            return;
+        }
+
+        [$futureErrors, $futureResults] = awaitAll($futures);
+
+        $errors += $futureErrors;
+        $results += $futureResults;
+        $futures = [];
+    }
+
+    /**
+     * Determine if the component snapshot declares #[Reactive] props.
+     */
+    protected function hasReactiveProps(array $componentPayload): bool
+    {
+        $snapshot = json_decode($componentPayload['snapshot'], associative: true);
+
+        return ! empty($snapshot['memo']['props'] ?? []);
+    }
+
+    /**
      * Process a single component payload.
      */
     protected function processComponent(array $componentPayload): array
@@ -157,12 +207,21 @@ class FiberHandleRequests extends HandleRequests
         $updates = $componentPayload['updates'];
         $calls = $componentPayload['calls'];
 
+        // If this is a reactive child whose props didn't change,
+        // skip its entire lifecycle (hydrate, render, dehydrate)...
+        if (empty($updates) && SupportReactiveProps::shouldSkipUpdate($snapshot, $calls)) {
+            return [
+                'skip' => true,
+                'id' => $snapshot['memo']['id'],
+            ];
+        }
+
         try {
             [$snapshot, $effects] = app('livewire')->update($snapshot, $updates, $calls);
         } catch (\TypeError $e) {
             report($e);
 
-            if (config('app.debug')) {
+            if (config('app.debug') || $this->shouldPropagateExceptions) {
                 throw $e;
             }
 

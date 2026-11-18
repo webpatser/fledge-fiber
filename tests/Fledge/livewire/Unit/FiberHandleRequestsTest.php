@@ -237,6 +237,239 @@ it('measures the body, not the Content-Length header, against livewire.payload.m
     'understated Content-Length' => ['10'],
 ]);
 
+/**
+ * Bind a container whose Livewire manager records every update() and, for
+ * the parent, stores the child's params the way a parent render does
+ * through the mount.stub hook.
+ */
+function bindReactiveContainer(array $childParams): object
+{
+    $container = new Illuminate\Container\Container;
+
+    $container->instance('config', new class([])
+    {
+        public function __construct(private array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    });
+
+    $manager = new class($childParams)
+    {
+        public array $updated = [];
+
+        public function __construct(private array $childParams) {}
+
+        public function update(array $snapshot, array $updates, array $calls): array
+        {
+            $this->updated[] = $snapshot['memo']['id'];
+
+            if ($snapshot['memo']['id'] === 'parent') {
+                Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingChildParams['child'] = $this->childParams;
+            }
+
+            return [$snapshot, ['html' => '<div></div>']];
+        }
+    };
+
+    $container->instance('livewire', $manager);
+    Illuminate\Container\Container::setInstance($container);
+
+    return $manager;
+}
+
+function reactivePayload(string $id, array $data, array $props = [], array $updates = [], array $calls = [], array $bindings = []): array
+{
+    $memo = ['id' => $id];
+
+    if ($props !== []) {
+        $memo['props'] = $props;
+    }
+
+    if ($bindings !== []) {
+        $memo['bindings'] = $bindings;
+    }
+
+    return [
+        'snapshot' => json_encode(['data' => $data, 'memo' => $memo]),
+        'updates' => $updates,
+        'calls' => $calls,
+    ];
+}
+
+/**
+ * Run the parent, then the child, through processComponent as one request.
+ */
+function runParentAndChild(FiberHandleRequests $requests, array $childPayload): array
+{
+    $method = new ReflectionMethod($requests, 'processComponent');
+
+    return [
+        $method->invoke($requests, reactivePayload('parent', ['count' => 1], updates: ['count' => 1])),
+        $method->invoke($requests, $childPayload),
+    ];
+}
+
+afterEach(function () {
+    Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingChildParams = [];
+    Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingUpdates = [];
+});
+
+it('skips a reactive child whose props did not change, as stock Livewire does', function () {
+    $manager = bindReactiveContainer(['count' => 1]);
+
+    [$parent, $child] = runParentAndChild(new FiberHandleRequests, reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]));
+
+    expect($parent)->toHaveKeys(['snapshot', 'effects'])
+        ->and($child)->toBe(['skip' => true, 'id' => 'child'])
+        ->and($manager->updated)->toBe(['parent']);
+});
+
+it('updates a reactive child when the conditions for skipping are not met', function (array $childParams, array $childPayload) {
+    $manager = bindReactiveContainer($childParams);
+
+    [, $child] = runParentAndChild(new FiberHandleRequests, $childPayload);
+
+    expect($child)->toHaveKeys(['snapshot', 'effects'])
+        ->and($manager->updated)->toBe(['parent', 'child']);
+})->with([
+    'prop changed' => [['count' => 2], reactivePayload('child', ['count' => 1], props: ['count'])],
+    'child has updates' => [['count' => 1], reactivePayload('child', ['count' => 1], props: ['count'], updates: ['other' => 'x'])],
+    'child has a real call' => [['count' => 1], reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => 'save', 'params' => []]])],
+    'child has wire:model bindings' => [['count' => 1], reactivePayload('child', ['count' => 1], props: ['count'], bindings: ['count'])],
+    'child has no reactive props' => [['count' => 1], reactivePayload('child', ['count' => 1])],
+]);
+
+/**
+ * Bind a container whose Livewire manager suspends every update() once, the
+ * way a Fledge database query does, before a parent stores its child's
+ * params. Each update records which pending params it saw.
+ */
+function bindSuspendingReactiveContainer(array $parents): object
+{
+    $container = new Illuminate\Container\Container;
+
+    $container->instance('config', new class(['fledge-livewire.max_concurrent' => 10])
+    {
+        public function __construct(private array $items) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+    });
+
+    $manager = new class($parents)
+    {
+        public array $updated = [];
+
+        public array $seen = [];
+
+        public function __construct(private array $parents) {}
+
+        public function update(array $snapshot, array $updates, array $calls): array
+        {
+            $id = $snapshot['memo']['id'];
+            $this->updated[] = $id;
+            $this->seen[$id] = Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingChildParams[$id] ?? null;
+
+            // Suspend the fiber as a query would under Fledge.
+            Fledge\Async\delay(0);
+
+            foreach ($this->parents[$id] ?? [] as $childId => $params) {
+                Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingChildParams[$childId] = $params;
+            }
+
+            return [$snapshot, ['html' => '<div></div>']];
+        }
+    };
+
+    $container->instance('livewire', $manager);
+    Illuminate\Container\Container::setInstance($container);
+
+    return $manager;
+}
+
+function runConcurrently(array $payloads): array
+{
+    $requests = new FiberHandleRequests;
+
+    return (new ReflectionMethod($requests, 'processConcurrently'))
+        ->invoke($requests, $payloads, fn ($payload) => $payload)['components'];
+}
+
+it('hydrates a reactive child after its suspending parent stored the new props', function () {
+    $manager = bindSuspendingReactiveContainer(['parent' => ['child' => ['count' => 2]]]);
+
+    $components = runConcurrently([
+        reactivePayload('parent', ['count' => 2], updates: ['count' => 2]),
+        reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]),
+    ]);
+
+    expect($manager->seen['child'])->toBe(['count' => 2])
+        ->and(json_decode($components[0]['snapshot'], true)['memo']['id'])->toBe('parent')
+        ->and(json_decode($components[1]['snapshot'], true)['memo']['id'])->toBe('child');
+});
+
+it('skips an unchanged reactive child after its suspending parent, as stock Livewire does', function () {
+    $manager = bindSuspendingReactiveContainer(['parent' => ['child' => ['count' => 1]]]);
+
+    $components = runConcurrently([
+        reactivePayload('other', ['n' => 1], updates: ['n' => 1]),
+        reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]),
+        reactivePayload('parent', ['count' => 1], updates: ['count' => 1]),
+    ]);
+
+    // Stock processes in batch order: a child listed before its parent is
+    // not skipped, so swap the order to prove the skip path.
+    expect($components[1])->toHaveKeys(['snapshot', 'effects']);
+
+    Livewire\Features\SupportReactiveProps\SupportReactiveProps::$pendingChildParams = [];
+    $manager = bindSuspendingReactiveContainer(['parent' => ['child' => ['count' => 1]]]);
+
+    $components = runConcurrently([
+        reactivePayload('other', ['n' => 1], updates: ['n' => 1]),
+        reactivePayload('parent', ['count' => 1], updates: ['count' => 1]),
+        reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]),
+    ]);
+
+    expect($components[2])->toBe(['skip' => true, 'id' => 'child'])
+        ->and($manager->updated)->toEqualCanonicalizing(['other', 'parent'])
+        ->and(json_decode($components[0]['snapshot'], true)['memo']['id'])->toBe('other')
+        ->and(json_decode($components[1]['snapshot'], true)['memo']['id'])->toBe('parent');
+});
+
+it('runs nested reactive children in batch order after their reactive parent', function () {
+    $manager = bindSuspendingReactiveContainer([
+        'parent' => ['child' => ['count' => 2]],
+        'child' => ['grandchild' => ['count' => 2]],
+    ]);
+
+    $components = runConcurrently([
+        reactivePayload('parent', ['count' => 2], updates: ['count' => 2]),
+        reactivePayload('child', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]),
+        reactivePayload('grandchild', ['count' => 1], props: ['count'], calls: [['method' => '$commit', 'params' => []]]),
+    ]);
+
+    expect($manager->seen['child'])->toBe(['count' => 2])
+        ->and($manager->seen['grandchild'])->toBe(['count' => 2])
+        ->and(array_map(fn ($c) => json_decode($c['snapshot'], true)['memo']['id'], $components))
+        ->toBe(['parent', 'child', 'grandchild']);
+});
+
+it('rethrows a TypeError while exceptions are propagated, as stock Livewire does', function () {
+    $handler = bindTypeErrorContainer(debug: false);
+    $requests = new FiberHandleRequests;
+
+    expect(fn () => $requests->temporarilyPropagateExceptions(
+        fn () => (new ReflectionMethod($requests, 'processComponent'))->invoke($requests, typeErrorPayload())
+    ))->toThrow(TypeError::class);
+
+    expect($handler->reported)->toHaveCount(1);
+});
+
 it('reports a TypeError from a concurrent component before turning it into a 419', function () {
     $handler = bindTypeErrorContainer(debug: false);
 
