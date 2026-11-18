@@ -1275,3 +1275,154 @@ it('discards, never returns, the leases of a scope destroyed mid-transaction or 
     'unfinished query or cursor' => [1, 0, false],
     'query inside a transaction' => [1, 2, false],
 ]);
+
+/**
+ * $onQuery for nativeLeaseSetup(): a statement containing "dirty" records a
+ * possible session change on the lease, as NativePdo does for SQL it cannot
+ * prove clean.
+ */
+function nativeLeaseMarkDirty(): Closure
+{
+    return function (string $sql, PDO $pdo) {
+        if (str_contains($sql, 'dirty')) {
+            $pdo->leaseGuard()->markSessionChanged();
+        }
+    };
+}
+
+it('discards a lease whose session changed when its scope ends and opens a new connection for the next lessee', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+
+    $connection->unprepared('dirty set');
+
+    expect($pool)->toHaveCount(0)
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool->getIdleCount())->toBe(0);
+
+    $connection->unprepared('next');
+    $connection->unprepared('clean again');
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->toBe(['dirty set'])
+        // A clean lessee keeps its connection: the second one serves both.
+        ->and($pdos[2]->log)->toBe(['next', 'clean again'])
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getIdleCount())->toBe(1)
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('hands a fiber waiting on a pool of one a fresh connection when a dirty lessee lets go', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(1, [], nativeLeaseMarkDirty());
+
+    $a = async(fn () => $connection->unprepared('sleep 0.02 dirty'));
+
+    $b = async(function () use ($connection) {
+        delay(0.005);
+        $connection->unprepared('b');
+
+        return $connection->getPdo()->id;
+    });
+
+    delay(0.01);
+    $waitingWhileDirtyHeld = $pool->getWaitingCount();
+    $countWhileDirtyHeld = count($pool);
+
+    [, $pdoOfB] = await([$a, $b]);
+
+    expect($waitingWhileDirtyHeld)->toBe(1)
+        ->and($countWhileDirtyHeld)->toBe(1)
+        ->and($pdoOfB)->toBe(2)
+        ->and($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->toBe(['sleep 0.02 dirty'])
+        ->and($pdos[2]->log)->toBe(['b'])
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getWaitingCount())->toBe(0)
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('always discards a pooled PDO that is not a GuardedPdo, since it cannot report what ran on it', function () {
+    $pdos = new ArrayObject;
+
+    $pool = new NativePdoPool(function () use ($pdos) {
+        $pdo = new class(count($pdos) + 1) extends PDO
+        {
+            /** @var list<string> */
+            public array $log = [];
+
+            public function __construct(public int $id) {}
+
+            public function prepare(string $query, array $options = []): PDOStatement|false
+            {
+                $this->log[] = $query;
+
+                return nativeLeaseFakeStatement([], new LeaseGuard);
+            }
+
+            public function exec(string $statement): int|false
+            {
+                $this->log[] = $statement;
+
+                return 0;
+            }
+
+            public function inTransaction(): bool
+            {
+                return false;
+            }
+        };
+        $pdos[$pdo->id] = $pdo;
+
+        return $pdo;
+    }, 2, 60.0);
+
+    $connection = new NativeMariaDbConnection($pool, 'native_lease', '', [
+        'name' => 'native-lease',
+        'driver' => 'fledge-mariadb-native',
+    ]);
+
+    $connection->unprepared('select 1');
+    $connection->select('select 2');
+    async(fn () => $connection->unprepared('select 3'))->await();
+
+    expect($pdos)->toHaveCount(3)
+        ->and($pdos[1]->log)->toBe(['select 1'])
+        ->and($pdos[2]->log)->toBe(['select 2'])
+        ->and($pdos[3]->log)->toBe(['select 3'])
+        ->and($pool)->toHaveCount(0)
+        ->and($pool->getIdleCount())->toBe(0)
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('discards a dirty lease on the idle destructor path', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+
+    // A scope destroyed with no open scope or transaction: only the dirty flag decides.
+    $pdo = $pool->acquire();
+    $pdo->leaseGuard()->markSessionChanged();
+
+    $scope = new LeaseScope;
+    $scope->leases['write'] = new Lease($pool, $pdo);
+
+    unset($scope);
+
+    expect($pool->isLeased($pdo))->toBeFalse()
+        ->and($pool)->toHaveCount(0)
+        ->and($pool->getIdleCount())->toBe(0);
+
+    // The same through a fiber that ends with a raw PDO it dirtied still leased.
+    async(function () use ($connection) {
+        $connection->getPdo()->exec('dirty raw');
+    })->await();
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[2]->log)->toBe(['dirty raw'])
+        ->and($pool->isLeased($pdos[2]))->toBeFalse()
+        ->and($pool)->toHaveCount(0)
+        ->and($pool->getLeasedCount())->toBe(0);
+
+    $connection->unprepared('next');
+
+    expect($pdos)->toHaveCount(3)
+        ->and($pdos[3]->log)->toBe(['next'])
+        ->and($pool->getIdleCount())->toBe(1);
+});

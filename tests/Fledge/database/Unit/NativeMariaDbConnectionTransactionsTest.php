@@ -1,6 +1,8 @@
 <?php
 
 use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
+use Fledge\Fiber\Database\Native\GuardedPdo;
+use Fledge\Fiber\Database\Native\LeaseGuard;
 use Fledge\Fiber\Database\Native\NativePdoPool;
 
 use function Fledge\Async\async;
@@ -19,14 +21,25 @@ use function Fledge\Async\Future\await;
  */
 function nativeFakePdo(): PDO
 {
-    return new class extends PDO
+    // Guarded, so the connection can see that nothing it ran changed the session.
+    return new class extends PDO implements GuardedPdo
     {
         /** @var list<string> */
         public array $log = [];
 
         private bool $open = false;
 
-        public function __construct() {}
+        private LeaseGuard $guard;
+
+        public function __construct()
+        {
+            $this->guard = new LeaseGuard;
+        }
+
+        public function leaseGuard(): LeaseGuard
+        {
+            return $this->guard;
+        }
 
         public function beginTransaction(): bool
         {

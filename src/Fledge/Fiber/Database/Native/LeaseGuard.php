@@ -31,6 +31,8 @@ final class LeaseGuard
 
     private bool $broken = false;
 
+    private bool $sessionChanged = false;
+
     /**
      * The current lease owner key: the running fiber, or a fixed token for
      * the main context.
@@ -44,6 +46,9 @@ final class LeaseGuard
     {
         $this->owner = $owner;
         $this->armed = true;
+
+        // A lease starts from the session connect() (or a clean previous lessee) left.
+        $this->sessionChanged = false;
     }
 
     public function clear(): void
@@ -69,6 +74,21 @@ final class LeaseGuard
     public function markBroken(): void
     {
         $this->broken = true;
+    }
+
+    /**
+     * Whether the current lessee may have changed its session (a statement
+     * not proven clean, an attribute change): the connection is then
+     * discarded instead of released. Reset by assign().
+     */
+    public function sessionChanged(): bool
+    {
+        return $this->sessionChanged;
+    }
+
+    public function markSessionChanged(): void
+    {
+        $this->sessionChanged = true;
     }
 
     /**

@@ -44,6 +44,20 @@ use WeakMap;
  * `$lastInsertId` is per fiber as well (same hooked-property pattern), so an
  * insertGetId() never reads the id of another fiber's insert.
  *
+ * Session state never passes from one lessee to the next. A lease whose
+ * owner may have changed its session is discarded when the scope ends, so
+ * the next lessee gets a fresh connection (pdo_mysql cannot send
+ * COM_RESET_CONNECTION, see LeaseScope::giveBack()). The judgement is made
+ * where SQL reaches the connection, not where a PDO is handed out: NativePdo
+ * marks the lease changed for every prepare(), exec() or query() whose SQL
+ * NativePdo::leavesSessionUnchanged() does not prove clean (plain SELECT /
+ * SHOW / DML without user variables, lock functions, temporary tables,
+ * comments, multiple statements or unknown functions; savepoints), and for
+ * setAttribute(). This holds for raw PDO use too: DB::getPdo()->exec('SET
+ * @x = 1') is dirty, DB::getPdo()->quote() or ->query('select 1') is not.
+ * A clean lease goes back to the pool as before, without any extra round
+ * trip.
+ *
  * The transactions manager is wrapped in FiberAwareTransactionsManager and
  * this connection registers itself as fiber-scoped there, so afterCommit and
  * afterRollBack callbacks follow the fiber's own transaction.
@@ -776,7 +790,7 @@ trait UsesNativePdoPool
         $scope->lastSlot = null;
 
         foreach ($leases as $lease) {
-            $lease->release();
+            $scope->giveBack($lease);
         }
     }
 
@@ -790,6 +804,6 @@ trait UsesNativePdoPool
 
         $lease = $scope->leases[$slot];
         unset($scope->leases[$slot]);
-        $lease->release();
+        $scope->giveBack($lease);
     }
 }
