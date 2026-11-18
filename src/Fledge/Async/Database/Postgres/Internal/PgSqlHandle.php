@@ -62,6 +62,9 @@ final class PgSqlHandle extends AbstractHandle
     /** libpq's message from the moment the connection died, e.g. the server's FATAL plus "server closed the connection unexpectedly". */
     private ?string $lostMessage = null;
 
+    /** @var resource The connection's socket as pg_socket() returned it; see abandonRunningQuery(). */
+    private $socket;
+
     /**
      * @param \PgSql\Connection $connection PostgreSQL connection handle.
      * @param resource $socket PostgreSQL connection stream socket.
@@ -74,6 +77,7 @@ final class PgSqlHandle extends AbstractHandle
         PostgresConfig $config,
     ) {
         $this->handle = $connection;
+        $this->socket = $socket;
 
         $connection = &$this->handle;
         $lastUsedAt = &$this->lastUsedAt;
@@ -279,8 +283,60 @@ final class PgSqlHandle extends AbstractHandle
     #[\Override]
     public function close(): void
     {
-        $this->handle = null;
+        if ($this->handle !== null) {
+            $this->abandonRunningQuery($this->handle);
+        }
+
+        // Fails the pending operation and cancels the poll and await watchers while libpq still owns
+        // the fd; dropping the handle afterwards lets libpq close it with nothing watching it.
         parent::close();
+        $this->handle = null;
+    }
+
+    /**
+     * Fledge: ext/pgsql reads every outstanding result (PQgetResult) when it frees a link, and on a
+     * connection whose statement is still running that read blocks the whole process inside libpq until
+     * the server answers, out of reach of the loop, its timers and signals. A close() during a statement
+     * (a pool wait timeout ending a DISCARD ALL, a server that stopped answering) therefore cuts the
+     * socket first, so libpq meets EOF and the free returns at once. An idle connection keeps the
+     * graceful terminate. stream_socket_shutdown() refuses the stream pg_socket() returns (it is no
+     * transport stream), so the shutdown goes through ext-sockets; without it the link is kept, off
+     * the loop's reference count, until the server's answer arrives, and freed then.
+     */
+    private function abandonRunningQuery(\PgSql\Connection $handle): void
+    {
+        \set_error_handler(static fn (): bool => true);
+
+        try {
+            if (\pg_connection_status($handle) !== \PGSQL_CONNECTION_OK || !\pg_connection_busy($handle)) {
+                return;
+            }
+
+            if (\extension_loaded('sockets')
+                && ($socket = \socket_import_stream($this->socket)) instanceof \Socket
+                && \socket_shutdown($socket, 2)
+            ) {
+                return;
+            }
+
+            EventLoop::unreference(EventLoop::onReadable($this->socket, static function (string $watcher) use ($handle): void {
+                \set_error_handler(static fn (): bool => true);
+
+                try {
+                    if (\pg_consume_input($handle) && \pg_connection_busy($handle)) {
+                        return; // Still running; the link stays until the server answers.
+                    }
+                } finally {
+                    \restore_error_handler();
+                }
+
+                EventLoop::cancel($watcher); // Drops the last reference: nothing left to wait for.
+            }));
+        } catch (\Throwable) {
+            // close() never fails; at worst the link is freed the way it was before.
+        } finally {
+            \restore_error_handler();
+        }
     }
 
     /**

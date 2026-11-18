@@ -38,7 +38,8 @@
     "suggest": {
         "livewire/livewire": "Required for concurrent Livewire component updates (^4.4.8)",
         "symfony/http-client": "Required for FledgeSymfonyHttpClient, which runs Symfony HTTP consumers such as the mailer's API transports on the Fledge loop (^7.4 || ^8.0)",
-        "ext-resp3": "Install the resp3 PECL extension 0.2.0 or newer via PIE (`pie install webpatser/php-resp3:^0.2`) for faster RESP parsing on cache-heavy workloads; SocketRedisConnection picks it up automatically when loaded and falls back to the PHP parser for older versions."
+        "ext-resp3": "Install the resp3 PECL extension 0.2.0 or newer via PIE (`pie install webpatser/php-resp3:^0.2`) for faster RESP parsing on cache-heavy workloads; SocketRedisConnection picks it up automatically when loaded and falls back to the PHP parser for older versions.",
+        "ext-sockets": "Lets the pgsql Postgres driver close a connection mid-statement (a pool wait timeout, a server that stopped answering) without waiting for the server"
     },
     "autoload": {
         "psr-4": {
