@@ -8,6 +8,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Redis\Internal\PendingRedisCommand;
 use Fledge\Async\Redis\Protocol\RedisResponse;
+use Fledge\Async\Redis\Protocol\RedisValue;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\TimeoutCancellation;
 use Revolt\EventLoop;
@@ -74,11 +75,32 @@ final class ReconnectingRedisLink implements RedisLink
             }
         }
 
-        if (\strcasecmp($command, 'select') === 0) {
+        // Only a SELECT the server applied counts: a QUEUED reply inside MULTI
+        // may be discarded and an error reply (SELECT 9999) changed nothing.
+        if (\strcasecmp($command, 'select') === 0 && $response instanceof RedisValue && $response->unwrap() === 'OK') {
             $this->database = (int) ($parameters[0] ?? 0);
         }
 
         return $response;
+    }
+
+    /**
+     * Record the database a SELECT queued in MULTI switched to once EXEC
+     * ran it, so a reconnect selects it again. No round trip.
+     */
+    public function rememberDatabase(int $database): void
+    {
+        $this->database = $database;
+    }
+
+    /**
+     * Drop the current socket, even with a command in flight that the server
+     * would never answer (BLPOP 0): such commands fail exactly as on a lost
+     * connection, and the next command reconnects.
+     */
+    public function closeConnection(): void
+    {
+        $this->connection?->close();
     }
 
     /**
@@ -183,6 +205,15 @@ final class ReconnectingRedisLink implements RedisLink
                         continue;
                     }
 
+                    /* The link was destroyed while connecting: nothing would
+                     * ever close this socket, so drop it now. */
+                    if (!$running) {
+                        $connection->close();
+                        $connection = null;
+
+                        return;
+                    }
+
                     $connection->unreference();
 
                     try {
@@ -201,6 +232,16 @@ final class ReconnectingRedisLink implements RedisLink
                             if (!$pending->deferred->isComplete()) {
                                 $pending->deferred->complete($response);
                             }
+                        }
+
+                        /* Closed (QUIT, closeConnection(), server side) with
+                         * nothing waiting: stop and let the next execute()
+                         * reconnect, as phpredis does, instead of holding an
+                         * eager new socket nobody may ever use or close. */
+                        if (self::hasNoPendingCommands($queue)) {
+                            $running = false;
+
+                            return;
                         }
                     } catch (RedisWireException $exception) {
                         /* A corrupt wire stream is not transient for the
@@ -284,6 +325,27 @@ final class ReconnectingRedisLink implements RedisLink
             $connection->send($pending->command, ...$pending->parameters);
             $pending->sent = true;
         }
+    }
+
+    /**
+     * Whether every queued entry is settled (timed out or answered); if so
+     * the queue is emptied so a later run() starts clean.
+     *
+     * @param \SplQueue<PendingRedisCommand> $queue
+     */
+    private static function hasNoPendingCommands(\SplQueue $queue): bool
+    {
+        foreach ($queue as $pending) {
+            if (!$pending->deferred->isComplete()) {
+                return false;
+            }
+        }
+
+        while (!$queue->isEmpty()) {
+            $queue->shift();
+        }
+
+        return true;
     }
 
     /**

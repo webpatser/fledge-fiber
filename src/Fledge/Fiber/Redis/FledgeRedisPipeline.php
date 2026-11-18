@@ -39,7 +39,9 @@ class FledgeRedisPipeline
     {
         // Inside this fiber's MULTI the commands must stay on this fiber:
         // child fibers would wait on the transaction lock this fiber holds.
-        if ($this->connection->ownsTransaction()) {
+        // A blocking command runs on a connection of its own, so a batch
+        // holding one runs in order to keep phpredis's one-socket ordering.
+        if ($this->connection->ownsTransaction() || $this->holdsBlockingCommand()) {
             $results = [];
 
             foreach ($this->commands as [$method, $parameters]) {
@@ -65,6 +67,20 @@ class FledgeRedisPipeline
         ksort($results);
 
         return array_values($results);
+    }
+
+    /**
+     * Whether a queued command would run on a blocking connection.
+     */
+    protected function holdsBlockingCommand(): bool
+    {
+        foreach ($this->commands as [$method, $parameters]) {
+            if ($this->connection->blocksConnection($method, $parameters)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

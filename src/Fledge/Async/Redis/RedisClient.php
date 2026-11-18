@@ -62,6 +62,30 @@ final class RedisClient
     }
 
     /**
+     * Drop the socket without QUIT, which a blocked connection would never
+     * answer; commands in flight fail as on a lost connection. A no-op for
+     * links that cannot do this.
+     */
+    public function closeConnection(): void
+    {
+        if (\method_exists($this->link, 'closeConnection')) {
+            $this->link->closeConnection();
+        }
+    }
+
+    /**
+     * Tell the link which database the connection is on after EXEC ran a
+     * SELECT queued in MULTI, so a reconnect selects it again. A no-op for
+     * links that do not track it.
+     */
+    public function rememberDatabase(int $database): void
+    {
+        if (\method_exists($this->link, 'rememberDatabase')) {
+            $this->link->rememberDatabase($database);
+        }
+    }
+
+    /**
      * @link https://redis.io/commands/del
      */
     public function delete(string $key, string ...$keys): int

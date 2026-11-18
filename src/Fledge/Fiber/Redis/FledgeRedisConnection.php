@@ -69,6 +69,68 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
     protected ?object $transactionOwner = null;
 
     /**
+     * Idle connections for blocking commands, built from the connector.
+     *
+     * @var list<RedisClient>
+     */
+    protected array $blockingClients = [];
+
+    /**
+     * Blocking connections with a command in flight, by object id, so
+     * disconnect() can drop them.
+     *
+     * @var array<int, RedisClient>
+     */
+    protected array $checkedOutBlockingClients = [];
+
+    /**
+     * The database chosen with SELECT at runtime (null: the configured one),
+     * carried over to the blocking connections.
+     */
+    protected ?int $selectedDatabase = null;
+
+    /**
+     * The SELECTs queued inside this fiber's MULTI, by their position in the
+     * EXEC reply; the last one EXEC ran without an error is applied.
+     *
+     * @var array<int, int>
+     */
+    protected array $pendingSelects = [];
+
+    /**
+     * Commands sent inside this fiber's MULTI so far, which gives the
+     * position of each one's entry in the EXEC reply.
+     */
+    protected int $queuedCommands = 0;
+
+    /**
+     * Bumped by SELECT and disconnect(): a blocking connection taken out
+     * under an older generation is closed when it returns.
+     */
+    protected int $blockingGeneration = 0;
+
+    /**
+     * Bumped by disconnect(): a blocking call it failed is not retried.
+     */
+    protected int $disconnects = 0;
+
+    /**
+     * Idle blocking connections kept for reuse; the rest are closed when
+     * they return. A worker loop runs one blocking pop at a time, so 2 keeps
+     * it (plus one overlapping call) free of reconnects while a burst of
+     * concurrent calls cannot pin connections against maxclients.
+     */
+    public const int BLOCKING_IDLE_LIMIT = 2;
+
+    /**
+     * Commands that hold their connection until they return. XREAD and
+     * XREADGROUP join them when called with BLOCK.
+     */
+    protected const array BLOCKING_COMMANDS = [
+        'BLPOP', 'BRPOP', 'BRPOPLPUSH', 'BLMOVE', 'BLMPOP', 'BZPOPMIN', 'BZPOPMAX', 'BZMPOP',
+    ];
+
+    /**
      * Identity used for code running outside any fiber.
      */
     private static ?object $mainContext = null;
@@ -115,6 +177,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         while (true) {
             $start = microtime(true);
+            $disconnects = $this->disconnects;
 
             try {
                 $result = $this->executeCommand($method, $parameters);
@@ -144,8 +207,22 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
                 $transient = $e instanceof AsyncRedisException
                     && Str::contains($e->getMessage(), static::TRANSIENT_ERROR_MARKERS);
 
-                if ($transient && $this->connector) {
+                // A blocking command failed on its own connection, which has
+                // been dropped already: the shared one is fine.
+                if ($transient && $this->connector && ! $this->blocksConnection($method, $parameters)) {
                     $this->client = call_user_func($this->connector);
+
+                    // The fresh client is on the configured database: restore
+                    // the runtime one before the command is retried.
+                    if ($this->selectedDatabase !== null) {
+                        $this->client->execute('SELECT', $this->selectedDatabase);
+                    }
+                }
+
+                // disconnect() dropped this blocking call on purpose (worker
+                // shutdown): retrying it on a new connection would hang.
+                if ($disconnects !== $this->disconnects && $this->blocksConnection($method, $parameters)) {
+                    throw $e;
                 }
 
                 if (! $transient || $retries-- === 0) {
@@ -183,9 +260,172 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         $command = strtoupper($method);
         $args = $this->keyPrefixer->apply($command, $this->flattenParameters($parameters));
 
+        // A blocking command holds its socket until it returns, which would
+        // queue every fiber sharing $this->client behind it. Like phpredis,
+        // where it only blocks its own process, it gets a connection of its
+        // own; no transaction gate, as another fiber's MULTI is not on it.
+        if ($this->runsOnBlockingClient($command, $args)) {
+            return $this->executeBlocking($command, $args);
+        }
+
         $this->waitForTransactionGate();
 
-        return $this->client->execute($command, ...$args);
+        $result = $this->client->execute($command, ...$args);
+
+        if ($this->ownsTransaction()) {
+            $position = $this->queuedCommands++;
+
+            if ($command === 'SELECT') {
+                $this->pendingSelects[$position] = (int) $args[0];
+            }
+        } elseif ($command === 'SELECT') {
+            $this->applySelectedDatabase((int) $args[0]);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Remember the runtime database and close the idle blocking connections,
+     * which are still on the previous one.
+     */
+    protected function applySelectedDatabase(int $database): void
+    {
+        $this->selectedDatabase = $database;
+        $this->blockingGeneration++;
+
+        // The link records a plain SELECT itself, but not one EXEC ran.
+        $this->client->rememberDatabase($database);
+
+        $this->closeIdleBlockingClients();
+    }
+
+    /**
+     * QUIT every idle blocking connection.
+     */
+    protected function closeIdleBlockingClients(): void
+    {
+        $clients = $this->blockingClients;
+        $this->blockingClients = [];
+
+        foreach ($clients as $client) {
+            $this->closeBlockingClient($client);
+        }
+    }
+
+    protected function closeBlockingClient(RedisClient $client): void
+    {
+        try {
+            $client->quit();
+        } catch (Throwable) {
+            // Connection may already be closed
+        }
+    }
+
+    /**
+     * Keep a returning blocking connection for reuse, or close it when it
+     * belongs to an older generation or the idle list is full.
+     */
+    protected function releaseBlockingClient(RedisClient $client, int $generation): void
+    {
+        if ($generation === $this->blockingGeneration && count($this->blockingClients) < static::BLOCKING_IDLE_LIMIT) {
+            $this->blockingClients[] = $client;
+
+            return;
+        }
+
+        $this->closeBlockingClient($client);
+    }
+
+    /**
+     * Whether the command would run on a blocking connection of its own;
+     * the pipeline runs such a batch in order instead of concurrently.
+     */
+    public function blocksConnection(string $method, array $parameters): bool
+    {
+        return $this->runsOnBlockingClient(strtoupper($method), $this->flattenParameters($parameters));
+    }
+
+    /**
+     * Blocking commands leave the shared connection when a connector can
+     * build another one. Inside this fiber's MULTI Redis only queues them
+     * (and never blocks), so they stay with the transaction.
+     */
+    protected function runsOnBlockingClient(string $command, array $args): bool
+    {
+        if ($this->connector === null || $this->ownsTransaction()) {
+            return false;
+        }
+
+        if (in_array($command, static::BLOCKING_COMMANDS, true)) {
+            return true;
+        }
+
+        if ($command !== 'XREAD' && $command !== 'XREADGROUP') {
+            return false;
+        }
+
+        // Options precede STREAMS; XREADGROUP opens with GROUP group consumer.
+        for ($i = $command === 'XREADGROUP' ? 3 : 0, $count = count($args); $i < $count; $i++) {
+            $token = strtoupper((string) $args[$i]);
+
+            if ($token === 'STREAMS') {
+                return false;
+            }
+
+            if ($token === 'BLOCK') {
+                return true;
+            }
+
+            if ($token === 'COUNT') {
+                $i++;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Run a blocking command on an idle blocking connection, or a new one.
+     * It goes back to the idle list after a reply or a Redis error reply;
+     * after any other failure (lost connection, read timeout) it is dropped,
+     * as its state is unknown. One taken out before a later SELECT or
+     * disconnect(), or beyond the idle limit, is closed on return.
+     */
+    protected function executeBlocking(string $command, array $args): mixed
+    {
+        $database = $this->selectedDatabase;
+        $generation = $this->blockingGeneration;
+        $client = array_pop($this->blockingClients);
+
+        if ($client === null) {
+            $client = call_user_func($this->connector);
+
+            if ($database !== null) {
+                $client->execute('SELECT', $database);
+            }
+        }
+
+        $id = spl_object_id($client);
+        $this->checkedOutBlockingClients[$id] = $client;
+
+        try {
+            $result = $client->execute($command, ...$args);
+        } catch (QueryException $e) {
+            unset($this->checkedOutBlockingClients[$id]);
+            $this->releaseBlockingClient($client, $generation);
+
+            throw $e;
+        } catch (Throwable $e) {
+            unset($this->checkedOutBlockingClients[$id]);
+
+            throw $e;
+        }
+
+        unset($this->checkedOutBlockingClients[$id]);
+        $this->releaseBlockingClient($client, $generation);
+
+        return $result;
     }
 
     /**
@@ -344,6 +584,97 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         $result = $this->command('brpop', $arguments);
 
         return empty($result) ? null : $result;
+    }
+
+    /**
+     * Read from one or more streams, with the phpredis signature: $streams
+     * is [key => id]; a negative (or null) count or block is left out, and
+     * BLOCK 0 blocks forever. With BLOCK the read runs on a blocking
+     * connection of its own.
+     */
+    public function xread(array $streams, ?int $count = -1, ?int $block = -1)
+    {
+        $args = [];
+
+        if ($count !== null && $count > -1) {
+            array_push($args, 'COUNT', $count);
+        }
+
+        if ($block !== null && $block > -1) {
+            array_push($args, 'BLOCK', $block);
+        }
+
+        return $this->streamReply($this->command('xread', $this->streamArguments($args, $streams)));
+    }
+
+    /**
+     * Read from one or more streams as a consumer group member, with the
+     * phpredis signature. Like phpredis, count and block are only sent when
+     * passed (the declared defaults of 1 are never sent), null leaves them
+     * out, and a negative value warns and answers false.
+     */
+    public function xreadgroup(string $group, string $consumer, array $streams, ?int $count = 1, ?int $block = 1)
+    {
+        $passed = func_num_args();
+        $count = $passed > 3 ? $count : null;
+        $block = $passed > 4 ? $block : null;
+
+        if (($count ?? 0) < 0 || ($block ?? 0) < 0) {
+            trigger_error('Negative values for COUNT or BLOCK are illegal.', E_USER_WARNING);
+
+            return false;
+        }
+
+        $args = ['GROUP', $group, $consumer];
+
+        if ($count !== null) {
+            array_push($args, 'COUNT', $count);
+        }
+
+        if ($block !== null) {
+            array_push($args, 'BLOCK', $block);
+        }
+
+        return $this->streamReply($this->command('xreadgroup', $this->streamArguments($args, $streams)));
+    }
+
+    /**
+     * Append STREAMS key... id... to the options.
+     */
+    protected function streamArguments(array $options, array $streams): array
+    {
+        return [...$options, 'STREAMS', ...array_map('strval', array_keys($streams)), ...array_values($streams)];
+    }
+
+    /**
+     * Shape a stream read reply as phpredis does: [stream => [id => [field
+     * => value]]], and an empty array for a timeout or nothing to read.
+     * Stream names stay as the server sent them (prefixed, as in phpredis).
+     */
+    protected function streamReply(mixed $reply): mixed
+    {
+        if ($reply === null) {
+            return [];
+        }
+
+        if (! is_array($reply)) {
+            return $reply;
+        }
+
+        $streams = [];
+
+        // RESP2: [[name, [[id, [field, value, ...]], ...]], ...].
+        foreach ($reply as [$name, $entries]) {
+            $messages = [];
+
+            foreach ((array) $entries as [$id, $fields]) {
+                $messages[$id] = $this->pairsToAssociative((array) $fields);
+            }
+
+            $streams[$name] = $messages;
+        }
+
+        return $streams;
     }
 
     /**
@@ -734,6 +1065,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             return static::toPhpRedisReply($this->client->execute($command));
         }
 
+        $pendingSelects = $this->pendingSelects;
+
         try {
             $reply = $this->client->execute($command);
         } catch (QueryException $e) {
@@ -746,6 +1079,19 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             throw $e;
         } finally {
             $this->releaseTransaction();
+        }
+
+        // A SELECT queued in this MULTI took effect only if EXEC ran it and
+        // its own reply entry is not an error (SELECT 9999 is only checked
+        // at EXEC); the last one that succeeded wins.
+        if ($command === 'EXEC' && is_array($reply)) {
+            foreach (array_reverse($pendingSelects, true) as $position => $database) {
+                if (array_key_exists($position, $reply) && ! $reply[$position] instanceof QueryException) {
+                    $this->applySelectedDatabase($database);
+
+                    break;
+                }
+            }
         }
 
         // A WATCH abort answers EXEC with nil, and phpredis has no null in
@@ -780,6 +1126,8 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $this->transactionLock = null;
         $this->transactionOwner = null;
+        $this->pendingSelects = [];
+        $this->queuedCommands = 0;
 
         $lock?->release();
     }
@@ -883,10 +1231,13 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $this->waitForTransactionGate();
 
-        return static::toPhpRedisReply(
-            $this->client->execute('eval', $script, $count, ...$keys, ...$this->flattenParameters($args)),
-            true
-        );
+        $result = $this->client->execute('eval', $script, $count, ...$keys, ...$this->flattenParameters($args));
+
+        if ($this->ownsTransaction()) {
+            $this->queuedCommands++;
+        }
+
+        return static::toPhpRedisReply($result, true);
     }
 
     /**
@@ -1074,7 +1425,23 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
 
         $this->waitForTransactionGate();
 
-        return $this->queuedReply(static::toPhpRedisReply($this->client->execute($command, ...$parameters)));
+        $result = $this->client->execute($command, ...$parameters);
+        $select = strcasecmp((string) $command, 'SELECT') === 0;
+
+        // Keeps the EXEC reply positions of queued SELECTs aligned; a raw
+        // SELECT is tracked like select(). Outside this fiber's MULTI only a
+        // real OK counts (a raw MULTI answers QUEUED).
+        if ($this->ownsTransaction()) {
+            $position = $this->queuedCommands++;
+
+            if ($select) {
+                $this->pendingSelects[$position] = (int) ($parameters[0] ?? 0);
+            }
+        } elseif ($select && $result === 'OK') {
+            $this->applySelectedDatabase((int) ($parameters[0] ?? 0));
+        }
+
+        return $this->queuedReply(static::toPhpRedisReply($result));
     }
 
     /**
@@ -1103,6 +1470,21 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
         } catch (Throwable) {
             // Connection may already be closed
         }
+
+        // A blocking call still running would never see QUIT answered (BLPOP
+        // 0 blocks forever): drop its socket, so it fails as on a lost
+        // connection. Anything else returning later is closed by generation.
+        $this->blockingGeneration++;
+        $this->disconnects++;
+
+        $checkedOut = $this->checkedOutBlockingClients;
+        $this->checkedOutBlockingClients = [];
+
+        foreach ($checkedOut as $client) {
+            $client->closeConnection();
+        }
+
+        $this->closeIdleBlockingClients();
     }
 
     /**
