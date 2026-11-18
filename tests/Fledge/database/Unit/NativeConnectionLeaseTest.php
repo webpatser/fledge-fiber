@@ -1,5 +1,7 @@
 <?php
 
+use Fledge\Async\DeferredFuture;
+use Fledge\Async\TimeoutCancellation;
 use Fledge\Fiber\Database\FiberDatabaseServiceProvider;
 use Fledge\Fiber\Database\Native\FiberAwareTransactionsManager;
 use Fledge\Fiber\Database\Native\GuardedPdo;
@@ -1419,28 +1421,360 @@ it('keeps the main context pin across statements until disconnect() releases it'
         ->and($pool->getLeasedCount())->toBe(0);
 });
 
-it('releases a fiber\'s pin when another context replaces the pool', function () {
+/**
+ * A pool of fake PDOs numbered from $firstId; $pdos collects them by id.
+ *
+ * @return array{0: NativePdoPool, 1: ArrayObject}
+ */
+function nativeLeasePool(int $firstId, int $size = 2, ?Closure $onQuery = null): array
+{
+    $pdos = new ArrayObject;
+
+    $pool = new NativePdoPool(function () use ($pdos, $firstId, $onQuery) {
+        $pdo = nativeLeaseFakePdo($firstId + count($pdos), [], $onQuery);
+        $pdos[$pdo->id] = $pdo;
+
+        return $pdo;
+    }, $size, 60.0);
+
+    return [$pool, $pdos];
+}
+
+it('fails a dirty pin once when another context replaces the pool, then runs on a fresh session', function (bool $inFiber, string $how) {
     [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
-    $replacement = null;
+    [$replacement, $fresh] = nativeLeasePool(100, 1);
+    $reconnects = 0;
 
-    $a = async(function () use ($connection) {
-        $connection->unprepared('a dirty');
+    // What DatabaseManager::reconnect() installs after a disconnect().
+    $connection->setReconnector(function ($c) use ($replacement, &$reconnects) {
+        $reconnects++;
+        $c->setPdo($replacement);
+    });
+
+    $replace = $how === 'setPdo'
+        ? fn () => $connection->setPdo($replacement)
+        : fn () => $connection->disconnect();
+
+    $holder = function (Closure $meanwhile) use ($connection) {
+        $connection->unprepared('holder dirty');
+        $meanwhile();
+
+        try {
+            $connection->unprepared('holder after');
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        $connection->unprepared('holder next');
+
+        return $error;
+    };
+
+    if ($inFiber) {
+        $fiber = new Fiber(fn () => $holder(fn () => Fiber::suspend()));
+        $fiber->start();
+        $replace();
+        $fiber->resume();
+        $error = $fiber->getReturn();
+    } else {
+        $error = $holder(fn () => async($replace)->await(new TimeoutCancellation(5)));
+    }
+
+    expect($error)->toBeInstanceOf(LostConnectionException::class)
+        ->and($error->getMessage())->toContain('Lost connection')
+        // The statement after the replacement never ran, on either session.
+        ->and($pdos[1]->log)->toBe(['holder dirty'])
+        ->and($fresh)->toHaveCount(1)
+        ->and($fresh[100]->log)->toBe(['holder next'])
+        ->and($reconnects)->toBe($how === 'setPdo' ? 0 : 1)
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(0)
+        ->and($replacement->getLeasedCount())->toBe(0)
+        ->and($replacement->getIdleCount())->toBe(1);
+})->with([
+    'held by a fiber' => true,
+    'held by the main context' => false,
+])->with(['setPdo', 'disconnect']);
+
+it('fails a pin once when another fiber disconnects during the pinned fiber\'s in-flight statement, and keeps a clean lease silent', function (?string $before, string $inFlight, bool $fails) {
+    $started = new DeferredFuture;
+    $markDirty = nativeLeaseMarkDirty();
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], function (string $sql, PDO $pdo) use ($markDirty, $started) {
+        $markDirty($sql, $pdo);
+
+        if (str_starts_with($sql, 'sleep ') && ! $started->isComplete()) {
+            $started->complete();
+        }
+    });
+    [$replacement, $fresh] = nativeLeasePool(100, 1);
+    $events = [];
+
+    // What DatabaseManager::reconnect() installs after a disconnect().
+    $connection->setReconnector(fn ($c) => $c->setPdo($replacement));
+
+    $a = async(function () use ($connection, $before, $inFlight, &$events) {
+        if ($before !== null) {
+            $connection->unprepared($before);
+        }
+
+        $connection->unprepared($inFlight);
+        $events[] = 'in-flight statement returned';
+
+        try {
+            $connection->unprepared('a after');
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        $connection->unprepared('a next');
+
+        return $error;
+    });
+
+    // Triggered by the in-flight statement reaching the connection, not by timing.
+    $b = async(function () use ($connection, $started, &$events) {
+        $started->getFuture()->await(new TimeoutCancellation(2));
+        $connection->disconnect();
+        $events[] = 'disconnected';
+    });
+
+    [$error] = await([$a, $b], new TimeoutCancellation(5));
+
+    $ranOnOld = $before !== null ? [$before, $inFlight] : [$inFlight];
+
+    expect($events)->toBe(['disconnected', 'in-flight statement returned'])
+        ->and($pdos)->toHaveCount(1)
+        // The closed pool's connection was dropped exactly once: nothing leased, nothing open.
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(0)
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($replacement->getLeasedCount())->toBe(0)
+        ->and($replacement->getIdleCount())->toBe(1);
+
+    if ($fails) {
+        expect($error)->toBeInstanceOf(LostConnectionException::class)
+            // The statement after the disconnect never ran, on either session.
+            ->and($pdos[1]->log)->toBe($ranOnOld)
+            ->and($fresh[100]->log)->toBe(['a next']);
+    } else {
+        expect($error)->toBeNull()
+            ->and($pdos[1]->log)->toBe($ranOnOld)
+            ->and($fresh[100]->log)->toBe(['a after', 'a next']);
+    }
+})->with([
+    'pinned before the statement' => ['a dirty', 'sleep 0.05', true],
+    'dirtied by the in-flight statement' => [null, 'sleep 0.05 dirty', true],
+    'clean lease' => ['a clean', 'sleep 0.05', false],
+]);
+
+it('moves a clean lease to the replacement pool without an error when another context replaces the pool', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+    [$replacement, $fresh] = nativeLeasePool(100, 1);
+
+    $fiber = new Fiber(function () use ($connection) {
+        // Taken outside any scope, so the clean lease is kept past this call.
+        $held = $connection->getPdo()->id;
+        Fiber::suspend();
+        $connection->unprepared('after replace');
+
+        return $held;
+    });
+
+    $fiber->start();
+    $connection->setPdo($replacement);
+    $fiber->resume();
+
+    expect($fiber->getReturn())->toBe(1)
+        ->and($pdos[1]->log)->toBe([])
+        ->and($fresh[100]->log)->toBe(['after replace'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($replacement->getLeasedCount())->toBe(0)
+        ->and($replacement->getIdleCount())->toBe(1);
+});
+
+it('pins dirty write and read leases each on their own, and a replaced write pool fails the write pin only', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+    [$readPool, $readPdos] = nativeLeasePool(10, 2, nativeLeaseMarkDirty());
+    [$replacement, $fresh] = nativeLeasePool(100, 1);
+    $connection->setReadPdo($readPool);
+
+    $readPinnedAfter = null;
+
+    $a = async(function () use ($connection, $readPool, &$readPinnedAfter) {
+        $connection->unprepared('write dirty');
+        $connection->select('read dirty');
+        $connection->unprepared('write own');
+        $connection->select('read own');
+
+        $pinned = [$connection->getRawPdo()->getLeasedCount(), $readPool->getLeasedCount()];
+
+        // The main context replaces the write pool meanwhile.
         delay(0.02);
-        $connection->unprepared('a after');
 
-        return $connection->getPdo();
+        try {
+            $connection->select('read after replace');
+            $error = null;
+        } catch (LostConnectionException $e) {
+            $error = $e;
+        }
+
+        $connection->select('read again');
+        $connection->unprepared('write next');
+        $readPinnedAfter = $readPool->getLeasedCount();
+
+        return [$pinned, $error];
     });
 
     delay(0.01);
-    $connection->setPdo($replacement = new NativePdoPool(fn () => nativeLeaseFakePdo(99), 1, 60.0));
+    $connection->setPdo($replacement);
 
-    $pdoOfA = $a->await();
+    // The pins end with the fiber's callback.
+    [$pinned, $error] = $a->await(new TimeoutCancellation(5));
 
-    expect($pdoOfA->id)->toBe(99)
-        ->and($pdos[1]->log)->toBe(['a dirty'])
+    expect($pinned)->toBe([1, 1])
+        ->and($error)->toBeInstanceOf(LostConnectionException::class)
+        ->and($pdos[1]->log)->toBe(['write dirty', 'write own'])
+        // The read pin survives: its pool was not replaced.
+        ->and($readPdos)->toHaveCount(1)
+        ->and($readPdos[10]->log)->toBe(['read dirty', 'read own', 'read again'])
+        ->and($fresh[100]->log)->toBe(['write next'])
+        ->and($readPinnedAfter)->toBe(1)
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($readPool->getLeasedCount())->toBe(0)
+        ->and($readPool)->toHaveCount(0)
+        ->and($replacement->getLeasedCount())->toBe(0);
+});
+
+it('discards a dirty pin when its fiber ends by an exception, so the next lessee gets a fresh connection', function (string $failure) {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], function (string $sql, PDO $pdo) {
+        nativeLeaseMarkDirty()($sql, $pdo);
+
+        if ($sql === 'bad') {
+            throw new PDOException('SQLSTATE[42000]: Syntax error or access violation: 1064 bad');
+        }
+    });
+
+    $a = async(function () use ($connection, $failure) {
+        $connection->unprepared('a dirty');
+        $connection->unprepared('a own');
+
+        $failure === 'statement'
+            ? $connection->unprepared('bad')
+            : throw new RuntimeException('job failed');
+    });
+
+    expect(fn () => $a->await(new TimeoutCancellation(5)))->toThrow($failure === 'statement' ? QueryException::class : RuntimeException::class);
+
+    async(fn () => $connection->unprepared('next'))->await(new TimeoutCancellation(5));
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->toBe(['a dirty', 'a own'])
+        ->and($pdos[2]->log)->toBe(['next'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getIdleCount())->toBe(1)
+        ->and($pool->getLeasedCount())->toBe(0);
+})->with(['statement', 'job']);
+
+it('carries the main context session from job to job until DB::disconnect() clears it', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+    [$replacement, $fresh] = nativeLeasePool(100, 2, nativeLeaseMarkDirty());
+    $connection->setReconnector(fn ($c) => $c->setPdo($replacement));
+
+    // A queue worker's loop in the main context: each job runs its statements.
+    $jobs = [['job 1 dirty'], ['job 2'], ['job 3']];
+
+    foreach ($jobs as $statements) {
+        foreach ($statements as $sql) {
+            $connection->unprepared($sql);
+        }
+    }
+
+    $carried = [$pool->getLeasedCount(), count($pdos)];
+
+    $connection->disconnect();
+
+    $connection->unprepared('job 4');
+    $connection->unprepared('job 5');
+
+    expect($carried)->toBe([1, 1])
+        ->and($pdos[1]->log)->toBe(['job 1 dirty', 'job 2', 'job 3'])
         ->and($pool->isLeased($pdos[1]))->toBeFalse()
         ->and($pool)->toHaveCount(0)
-        ->and($replacement->getLeasedCount())->toBe(0);
+        ->and($fresh)->toHaveCount(1)
+        ->and($fresh[100]->log)->toBe(['job 4', 'job 5'])
+        ->and($replacement->getLeasedCount())->toBe(0)
+        ->and($replacement->getIdleCount())->toBe(1);
+});
+
+it('keeps the read pin when a lost write connection is reconnected', function () {
+    $lost = false;
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], function (string $sql, PDO $pdo) use (&$lost) {
+        nativeLeaseMarkDirty()($sql, $pdo);
+
+        if ($sql === 'boom' && ! $lost) {
+            $lost = true;
+
+            throw new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+        }
+    });
+    [$readPool, $readPdos] = nativeLeasePool(10, 2, nativeLeaseMarkDirty());
+    $connection->setReadPdo($readPool);
+
+    $result = async(function () use ($connection) {
+        $connection->select('read dirty');
+        $connection->unprepared('write dirty');
+        $result = $connection->unprepared('boom');
+        $connection->select('read after');
+
+        return $result;
+    })->await(new TimeoutCancellation(5));
+
+    expect($result)->toBeTrue()
+        ->and($pdos[1]->log)->toBe(['write dirty'])
+        ->and($pdos[2]->log)->toBe(['boom'])
+        // reconnect() dropped only the lost write lease: the read session carried on.
+        ->and($readPdos)->toHaveCount(1)
+        ->and($readPdos[10]->log)->toBe(['read dirty', 'read after'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($readPool)->toHaveCount(0)
+        ->and($readPool->getLeasedCount())->toBe(0);
+});
+
+it('drops a pinned connection that loses its connection and retries the statement on a fresh one', function () {
+    $lost = false;
+
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], function (string $sql, PDO $pdo) use (&$lost) {
+        nativeLeaseMarkDirty()($sql, $pdo);
+
+        if ($sql === 'boom' && ! $lost) {
+            $lost = true;
+
+            throw new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+        }
+    });
+
+    $result = async(function () use ($connection) {
+        $connection->unprepared('a dirty');
+        $result = $connection->unprepared('boom');
+        $connection->unprepared('a after');
+
+        return $result;
+    })->await(new TimeoutCancellation(5));
+
+    expect($result)->toBeTrue()
+        ->and($pdos[1]->log)->toBe(['a dirty'])
+        ->and($pdos[2]->log)->toBe(['boom', 'a after'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getIdleCount())->toBe(1)
+        ->and($pool->getLeasedCount())->toBe(0);
 });
 
 it('hands a fiber waiting on a pool of one a fresh connection when a dirty lessee lets go', function () {
@@ -1459,7 +1793,7 @@ it('hands a fiber waiting on a pool of one a fresh connection when a dirty lesse
     $waitingWhileDirtyHeld = $pool->getWaitingCount();
     $countWhileDirtyHeld = count($pool);
 
-    [, $pdoOfB] = await([$a, $b]);
+    [, $pdoOfB] = await([$a, $b], new TimeoutCancellation(5));
 
     expect($waitingWhileDirtyHeld)->toBe(1)
         ->and($countWhileDirtyHeld)->toBe(1)

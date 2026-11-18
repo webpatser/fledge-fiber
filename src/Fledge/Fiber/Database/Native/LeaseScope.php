@@ -70,12 +70,20 @@ final class LeaseScope
 
     /**
      * Whether a lease stays with this scope when its outermost scope ends:
-     * its session may have changed, it still works, and its pool is open.
-     * Its connection then counts against pool_size until the pin ends.
+     * its session may have changed and it still works. Its connection then
+     * counts against pool_size until the pin ends.
+     *
+     * A closed pool does not end the pin: another context may disconnect
+     * while this fiber's statement is in flight, and dropping the lease here
+     * would let the fiber's next statement continue silently on a fresh
+     * session. Kept, the pin makes that statement throw
+     * LostConnectionException once, and the lease is discarded there (or by
+     * this scope's destructor), so its connection is closed exactly once.
+     * A clean lease on a closed pool is handed back as before.
      */
     public function shouldPin(Lease $lease): bool
     {
-        return self::isDirty($lease) && ! $lease->isBroken() && ! $lease->pool->isClosed();
+        return self::isDirty($lease) && ! $lease->isBroken();
     }
 
     private static function isDirty(Lease $lease): bool

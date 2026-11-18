@@ -54,7 +54,10 @@ use WeakMap;
  * later runs on it too. The pin ends when Revolt clears the fiber's
  * FiberLocal after the callback (the request or job), or on disconnect(),
  * a reconnect, or a lost connection; in the main context it lasts until
- * disconnect(). The connection is then discarded, never returned, so the
+ * disconnect(). When another fiber or context replaces the pool, the pinned
+ * fiber's next statement throws LostConnectionException once (its session is
+ * gone) instead of continuing silently on a fresh session; a clean lease
+ * simply moves to the new pool. The connection is then discarded, never returned, so the
  * next lessee gets a fresh one (pdo_mysql cannot send COM_RESET_CONNECTION,
  * see LeaseScope::giveBack()). A pinned connection counts against pool_size
  * until the pin ends. The judgement is made
@@ -227,8 +230,11 @@ trait UsesNativePdoPool
      * the caller). Other fibers keep theirs: their open transactions die with
      * the old pool, so their write leases are marked broken and their next
      * call throws LostConnectionException instead of silently skipping the
-     * COMMIT. Leases other fibers hold outside a transaction are released to
-     * the closed pool (which drops them) when their scopes end.
+     * COMMIT. Clean leases other fibers hold outside a transaction are
+     * released to the closed pool (which drops them) when their scopes end; a
+     * dirty one stays pinned, even when its statement was in flight during
+     * the close, so the owner's next statement throws LostConnectionException
+     * once (see failReplacedSessionPins()).
      *
      * @param  \PDO|Closure|NativePdoPool|null  $pdo
      * @return $this
@@ -305,7 +311,46 @@ trait UsesNativePdoPool
             throw $this->closedTransactionException();
         }
 
+        $this->failReplacedSessionPins();
+
         parent::reconnectIfMissingConnection();
+    }
+
+    /**
+     * A LostConnectionException raised here (a broken transaction connection,
+     * a pinned session whose pool was replaced) means the statement must not
+     * continue on a fresh session, so the stock retry is skipped for it.
+     *
+     * @param  string  $query
+     * @param  array  $bindings
+     * @return mixed
+     *
+     * @throws QueryException
+     */
+    protected function tryAgainIfCausedByLostConnection(QueryException $e, $query, $bindings, Closure $callback)
+    {
+        if ($e->getPrevious() instanceof LostConnectionException) {
+            throw $e;
+        }
+
+        return parent::tryAgainIfCausedByLostConnection($e, $query, $bindings, $callback);
+    }
+
+    /**
+     * Same as tryAgainIfCausedByLostConnection(): never retry BEGIN on a fresh
+     * session after a LostConnectionException raised here.
+     *
+     * @return void
+     *
+     * @throws Throwable
+     */
+    protected function handleBeginTransactionException(Throwable $e)
+    {
+        if ($e instanceof LostConnectionException) {
+            throw $e;
+        }
+
+        parent::handleBeginTransactionException($e);
     }
 
     /**
@@ -710,6 +755,71 @@ trait UsesNativePdoPool
         $this->mainLeaseScope = null;
     }
 
+    /**
+     * Fail the calling fiber's pinned (dirty) leases whose pool another fiber
+     * or context replaced (disconnect, reconnect, setPdo). Runs before the
+     * statement and before any reconnect: a disconnect leaves the raw slot
+     * empty, and the reconnect that follows would otherwise hand the fiber a
+     * fresh session without a word. All such leases are discarded and one
+     * LostConnectionException is thrown; the fiber's next statement runs on a
+     * fresh session. Clean leases and an open transaction's write lease are
+     * left to leasedPdo().
+     *
+     * @throws LostConnectionException
+     */
+    private function failReplacedSessionPins(): void
+    {
+        $scope = $this->leaseScope(false);
+
+        if ($scope === null || $scope->leases === []) {
+            return;
+        }
+
+        $failed = false;
+
+        foreach ($scope->leases as $slot => $lease) {
+            if ($slot === 'write' && $scope->transactions > 0) {
+                continue;
+            }
+
+            $current = match ($slot) {
+                'write' => $this->pdo,
+                'read' => $this->readPdo,
+                default => $this->directPdo,
+            };
+
+            if ($lease->pool === $current || ! self::leaseSessionChanged($lease)) {
+                continue;
+            }
+
+            unset($scope->leases[$slot]);
+            $lease->discard();
+            $failed = true;
+        }
+
+        if ($failed) {
+            throw $this->replacedSessionException();
+        }
+    }
+
+    /**
+     * Whether a lease's session may differ from what connect() left (see
+     * LeaseScope::giveBack()); a plain PDO cannot tell, so it counts as changed.
+     */
+    private static function leaseSessionChanged(Lease $lease): bool
+    {
+        return ! $lease->pdo instanceof GuardedPdo || $lease->pdo->leaseGuard()->sessionChanged();
+    }
+
+    private function replacedSessionException(): LostConnectionException
+    {
+        return new LostConnectionException(
+            'Lost connection: another context disconnected or reconnected this connection while this fiber '
+            .'held a session it had changed (variables, temporary tables, locks, the current database), so that '
+            .'session is gone. The next statement runs on a fresh session.'
+        );
+    }
+
     private function closedTransactionException(): LostConnectionException
     {
         return new LostConnectionException(
@@ -753,12 +863,21 @@ trait UsesNativePdoPool
         // disconnected or reconnected) is handed back, as a stock disconnect
         // drops the one connection for every caller. A transaction keeps its
         // lease: setPdo() marks it broken, so the case above fails it loudly.
+        // A pinned (dirty) lease fails loudly too: its session state is gone,
+        // and continuing on a fresh session would silently lose it.
         if ($lease !== null) {
             if ($lease->pool === $pool || ($slot === 'write' && $scope->transactions > 0)) {
                 return $lease->pdo;
             }
 
             unset($scope->leases[$slot]);
+
+            if (self::leaseSessionChanged($lease)) {
+                $lease->discard();
+
+                throw $this->replacedSessionException();
+            }
+
             $scope->giveBack($lease);
         }
 

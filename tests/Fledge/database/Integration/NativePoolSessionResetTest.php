@@ -1,11 +1,14 @@
 <?php
 
+use Fledge\Async\DeferredFuture;
+use Fledge\Async\TimeoutCancellation;
 use Fledge\Fiber\Database\Native\LeaseOwnershipException;
 use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
 use Fledge\Fiber\Database\Native\NativeMariaDbConnector;
 use Fledge\Fiber\Database\Native\NativeMySqlConnection;
 use Fledge\Fiber\Database\Native\NativeMySqlConnector;
 use Fledge\Fiber\Database\Native\NativePdoPool;
+use Illuminate\Database\LostConnectionException;
 use Illuminate\Database\QueryException;
 use Illuminate\Events\Dispatcher;
 
@@ -64,15 +67,18 @@ function nativeSessionResetConnection(string $flavor, stdClass $opened, int $siz
 
     $stock = (fn () => $this->stockConnector())->call($connector);
 
-    $pool = new NativePdoPool(function () use ($stock, $config, $opened) {
+    $makePool = fn () => new NativePdoPool(function () use ($stock, $config, $opened) {
         $opened->count++;
 
         return $stock->connect($config);
     }, $size, 60.0);
 
-    return $flavor === 'mysql'
-        ? new NativeMySqlConnection($pool, $config['database'], '', $config)
-        : new NativeMariaDbConnection($pool, $config['database'], '', $config);
+    $connection = $flavor === 'mysql'
+        ? new NativeMySqlConnection($makePool(), $config['database'], '', $config)
+        : new NativeMariaDbConnection($makePool(), $config['database'], '', $config);
+
+    // What DatabaseManager::reconnect() installs: a fresh pool after a disconnect().
+    return $connection->setReconnector(fn ($c) => $c->setPdo($makePool()));
 }
 
 /**
@@ -577,7 +583,8 @@ it('runs many dirty statements of one fiber on one connection instead of reconne
 
         for ($i = 0; $i < 20; $i++) {
             $hits += $db->table('_native_session_reset')->whereFullText('label', 'surf')->count();
-            $ids[] = (int) $db->scalar('SELECT CONNECTION_ID()');
+            // Reading a user variable counts as dirty (full-text search alone is clean).
+            $ids[] = (int) $db->scalar('SELECT CONNECTION_ID() + 0 * COALESCE(@fledge_many, 0)');
         }
 
         return [array_values(array_unique($ids)), $hits, $db->getPdo()->leaseGuard()->sessionChanged()];
@@ -587,7 +594,7 @@ it('runs many dirty statements of one fiber on one connection instead of reconne
 
     async(fn () => $db->scalar('SELECT 1'))->await();
 
-    // Full-text queries count as dirty, so the test is not vacuous.
+    // The user variable reads count as dirty, so the test is not vacuous.
     expect($dirty)->toBeTrue()
         ->and($hits)->toBe(20)
         ->and($ids)->toHaveCount(1)
@@ -653,3 +660,171 @@ it('keeps the main context session across statements until disconnect() releases
         ->and($pool->getLeasedCount())->toBe(0)
         ->and($pool)->toHaveCount(0);
 })->with(['mariadb', 'mysql']);
+
+it('carries the main context session from job to job, and DB::disconnect() gives the next job a fresh one', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+
+    // A queue worker's loop in the main context.
+    $jobs = [
+        fn () => $db->statement('SET @fledge_job = 1'),
+        fn () => $db->scalar('SELECT @fledge_job'),
+        fn () => $db->scalar('SELECT @fledge_job'),
+    ];
+
+    $seen = array_map(fn ($job) => (int) $job(), $jobs);
+    $idBefore = (int) $db->scalar('SELECT CONNECTION_ID()');
+    $pinned = $db->getRawPdo()->getLeasedCount();
+
+    $db->disconnect();
+
+    $after = [
+        'id' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+        'x' => $db->scalar('SELECT @fledge_job'),
+    ];
+
+    expect($seen)->toBe([1, 1, 1])
+        ->and($pinned)->toBe(1)
+        ->and($after['x'])->toBeNull()
+        ->and($after['id'])->not->toBe($idBefore)
+        ->and($opened->count)->toBe(2);
+})->with(['mariadb', 'mysql']);
+
+it('gives the next lessee a fresh session when a pinned fiber ends by an exception', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $lock = "fledge_session_throw_{$flavor}";
+    $first = [];
+
+    $a = async(function () use ($db, $lock, &$first) {
+        $db->statement('SET @fledge_throw = 9');
+        $first = [
+            'id' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+            'locked' => (int) $db->scalar("SELECT GET_LOCK('{$lock}', 0)"),
+        ];
+
+        throw new RuntimeException('job failed');
+    });
+
+    expect(fn () => $a->await(new TimeoutCancellation(10)))->toThrow(RuntimeException::class, 'job failed');
+
+    $next = async(fn () => [
+        'id' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+        'x' => $db->scalar('SELECT @fledge_throw'),
+        // Waits up to 2 s for the server to drop the failed fiber's closed session and its lock.
+        'locked' => (int) $db->scalar("SELECT GET_LOCK('{$lock}', 2)"),
+        'released' => (int) $db->scalar("SELECT RELEASE_LOCK('{$lock}')"),
+    ])->await(new TimeoutCancellation(10));
+
+    expect($first['locked'])->toBe(1)
+        ->and($next['id'])->not->toBe($first['id'])
+        ->and($next['x'])->toBeNull()
+        ->and($next['locked'])->toBe(1)
+        ->and($next['released'])->toBe(1)
+        ->and($opened->count)->toBe(2)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('fails a pinned fiber once with LostConnectionException when another context disconnects, never continuing on a fresh session silently', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $pinned = new DeferredFuture;
+    $disconnected = new DeferredFuture;
+
+    $a = async(function () use ($db, $pinned, $disconnected) {
+        $db->statement('SET @fledge_replaced = 3');
+        $id = (int) $db->scalar('SELECT CONNECTION_ID()');
+
+        // The main context disconnects meanwhile.
+        $pinned->complete();
+        $disconnected->getFuture()->await(new TimeoutCancellation(5));
+
+        try {
+            $db->scalar('SELECT @fledge_replaced');
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        return [
+            'id' => $id,
+            'error' => $error,
+            'next' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+            'x' => $db->scalar('SELECT @fledge_replaced'),
+        ];
+    });
+
+    $pinned->getFuture()->await(new TimeoutCancellation(5));
+    $db->disconnect();
+    $disconnected->complete();
+
+    $result = $a->await(new TimeoutCancellation(10));
+
+    expect($result['error'])->toBeInstanceOf(LostConnectionException::class)
+        ->and($result['next'])->not->toBe($result['id'])
+        ->and($result['x'])->toBeNull()
+        ->and($opened->count)->toBe(2)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('fails a pinned fiber once when another context disconnects while its statement is in flight', function (string $flavor, bool $lockInFlight) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $lock = "fledge_session_inflight_{$flavor}";
+    $sending = new DeferredFuture;
+    $events = [];
+
+    $a = async(function () use ($db, $lock, $lockInFlight, $sending, &$events) {
+        $id = (int) $db->scalar('SELECT CONNECTION_ID()');
+
+        if (! $lockInFlight) {
+            $db->statement('SET @fledge_inflight = 5');
+        }
+
+        // Nothing suspends this fiber before the statement below waits on the
+        // server (its lease is held, no pool wait), so the main context's
+        // disconnect runs while that statement is in flight.
+        $sending->complete();
+        $inFlight = $lockInFlight
+            ? (int) $db->scalar("SELECT GET_LOCK('{$lock}', 0) + SLEEP(0.3)")
+            : (int) $db->scalar('SELECT SLEEP(0.3)');
+        $events[] = 'in-flight statement returned';
+
+        try {
+            $db->scalar('SELECT @fledge_inflight');
+            $error = null;
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        return [
+            'id' => $id,
+            'inFlight' => $inFlight,
+            'error' => $error,
+            'next' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+            'x' => $db->scalar('SELECT @fledge_inflight'),
+            // Waits up to 2 s for the server to drop the closed session and its lock.
+            'locked' => (int) $db->scalar("SELECT GET_LOCK('{$lock}', 2)"),
+            'released' => (int) $db->scalar("SELECT RELEASE_LOCK('{$lock}')"),
+        ];
+    });
+
+    $sending->getFuture()->await(new TimeoutCancellation(5));
+    $db->disconnect();
+    $events[] = 'disconnected';
+
+    $result = $a->await(new TimeoutCancellation(10));
+
+    expect($events)->toBe(['disconnected', 'in-flight statement returned'])
+        ->and($result['inFlight'])->toBe($lockInFlight ? 1 : 0)
+        ->and($result['error'])->toBeInstanceOf(LostConnectionException::class)
+        ->and($result['next'])->not->toBe($result['id'])
+        ->and($result['x'])->toBeNull()
+        ->and($result['locked'])->toBe(1)
+        ->and($result['released'])->toBe(1)
+        ->and($opened->count)->toBe(2)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql'])->with([
+    'session variable set before' => false,
+    'named lock taken in flight' => true,
+]);
