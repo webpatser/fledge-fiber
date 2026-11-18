@@ -62,16 +62,26 @@ final class ParallelFilesystemDriver implements FilesystemDriver
 
     private function selectWorker(): Worker
     {
-        $this->pendingWorker?->await(); // Wait for any currently pending request for a worker.
+        // Wait for any currently pending request for a worker. The request counts its worker and clears this field
+        // before its future completes, so a caller never finds a completed request here (await() would return at
+        // once) and only one request is in flight at a time.
+        while ($this->pendingWorker !== null) {
+            $this->pendingWorker->await();
+        }
 
         if ($this->workerStorage->count() < $this->pool->getWorkerLimit()) {
-            $this->pendingWorker = async($this->pool->getWorker(...));
-            $worker = $this->pendingWorker->await();
-            $this->pendingWorker = null;
+            $this->pendingWorker = $pending = async(function (): Worker {
+                try {
+                    $worker = $this->pool->getWorker();
+                    $this->workerStorage[$worker] = 1;
 
-            $this->workerStorage[$worker] = 1;
+                    return $worker;
+                } finally {
+                    $this->pendingWorker = null;
+                }
+            });
 
-            return $worker;
+            return $pending->await();
         }
 
         $max = \PHP_INT_MAX;

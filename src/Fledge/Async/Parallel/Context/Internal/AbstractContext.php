@@ -97,16 +97,24 @@ abstract class AbstractContext implements Context
 
     protected function receiveExitResult(?Cancellation $cancellation = null): ExitResult
     {
-        while ($this->result) {
+        // Fledge: a receive that completed is final, so every join takes its exit result (or its error) instead of
+        // awaiting the same completed future again: await() returns a completed future at once and would spin.
+        // Only a receive cancelled by its own join is dropped; that join clears the field once it resumes, and a
+        // join arriving before that clears it here.
+        while (($result = $this->result) !== null) {
             try {
-                $this->result->await($cancellation);
+                return $result->await($cancellation);
             } catch (CancelledException) {
                 // Ignore cancellation from a prior join request, throw only if this request was cancelled.
                 $cancellation?->throwIfRequested();
+
+                if ($this->result === $result && $result->isComplete()) {
+                    $this->result = null;
+                }
             }
         }
 
-        $this->result = async(function () use ($cancellation): ExitResult {
+        $this->result = $result = async(function () use ($cancellation): ExitResult {
             try {
                 $data = $this->resultChannel->receive($cancellation);
                 $this->resultChannel->close();
@@ -128,9 +136,11 @@ abstract class AbstractContext implements Context
         });
 
         try {
-            return $this->result->await();
+            return $result->await();
         } catch (CancelledException $exception) {
-            $this->result = null;
+            if ($this->result === $result) {
+                $this->result = null;
+            }
             throw $exception;
         }
     }
