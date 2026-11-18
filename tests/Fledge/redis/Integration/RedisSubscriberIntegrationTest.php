@@ -11,6 +11,7 @@ use Fledge\Async\Redis\RedisConfig;
 use Fledge\Async\Redis\RedisSubscriber;
 use Fledge\Async\Redis\RedisSubscription;
 use Fledge\Async\TimeoutCancellation;
+use PHPUnit\Framework\Assert;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -32,6 +33,39 @@ function subscriberItParameters(): array
     ];
 }
 
+/**
+ * Every wait on the server (a subscription becoming active, a client count
+ * settling) is bounded by this many seconds: longer than the 5 s default
+ * connect timeout of the connections it waits for, so a slow connect fails
+ * the wait with a message instead of racing it. Waits return as soon as the
+ * condition holds, so the bound costs nothing in a passing run.
+ */
+const SUBSCRIBER_IT_WAIT = 10.0;
+
+/**
+ * Subscriptions and observers of the running test. afterEach unsubscribes and
+ * disconnects them even when an assertion failed, so no subscriber loop or
+ * connection of one test runs on into the next test of the same process.
+ */
+final class SubscriberItResources
+{
+    /** @var list<RedisSubscription|RedisClient> */
+    public static array $tracked = [];
+}
+
+/**
+ * @template T of RedisSubscription|RedisClient
+ *
+ * @param  T  $resource
+ * @return T
+ */
+function subscriberItTrack(RedisSubscription|RedisClient $resource): RedisSubscription|RedisClient
+{
+    SubscriberItResources::$tracked[] = $resource;
+
+    return $resource;
+}
+
 function subscriberItSubscriber(string $name, ?BackoffStrategy $backoff = null): RedisSubscriber
 {
     return new RedisSubscriber(
@@ -40,9 +74,14 @@ function subscriberItSubscriber(string $name, ?BackoffStrategy $backoff = null):
     );
 }
 
+function subscriberItSubscribe(RedisSubscriber $subscriber, string $channel): RedisSubscription
+{
+    return subscriberItTrack($subscriber->subscribe($channel));
+}
+
 function subscriberItObserver(): RedisClient
 {
-    return createRedisClient(RedisConfig::fromParameters(subscriberItParameters()));
+    return subscriberItTrack(createRedisClient(RedisConfig::fromParameters(subscriberItParameters())));
 }
 
 function subscriberItClients(RedisClient $observer, string $name): int
@@ -54,7 +93,7 @@ function subscriberItClients(RedisClient $observer, string $name): int
  * Polls CLIENT LIST until the count of clients named $name equals $expected
  * (at most $timeout seconds). Returns whether it got there.
  */
-function subscriberItAwaitClients(RedisClient $observer, string $name, int $expected, float $timeout = 2.0): bool
+function subscriberItAwaitClients(RedisClient $observer, string $name, int $expected, float $timeout = SUBSCRIBER_IT_WAIT): bool
 {
     $deadline = microtime(true) + $timeout;
 
@@ -88,7 +127,8 @@ function subscriberItMaxClients(RedisClient $observer, string $name, float $wind
 
 /**
  * Publishes until the subscription receives a message, proving the SUBSCRIBE
- * is active on the server.
+ * is active on the server. One deadline of SUBSCRIBER_IT_WAIT bounds both the
+ * wait for a subscriber on the channel and the wait for the message.
  */
 function subscriberItAwaitActive(RedisClient $observer, RedisSubscription $subscription, string $channel): string
 {
@@ -99,14 +139,35 @@ function subscriberItAwaitActive(RedisClient $observer, RedisSubscription $subsc
 
         return '';
     });
+    // Awaited below; ignore() only keeps a later failure of an abandoned
+    // receive (after a failed wait) from surfacing in another test.
+    $received->ignore();
 
-    $deadline = microtime(true) + 2.0;
+    $started = microtime(true);
+    $deadline = $started + SUBSCRIBER_IT_WAIT;
 
-    while (microtime(true) < $deadline && $observer->publish($channel, 'ping') === 0) {
+    while (($receivers = $observer->publish($channel, 'ping')) === 0 && microtime(true) < $deadline) {
         delay(0.01);
     }
 
-    return $received->await(new TimeoutCancellation(2.0));
+    if ($receivers === 0) {
+        try {
+            $received->await(new TimeoutCancellation(0.01));
+            $state = 'the subscription ended';
+        } catch (CancelledException) {
+            $state = 'the subscription is still pending';
+        } catch (Throwable $e) {
+            $state = 'the subscription failed: '.$e->getMessage();
+        }
+
+        Assert::fail(sprintf('No subscriber on %s after %.2f s; %s.', $channel, microtime(true) - $started, $state));
+    }
+
+    try {
+        return $received->await(new TimeoutCancellation(max(0.5, $deadline - microtime(true))));
+    } catch (CancelledException) {
+        Assert::fail(sprintf('Subscription on %s received nothing %.2f s after its subscribe.', $channel, microtime(true) - $started));
+    }
 }
 
 /**
@@ -151,13 +212,14 @@ function subscriberItRefusingConnector(string $name): SubscriberItRefusingConnec
 }
 
 /**
- * Drops the subscriber connection named $name from the server side.
+ * Drops the subscriber connection named $name from the server side. Names are
+ * unique per test, so exactly one client carries it; the kill goes by its id.
  */
 function subscriberItKill(RedisClient $observer, string $name): void
 {
-    preg_match('/^id=(\d+) .*name='.preg_quote($name, '/').' /m', (string) $observer->execute('client', 'LIST'), $match);
-    expect($match)->toHaveKey(1);
-    $observer->execute('client', 'KILL', 'ID', $match[1]);
+    preg_match_all('/^id=(\d+) .*name='.preg_quote($name, '/').' /m', (string) $observer->execute('client', 'LIST'), $matches);
+    expect($matches[1])->toHaveCount(1);
+    expect($observer->execute('client', 'KILL', 'ID', $matches[1][0]))->toBe(1);
 }
 
 /**
@@ -177,14 +239,31 @@ function subscriberItAwaitFailure(RedisSubscription $subscription, float $timeou
                 // Drain until the subscription fails.
             }
         })->await(new TimeoutCancellation($timeout));
-    } catch (CancelledException $e) {
-        throw $e;
+    } catch (CancelledException) {
+        Assert::fail(sprintf('Subscription did not fail within %.1f s.', $timeout));
     } catch (Throwable $e) {
         $error = $e;
     }
 
     return [$error, (hrtime(true) - $started) / 1e9];
 }
+
+afterEach(function () {
+    $tracked = SubscriberItResources::$tracked;
+    SubscriberItResources::$tracked = [];
+
+    foreach ($tracked as $resource) {
+        try {
+            if ($resource instanceof RedisSubscription) {
+                $resource->unsubscribe();
+            } else {
+                $resource->closeConnection();
+            }
+        } catch (Throwable) {
+            // Cleanup only: the test already reported what went wrong.
+        }
+    }
+});
 
 uses()->beforeEach(function () {
     $parameters = subscriberItParameters();
@@ -203,7 +282,7 @@ it('opens no new connection after the last unsubscribe', function () {
     $observer = subscriberItObserver();
     $subscriber = subscriberItSubscriber($name);
 
-    $subscription = $subscriber->subscribe($channel);
+    $subscription = subscriberItSubscribe($subscriber, $channel);
 
     expect(subscriberItAwaitActive($observer, $subscription, $channel))->toBe('ping')
         ->and(subscriberItClients($observer, $name))->toBe(1);
@@ -225,7 +304,7 @@ it('keeps no connection when the last unsubscribe lands while connecting', funct
 
     // The loop starts connecting first; the unsubscribe runs while the
     // connect is in flight, so there is no connection to close yet.
-    $subscription = $subscriber->subscribe($name.'_ch');
+    $subscription = subscriberItSubscribe($subscriber, $name.'_ch');
     $subscription->unsubscribe();
     unset($subscription);
 
@@ -234,7 +313,7 @@ it('keeps no connection when the last unsubscribe lands while connecting', funct
         ->and(subscriberItMaxClients($observer, $name, 0.3))->toBe(0);
 
     // A new subscribe still works afterwards.
-    $again = $subscriber->subscribe($name.'_ch');
+    $again = subscriberItSubscribe($subscriber, $name.'_ch');
 
     expect(subscriberItAwaitActive($observer, $again, $name.'_ch'))->toBe('ping');
 
@@ -253,15 +332,13 @@ it('does not reconnect when the last unsubscribe lands during the reconnect back
     $observer = subscriberItObserver();
     $subscriber = subscriberItSubscriber($name, new BackoffStrategy('constant', 0.3, 0.3));
 
-    $subscription = $subscriber->subscribe($channel);
+    $subscription = subscriberItSubscribe($subscriber, $channel);
 
     expect(subscriberItAwaitActive($observer, $subscription, $channel))->toBe('ping');
 
     // Drop the subscriber connection from the server side: the loop starts
     // its 0.3 s backoff. Unsubscribe the last subscription inside it.
-    preg_match('/^id=(\d+) .*name='.preg_quote($name, '/').' /m', (string) $observer->execute('client', 'LIST'), $match);
-    expect($match)->toHaveKey(1);
-    $observer->execute('client', 'KILL', 'ID', $match[1]);
+    subscriberItKill($observer, $name);
 
     expect(subscriberItAwaitClients($observer, $name, 0))->toBeTrue();
 
@@ -288,7 +365,7 @@ it('keeps the subscription across refused reconnects after a drop', function () 
     $connector = subscriberItRefusingConnector($name);
     $subscriber = new RedisSubscriber($connector, new BackoffStrategy('constant', 0.1, 0.1));
 
-    $subscription = $subscriber->subscribe($channel);
+    $subscription = subscriberItSubscribe($subscriber, $channel);
 
     expect(subscriberItAwaitActive($observer, $subscription, $channel))->toBe('ping');
 
@@ -316,7 +393,7 @@ it('fails the subscriptions once refused reconnects exhaust the window', functio
     $connector = subscriberItRefusingConnector($name);
     $subscriber = new RedisSubscriber($connector, new BackoffStrategy('constant', 0.1, 0.1));
 
-    $subscription = $subscriber->subscribe($channel);
+    $subscription = subscriberItSubscribe($subscriber, $channel);
 
     expect(subscriberItAwaitActive($observer, $subscription, $channel))->toBe('ping');
 
@@ -344,7 +421,7 @@ it('does not storm refused reconnects when the backoff returns zero', function (
     $connector = subscriberItRefusingConnector($name);
     $subscriber = new RedisSubscriber($connector, new BackoffStrategy('constant', 0.0, 0.0));
 
-    $subscription = $subscriber->subscribe($channel);
+    $subscription = subscriberItSubscribe($subscriber, $channel);
 
     expect(subscriberItAwaitActive($observer, $subscription, $channel))->toBe('ping');
 
@@ -368,7 +445,7 @@ it('fails at once when the first connect is refused', function () {
     $connector->refuse = -1;
     $subscriber = new RedisSubscriber($connector, new BackoffStrategy('constant', 0.1, 0.1));
 
-    $subscription = $subscriber->subscribe('fledge_sub_refused_first_ch');
+    $subscription = subscriberItSubscribe($subscriber, 'fledge_sub_refused_first_ch');
 
     [$error, $elapsed] = subscriberItAwaitFailure($subscription, 5.0);
 
