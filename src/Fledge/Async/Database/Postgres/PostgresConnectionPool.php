@@ -5,6 +5,7 @@ namespace Fledge\Async\Database\Postgres;
 use Fledge\Async\Future;
 use Fledge\Async\Database\SqlCommonConnectionPool;
 use Fledge\Async\Database\SqlConnector;
+use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
@@ -27,9 +28,20 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     private int $listenerCount = 0;
 
     /**
+     * Idle connections whose session is known to be unchanged since their last reset. Only the
+     * paths that see every statement they run (query, execute, prepare, a pooled transaction,
+     * notify, the quote helpers) hand a connection back through release() as clean; every
+     * other path (listen, leaseConnection, a failed statement) uses push() and leaves it dirty.
+     *
+     * @var \WeakMap<PostgresConnection, true>
+     */
+    private \WeakMap $clean;
+
+    /**
      * @param positive-int $maxConnections
      * @param positive-int $idleTimeout
-     * @param bool $resetConnections True to automatically execute DISCARD ALL on a connection before use.
+     * @param bool $resetConnections True to execute DISCARD ALL on checkout of a connection whose session
+     *     may have changed (fresh connections included); see Internal\PostgresSessionClassifier.
      * @param SqlConnector<PostgresConfig, PostgresConnection>|null $connector
      */
     public function __construct(
@@ -40,6 +52,8 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         ?SqlConnector $connector = null,
         SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed,
     ) {
+        $this->clean = new \WeakMap();
+
         parent::__construct(
             config: $config,
             connector: $connector ?? postgresConnector(),
@@ -66,10 +80,58 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         return new Internal\PostgresPooledResult($result, $release);
     }
 
+    /**
+     * The parent's $prepare hands the connection back without looking at $sql, so statements
+     * are prepared through prepareTracked() instead.
+     */
     #[\Override]
     protected function createStatementPool(string $sql, \Closure $prepare): PostgresStatement
     {
-        return new Internal\PostgresStatementPool($this, $sql, $prepare);
+        return new Internal\PostgresStatementPool($this, $sql, $this->prepareTracked(...));
+    }
+
+    private function prepareTracked(string $sql): PostgresStatement
+    {
+        $clean = Internal\PostgresSessionClassifier::leavesSessionUnchanged($sql);
+        $connection = $this->pop();
+
+        try {
+            $statement = $connection->prepare($sql);
+        } catch (\Throwable $exception) {
+            $this->releaseFailed($connection, $exception);
+            throw $exception;
+        }
+
+        return $this->createStatement($statement, fn () => $this->release($connection, $clean));
+    }
+
+    /**
+     * Hand back a connection whose statement failed (dirty). A lost connection is closed first,
+     * as the failed DISCARD ALL in pop() does: when a clean session skips that reset, the
+     * statement itself is the first to meet a session the server ended while idle, and a dead
+     * handle left open keeps its closed socket on the loop for every other connection. Query
+     * errors the server reported (SqlQueryError) and result parse errors keep the connection.
+     */
+    private function releaseFailed(PostgresConnection $connection, \Throwable $exception): void
+    {
+        if ($exception instanceof SqlException && !$exception instanceof PostgresParseException) {
+            $connection->close();
+        }
+
+        $this->push($connection);
+    }
+
+    /**
+     * Hand a connection back; $clean marks its session as unchanged, so the next checkout
+     * skips DISCARD ALL.
+     */
+    private function release(PostgresConnection $connection, bool $clean): void
+    {
+        if ($clean) {
+            $this->clean[$connection] = true;
+        }
+
+        $this->push($connection);
     }
 
     #[\Override]
@@ -84,7 +146,11 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     {
         $connection = parent::pop();
 
-        if ($this->resetConnections) {
+        // Dirty from here on until the caller hands it back through release() as clean.
+        $clean = isset($this->clean[$connection]);
+        unset($this->clean[$connection]);
+
+        if ($this->resetConnections && !$clean) {
             try {
                 $connection->query("DISCARD ALL");
             } catch (\Throwable $exception) {
@@ -105,7 +171,17 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     #[\Override]
     public function query(string $sql): PostgresResult
     {
-        return parent::query($sql);
+        $clean = Internal\PostgresSessionClassifier::leavesSessionUnchanged($sql);
+        $connection = $this->pop();
+
+        try {
+            $result = $connection->query($sql);
+        } catch (\Throwable $exception) {
+            $this->releaseFailed($connection, $exception);
+            throw $exception;
+        }
+
+        return $this->createResult($result, fn () => $this->release($connection, $clean));
     }
 
     /**
@@ -123,16 +199,43 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     #[\Override]
     public function execute(string $sql, array $params = []): PostgresResult
     {
-        return parent::execute($sql, $params);
+        $clean = Internal\PostgresSessionClassifier::leavesSessionUnchanged($sql);
+        $connection = $this->pop();
+
+        try {
+            $result = $connection->execute($sql, $params);
+        } catch (\Throwable $exception) {
+            $this->releaseFailed($connection, $exception);
+            throw $exception;
+        }
+
+        return $this->createResult($result, fn () => $this->release($connection, $clean));
     }
 
     /**
-     * Changes return type to this library's Transaction type.
+     * Changes return type to this library's Transaction type. The connection comes back clean
+     * only when the transaction ended through commit() or rollback() and ran nothing that
+     * outlives it (see Internal\PostgresSessionTracker); an abandoned one is reset.
      */
     #[\Override]
     public function beginTransaction(): PostgresTransaction
     {
-        return parent::beginTransaction();
+        $connection = $this->pop();
+        $tracker = new Internal\PostgresSessionTracker();
+
+        try {
+            $connection->setTransactionIsolation($this->getTransactionIsolation());
+            $transaction = $connection->beginTransaction();
+        } catch (\Throwable $exception) {
+            $this->releaseFailed($connection, $exception);
+            throw $exception;
+        }
+
+        return new Internal\PostgresPooledTransaction(
+            $transaction,
+            fn () => $this->release($connection, $tracker->clean),
+            $tracker,
+        );
     }
 
     /**
@@ -151,9 +254,13 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
 
         try {
             $result = $connection->notify($channel, $payload);
-        } finally {
-            $this->push($connection);
+        } catch (\Throwable $exception) {
+            $this->releaseFailed($connection, $exception);
+            throw $exception;
         }
+
+        // NOTIFY outside a transaction leaves nothing in the session.
+        $this->release($connection, true);
 
         return $result;
     }
@@ -238,7 +345,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         try {
             return $connection->quoteLiteral($data);
         } finally {
-            $this->push($connection);
+            $this->release($connection, true); // Escaping runs in the client, no statement.
         }
     }
 
@@ -250,7 +357,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         try {
             return $connection->quoteIdentifier($name);
         } finally {
-            $this->push($connection);
+            $this->release($connection, true); // Escaping runs in the client, no statement.
         }
     }
 
@@ -262,7 +369,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         try {
             return $connection->escapeByteA($data);
         } finally {
-            $this->push($connection);
+            $this->release($connection, true); // Escaping runs in the client, no statement.
         }
     }
 }

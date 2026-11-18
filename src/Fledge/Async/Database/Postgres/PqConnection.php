@@ -21,9 +21,10 @@ final class PqConnection extends Internal\PostgresHandleConnection implements Po
             throw new SqlConnectionException("Could not connect to PostgreSQL server", 0, $exception);
         }
 
-        $connection->nonblocking = true;
-        $connection->unbuffered = true;
-
+        // Fledge: nonblocking and unbuffered are set once connected. PQsetnonblocking() clears libpq's
+        // error buffer (libpq 15+), which during the connect drops the "connection to server at ...
+        // failed: " prefix libpq already wrote, so a failed connect would lose the text pdo_pgsql shows.
+        // The connect itself is non-blocking anyway (PQconnectStart).
         $deferred = new DeferredFuture();
 
         /** @psalm-suppress UndefinedVariable $poll is defined below. */
@@ -38,6 +39,9 @@ final class PqConnection extends Internal\PostgresHandleConnection implements Po
                     break;
 
                 case pq\Connection::POLLING_OK:
+                    $connection->nonblocking = true;
+                    $connection->unbuffered = true;
+
                     $deferred->complete(new self($connection, $config));
                     break;
 

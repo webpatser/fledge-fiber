@@ -353,6 +353,15 @@ final class PgSqlHandle extends AbstractHandle
             \pg_free_result($result);
         }
 
+        // libpq may already know the server ended the session (a clean idle connection skips
+        // the DISCARD ALL that used to meet it first): pg_send_*() would then only raise a PHP
+        // notice, so report the lost connection instead.
+        if (\pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
+            $this->lostMessage ??= self::lostConnectionMessage($this->handle);
+            $this->close();
+            throw new SqlConnectionException($this->lostMessage ?? "The connection to the database has been closed");
+        }
+
         $result = $function($this->handle, ...$args);
 
         if ($result === false) {
@@ -430,17 +439,15 @@ final class PgSqlHandle extends AbstractHandle
                     $diagnostics[$description] = \pg_result_error_field($result, $fieldCode);
                 }
                 $message = \pg_result_error($result) ?: 'Unknown result error';
-                \set_error_handler(self::getErrorHandler());
                 try {
-                    while (\pg_connection_busy($this->handle) && \pg_get_result($this->handle)) {
-                        // Clear all outstanding result rows from the connection
+                    // Clear all outstanding results from the connection.
+                    while ($this->nextResult(throwOnWarning: true)) {
+                        // Discard.
                     }
                 } finally {
-                    \restore_error_handler();
-
                     // The server ended the session along with this error: release the dead
                     // handle (and its loop watchers) so the pool opens a fresh connection.
-                    if (\pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
+                    if ($this->handle !== null && \pg_connection_status($this->handle) === \PGSQL_CONNECTION_BAD) {
                         $this->close();
                     }
 
@@ -472,11 +479,60 @@ final class PgSqlHandle extends AbstractHandle
             throw $this->closedError();
         }
 
-        if ($result = \pg_get_result($this->handle)) {
+        if ($result = $this->nextResult()) {
             return $this->createResult($result, $sql);
         }
 
         return null;
+    }
+
+    /**
+     * The next result of the running query, or null once every result was read. A result still
+     * on its way is awaited through the poll watcher: pg_get_result() on a busy connection
+     * blocks the whole event loop until the server answers.
+     *
+     * @param bool $throwOnWarning Turn PHP warnings from libpq calls into exceptions.
+     *
+     * @throws SqlException
+     */
+    private function nextResult(bool $throwOnWarning = false): ?\PgSql\Result
+    {
+        if ($this->handle === null) {
+            return null;
+        }
+
+        if ($throwOnWarning) {
+            \set_error_handler(self::getErrorHandler());
+        }
+
+        try {
+            // pg_connection_busy() reads what the socket holds before it reports. The poll
+            // watcher stops watching a connection that went bad, so read that one directly.
+            if (!\pg_connection_busy($this->handle)
+                || \pg_connection_status($this->handle) !== \PGSQL_CONNECTION_OK
+            ) {
+                return \pg_get_result($this->handle) ?: null;
+            }
+        } finally {
+            if ($throwOnWarning) {
+                \restore_error_handler();
+            }
+        }
+
+        // Nothing is suspended between the busy check and here, so the rest of the result
+        // is still unread on the socket and the poll watcher completes this operation. Other
+        // operations on this handle wait for it in send().
+        $this->pendingOperation = $pending = new DeferredFuture;
+
+        try {
+            EventLoop::reference($this->poll);
+
+            return $pending->getFuture()->await() ?: null;
+        } finally {
+            if ($this->pendingOperation === $pending) {
+                $this->pendingOperation = null;
+            }
+        }
     }
 
     #[\Override]

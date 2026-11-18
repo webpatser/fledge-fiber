@@ -17,6 +17,7 @@ use Fledge\Async\Database\SqlQueryError;
 use pq;
 use Revolt\EventLoop;
 use function Fledge\Async\async;
+use function Fledge\Async\delay;
 
 /** @internal  */
 final class PqHandle extends AbstractHandle
@@ -131,9 +132,15 @@ final class PqHandle extends AbstractHandle
      */
     private function send(?string $sql, \Closure $method, mixed ...$args): mixed
     {
-        while ($this->busy) {
+        while (($busy = $this->busy) !== null) {
             try {
-                $this->busy->getFuture()->await();
+                // Fledge: the fiber that ran the operation clears (or renews) busy once it resumes. await() returns a
+                // completed future at once, so when that resume is still queued, yield until it ran.
+                if ($busy->isComplete()) {
+                    delay(0);
+                }
+
+                $busy->getFuture()->await();
             } catch (\Throwable) {
                 // Ignore failure from another operation.
             }
@@ -211,11 +218,11 @@ final class PqHandle extends AbstractHandle
 
             case pq\Result::NONFATAL_ERROR:
             case pq\Result::FATAL_ERROR:
-                try {
-                    $this->drainResults();
-                } finally {
-                    throw new PostgresQueryError($result->errorMessage, $result->diag, $sql ?? '');
-                }
+                // A drain that fails lost the connection (the server ended the session along with
+                // this error, e.g. 57P01): report that, as the pgsql handle does, not the query error.
+                $this->drainResults();
+
+                throw new PostgresQueryError($result->errorMessage, $result->diag, $sql ?? '');
 
             case pq\Result::BAD_RESPONSE:
                 $this->close();
@@ -330,6 +337,9 @@ final class PqHandle extends AbstractHandle
                 try {
                     $deferred->complete($this->fetchNextResult($sql));
                 } catch (\Throwable $exception) {
+                    // The error of a later statement reaches the caller through getNextResult(). A result
+                    // set dropped unread is drained on the loop: do not report the error there as unhandled.
+                    $deferred->getFuture()->ignore();
                     $deferred->error($exception);
                 }
 

@@ -14,6 +14,7 @@
  * fiberio: php -d extension=<path>/fiberio.so vendor/bin/pest <this file>.
  */
 
+use Fledge\Async\Stream\DnsSocketConnector;
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
 use Fledge\Fiber\Database\Connections\FledgeMySqlConnection;
 use Fledge\Fiber\Database\Connections\FledgePostgresConnection;
@@ -33,6 +34,8 @@ use Illuminate\Database\MariaDbConnection;
 use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\PostgresConnection;
 use Pdo\Mysql;
+
+use function Fledge\Async\Stream\socketConnector;
 
 /**
  * One side of the comparison: a raw PDO (real or shim) or a Laravel Connection.
@@ -285,7 +288,7 @@ function parityScenarios(string $family): array
         'unknown column' => [[], fn (PdoParitySubject $s) => $s->statement('SELECT nope FROM _parity_users WHERE id = ?', [1])],
         'syntax error' => [[], fn (PdoParitySubject $s) => $s->statement('SELEC id FROM _parity_users')],
         'unprepared syntax error' => [[], fn (PdoParitySubject $s) => $s->exec('SELEC id FROM _parity_users')],
-        'connection refused' => [['port' => 1], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
+        'connection refused' => [['port' => 1], fn (PdoParitySubject $s) => parityWithoutConnectRetry(fn () => $s->scalar('SELECT 1'))],
         'bad password' => [['password' => 'wrong'], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
     ];
 
@@ -424,6 +427,28 @@ function parityScenarios(string $family): array
             }
         }],
     ];
+}
+
+/**
+ * Run with the global socket connector swapped for one that does not retry.
+ *
+ * The default socket connector retries a refused connect twice, sleeping 2s and
+ * 4s in between, so each Fledge MySQL run of the refused scenario took 6s and the
+ * file outgrew the 60s per-file limit. The error shape is the same without the
+ * retries: FledgePdoException maps any refused socket to mysqlnd's text. Only the
+ * Fledge MySQL shim connects through this connector; real PDO, the native driver
+ * and Postgres (libpq) are unaffected.
+ */
+function parityWithoutConnectRetry(Closure $run): mixed
+{
+    $previous = socketConnector();
+    socketConnector(new DnsSocketConnector);
+
+    try {
+        return $run();
+    } finally {
+        socketConnector($previous);
+    }
 }
 
 /**

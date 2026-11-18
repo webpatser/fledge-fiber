@@ -97,6 +97,21 @@ function adminPostgresPdo(?string $database = null): PDO
     return new PDO("pgsql:host={$c['host']};port={$c['port']};dbname={$database}", $c['username'], $c['password']);
 }
 
+/**
+ * A direct connection that reads every result before query() returns, as PgSqlConnection does.
+ * PqConnection streams result sets by default; buffered, it must behave like the pgsql path.
+ */
+function bufferedPostgresConnection(string $class): PgSqlConnection|PqConnection
+{
+    $connection = $class::connect(asyncPostgresConfig());
+
+    if ($connection instanceof PqConnection) {
+        $connection->shouldBufferResults();
+    }
+
+    return $connection;
+}
+
 /** Backend pid of the session whose last statement was LISTEN on the channel. */
 function listenerBackendPid(string $channel): int
 {
@@ -270,7 +285,7 @@ it('returns every result of a multi-statement query whose later statements are s
         $this->markTestSkipped("The {$extension} extension is not loaded");
     }
 
-    $connection = $class::connect(asyncPostgresConfig());
+    $connection = bufferedPostgresConnection($class);
 
     // The first result arrives while the server still sleeps in the second statement, so
     // libpq reports busy when the handle looks for the next result.
@@ -295,12 +310,76 @@ it('returns every result of a multi-statement query whose later statements are s
     'pq' => [PqConnection::class, 'pq'],
 ]);
 
+it('lets other fibers run while a later statement of a multi-statement query is still running', function (string $class, string $extension) {
+    if (! extension_loaded($extension)) {
+        $this->markTestSkipped("The {$extension} extension is not loaded");
+    }
+
+    $key = 727301;
+    $connection = bufferedPostgresConnection($class);
+    $locker = bufferedPostgresConnection($class);
+    $locker->query("SELECT pg_advisory_lock({$key})");
+
+    // Watchdog: a handle that blocks the loop never lets the lock go, so the second statement
+    // gives up instead of waiting for ever.
+    $connection->query("SET lock_timeout = '5s'");
+
+    $events = [];
+
+    // Releases the lock once the second statement waits on it. Only a free loop runs this fiber.
+    $release = async(function () use ($locker, $key, &$events): void {
+        $deadline = microtime(true) + 10;
+        $waiting = "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = {$key}";
+
+        while ((int) $locker->query($waiting)->fetchRow()['n'] === 0) {
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException('The second statement never waited on the advisory lock');
+            }
+
+            delay(0.01);
+        }
+
+        // A timer runs after every queued fiber resumption, so the query fiber, woken by the
+        // first result, has reached the read of the next result before the lock goes.
+        delay(0);
+
+        $events[] = 'releasing';
+        $locker->query("SELECT pg_advisory_unlock({$key})");
+    });
+
+    // The server holds the output of a multi-statement query until it ends, but a notice
+    // flushes it: the first result arrives at once, then the second statement waits on the
+    // lock that only the other fiber releases, so this query cannot return before it does.
+    // A handle that reads the next result with a blocking call holds the whole loop
+    // meanwhile: the lock is never released and the statement fails on lock_timeout.
+    $first = $connection->query("SELECT 1 AS a; DO \$\$ BEGIN RAISE NOTICE 'flush'; PERFORM pg_advisory_xact_lock({$key}); END \$\$; SELECT 3 AS c");
+    $events[] = 'multi-statement query';
+
+    $release->await();
+
+    expect($events)->toBe(['releasing', 'multi-statement query']);
+
+    // Every result is still there, in order.
+    expect($first->fetchRow())->toBe(['a' => 1]);
+    $second = $first->getNextResult();
+    expect($second)->toBeInstanceOf(Fledge\Async\Database\Postgres\Internal\PostgresCommandResult::class);
+    $third = $second->getNextResult();
+    expect($third->fetchRow())->toBe(['c' => 3])
+        ->and($third->getNextResult())->toBeNull();
+
+    $connection->close();
+    $locker->close();
+})->with([
+    'pgsql' => [PgSqlConnection::class, 'pgsql'],
+    'pq' => [PqConnection::class, 'pq'],
+]);
+
 it('keeps the connection usable after a later statement of a multi-statement query fails', function (string $class, string $extension, string $sql) {
     if (! extension_loaded($extension)) {
         $this->markTestSkipped("The {$extension} extension is not loaded");
     }
 
-    $connection = $class::connect(asyncPostgresConfig());
+    $connection = bufferedPostgresConnection($class);
 
     expect(fn () => $connection->query($sql))
         ->toThrow(PostgresQueryError::class, 'division by zero');
@@ -315,7 +394,56 @@ it('keeps the connection usable after a later statement of a multi-statement que
 ])->with([
     'second statement fails' => ['SELECT 1 AS a; SELECT 1/0; SELECT 3 AS c'],
     'fails after a running statement' => ['SELECT 1 AS a; SELECT pg_sleep(0.3)::text AS s; SELECT 1/0'],
+    // The notice flushes the first result, so the error arrives while the handle awaits.
+    'fails after a flushed running statement' => ["SELECT 1 AS a; DO \$\$ BEGIN RAISE NOTICE 'flush'; PERFORM pg_sleep(0.3); END \$\$; SELECT 1/0"],
 ]);
+
+dataset('failing multi-statement queries', [
+    'second statement fails' => ['SELECT 1 AS a; SELECT 1/0; SELECT 3 AS c'],
+    'fails after a running statement' => ['SELECT 1 AS a; SELECT pg_sleep(0.3)::text AS s; SELECT 1/0'],
+    'fails after a flushed running statement' => ["SELECT 1 AS a; DO \$\$ BEGIN RAISE NOTICE 'flush'; PERFORM pg_sleep(0.3); END \$\$; SELECT 1/0"],
+]);
+
+it('surfaces the error of a later statement at getNextResult on a streaming pq connection', function (string $sql) {
+    if (! extension_loaded('pq')) {
+        $this->markTestSkipped('The pq extension is not loaded');
+    }
+
+    // PqConnection streams result sets by default: query() returns with the first row, so the
+    // error of a later statement can only reach the caller when it asks for that result.
+    $connection = PqConnection::connect(asyncPostgresConfig());
+
+    $first = $connection->query($sql);
+    expect($first->fetchRow())->toBe(['a' => 1]);
+
+    // Walk the results: the error replaces the result of the failing statement.
+    expect(function () use ($first): void {
+        for ($next = $first->getNextResult(); $next !== null; $next = $next->getNextResult()) {
+            // Results of the statements before the failing one.
+        }
+    })->toThrow(PostgresQueryError::class, 'division by zero');
+
+    expect($connection->query('SELECT 4 AS d')->fetchRow())->toBe(['d' => 4]);
+
+    $connection->close();
+})->with('failing multi-statement queries');
+
+it('drains a dropped streaming pq result whose later statement fails without an unhandled error', function (string $sql) {
+    if (! extension_loaded('pq')) {
+        $this->markTestSkipped('The pq extension is not loaded');
+    }
+
+    $connection = PqConnection::connect(asyncPostgresConfig());
+
+    // The result is dropped unread: the handle drains it on the loop and meets the error there.
+    // The next query waits on the handle until the drain is done; one yield starts the drain.
+    $connection->query($sql);
+    delay(0);
+
+    expect($connection->query('SELECT 4 AS d')->fetchRow())->toBe(['d' => 4]);
+
+    $connection->close();
+})->with('failing multi-statement queries');
 
 it('handles prepared statements with placeholder conversion', function () {
     $connector = new FledgePostgresConnector;

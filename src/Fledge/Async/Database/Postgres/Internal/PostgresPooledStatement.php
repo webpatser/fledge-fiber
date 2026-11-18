@@ -13,6 +13,20 @@ use Fledge\Async\Database\SqlResult;
  */
 final class PostgresPooledStatement extends SqlPooledStatement implements PostgresStatement
 {
+    /**
+     * @param \Closure():void $release
+     * @param (\Closure():void)|null $awaitBusyResource
+     * @param (\Closure():void)|null $onError Invoked when an execution fails (session tracking).
+     */
+    public function __construct(
+        PostgresStatement $statement,
+        \Closure $release,
+        ?\Closure $awaitBusyResource = null,
+        private readonly ?\Closure $onError = null,
+    ) {
+        parent::__construct($statement, $release, $awaitBusyResource);
+    }
+
     #[\Override]
     protected function createResult(SqlResult $result, \Closure $release): PostgresResult
     {
@@ -26,6 +40,11 @@ final class PostgresPooledStatement extends SqlPooledStatement implements Postgr
     #[\Override]
     public function execute(array $params = []): PostgresResult
     {
-        return parent::execute($params);
+        try {
+            return parent::execute($params);
+        } catch (\Throwable $exception) {
+            $this->onError && ($this->onError)();
+            throw $exception;
+        }
     }
 }

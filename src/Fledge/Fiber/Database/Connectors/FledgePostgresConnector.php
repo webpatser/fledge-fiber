@@ -67,11 +67,14 @@ class FledgePostgresConnector implements ConnectorInterface
         $maxConnections = (int) ($appConfig['pool_size'] ?? PostgresConnectionPool::DEFAULT_MAX_CONNECTIONS);
         $idleTimeout = (int) ($appConfig['pool_idle_timeout'] ?? PostgresConnectionPool::DEFAULT_IDLE_TIMEOUT);
 
-        // resetConnections stays true: the pool runs DISCARD ALL on every
-        // checkout, and RESET ALL (part of DISCARD ALL) restores GUCs to the
-        // startup-packet session defaults. Session settings therefore ride the
-        // libpq startup packet via buildOptions() instead of SET statements,
-        // which the first DISCARD ALL would wipe out.
+        // resetConnections stays true: the pool runs DISCARD ALL on checkout of
+        // a connection whose session may have changed (a fresh one, or after any
+        // statement it cannot prove clean: SET, LISTEN, temp tables, advisory
+        // locks, PREPARE, held cursors, INSERT, DO, user functions, an abandoned
+        // or failed transaction), and RESET ALL (part of DISCARD ALL) restores
+        // GUCs to the startup-packet session defaults. Session settings therefore
+        // ride the libpq startup packet via buildOptions() instead of SET
+        // statements, which the first DISCARD ALL would wipe out.
         return new PostgresConnectionPool($config, $maxConnections, $idleTimeout);
     }
 

@@ -218,9 +218,24 @@ it('runs the query on a fresh connection after the server terminated it outside 
 
     realPostgresPdo()->query('SELECT pg_terminate_backend('.(int) $killed.')')->fetchAll();
 
-    $fresh = $connection->selectOne('SELECT pg_backend_pid() AS id')->id;
+    // The idle session was clean, so no DISCARD ALL runs first: the query itself meets the
+    // dead connection and must surface as a lost connection (which Laravel retries), not as
+    // a PHP notice from libpq that an error handler would turn into an ErrorException.
+    $notices = [];
+    set_error_handler(function (int $code, string $message) use (&$notices): bool {
+        $notices[] = $message;
 
-    expect($fresh)->not->toEqual($killed)
+        return true;
+    });
+
+    try {
+        $fresh = $connection->selectOne('SELECT pg_backend_pid() AS id')->id;
+    } finally {
+        restore_error_handler();
+    }
+
+    expect($notices)->toBe([])
+        ->and($fresh)->not->toEqual($killed)
         ->and($connection->table('_fledge_behaviour_pg_counters')->count())->toBe(2);
 });
 
