@@ -53,7 +53,7 @@ final class ConnectionLimitingPool implements ConnectionPool
     /** @var array<int, int> Map of connection object IDs to request counts. */
     private array $activeRequestCounts = [];
 
-    /** @var array<string, array<int, DeferredFuture>> */
+    /** @var array<string, array<int, array{DeferredFuture, Cancellation}>> Waiters with the cancellation of their request. */
     private array $waiting = [];
 
     /** @var array<string, bool> Map of URIs to flags to wait for potential HTTP/2 connection. */
@@ -185,13 +185,15 @@ final class ConnectionLimitingPool implements ConnectionPool
                 try {
                     if ($isHttps && ($this->waitForPriorConnection[$uri] ?? true)) {
                         // Wait for first successful connection if using a secure connection (maybe we can use HTTP/2).
-                        $connection = $connectionFuture->await();
+                        $connection = $connectionFuture->await($cancellation);
                     } elseif ($connectionFuture->isComplete()) {
                         $connection = $connectionFuture->await();
                     } else {
                         continue;
                     }
                 } catch (\Exception $exception) {
+                    $cancellation->throwIfRequested(); // This request was cancelled while waiting.
+
                     continue; // Ignore cancellations and errors of other requests.
                 }
 
@@ -215,13 +217,18 @@ final class ConnectionLimitingPool implements ConnectionPool
             $futureFromDeferred = $deferred->getFuture();
             $deferredId = \spl_object_id($deferred);
 
-            $this->waiting[$uri][$deferredId] = $deferred;
+            $this->waiting[$uri][$deferredId] = [$deferred, $cancellation];
 
             if ($this->isAdditionalConnectionAllowed($uri)) {
                 break;
             }
 
-            $connection = $futureFromDeferred->await();
+            try {
+                // Queue time counts against the request's cancellation, as curl counts it in CURLOPT_TIMEOUT.
+                $connection = $futureFromDeferred->await($cancellation);
+            } finally {
+                $this->removeWaiting($uri, $deferredId);
+            }
 
             \assert($connection instanceof Connection);
 
@@ -275,7 +282,7 @@ final class ConnectionLimitingPool implements ConnectionPool
 
         try {
             // Await both new connection future and deferred to reuse an existing connection.
-            $connection = Future\awaitFirst([$connectionFuture, $futureFromDeferred]);
+            $connection = Future\awaitFirst([$connectionFuture, $futureFromDeferred], $cancellation);
         } catch (CompositeException $exception) {
             [$exception] = $exception->getReasons(); // The first reason is why the connection failed.
             throw $exception;
@@ -289,7 +296,7 @@ final class ConnectionLimitingPool implements ConnectionPool
 
         if ($stream === null) {
             // Potentially reused connection did not have an available stream for the given request.
-            $connection = $connectionFuture->await(); // Wait for new connection request instead.
+            $connection = $connectionFuture->await($cancellation); // Wait for new connection request instead.
 
             $stream = $this->getStreamFromConnection($connection, $request);
 
@@ -338,14 +345,20 @@ final class ConnectionLimitingPool implements ConnectionPool
             }
         }
 
-        if (empty($this->waiting[$uri])) {
+        while (!empty($this->waiting[$uri])) {
+            /** @var DeferredFuture $deferred */
+            [$deferred, $waiterCancellation] = \reset($this->waiting[$uri]);
+            $this->removeWaiting($uri, \spl_object_id($deferred));
+
+            if ($waiterCancellation->isRequested()) {
+                // The waiter is leaving and would drop the connection; offer it to the next one.
+                continue;
+            }
+
+            $deferred->complete($connection);
+
             return;
         }
-
-        /** @var DeferredFuture $deferred */
-        $deferred = \reset($this->waiting[$uri]);
-        $this->removeWaiting($uri, \spl_object_id($deferred));
-        $deferred->complete($connection);
     }
 
     private function isConnectionIdle(Connection $connection): bool

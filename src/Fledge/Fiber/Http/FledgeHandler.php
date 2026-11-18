@@ -2,12 +2,15 @@
 
 namespace Fledge\Fiber\Http;
 
+use Fledge\Async\CancelledException;
 use Fledge\Async\Http\Client\BufferedContent;
 use Fledge\Async\Http\Client\HttpClient;
 use Fledge\Async\Http\Client\Interceptor\FollowRedirects;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
+use Fledge\Async\Http\Client\TimeoutException as ClientTimeoutException;
 use Fledge\Async\Stream\Payload;
+use Fledge\Async\TimeoutCancellation;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -96,7 +99,22 @@ class FledgeHandler
                 delay($delay);
             }
 
-            return $client->request($asyncRequest);
+            // Guzzle's timeout is curl's CURLOPT_TIMEOUT, whose clock also runs
+            // while the request waits for a free slot in a connection-limited
+            // pool. The transfer timeout only starts once a stream exists, so
+            // bound the whole request with the same limit.
+            $timeout = $asyncRequest->getTransferTimeout();
+            $cancellation = $timeout > 0 ? new TimeoutCancellation($timeout) : null;
+
+            try {
+                return $client->request($asyncRequest, $cancellation);
+            } catch (CancelledException $e) {
+                if ($cancellation?->isRequested()) {
+                    throw new ClientTimeoutException('Allowed transfer timeout exceeded, took longer than '.$timeout.' s', 0, $e);
+                }
+
+                throw $e;
+            }
         });
 
         $promise = new Promise(function () use (&$promise, $future, $request, $options, $startTime, $listener) {
