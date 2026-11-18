@@ -6,7 +6,9 @@ use Fledge\Async\Redis\Connection\RetryableCommands;
 use Fledge\Async\Redis\Protocol\QueryException;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisException as AsyncRedisException;
+use Fledge\Async\Queue;
 use Fledge\Async\Redis\RedisSubscriber;
+use Fledge\Async\Redis\RedisSubscription;
 use Fledge\Async\Sync\LocalMutex;
 use Fledge\Async\Sync\Lock;
 use Closure;
@@ -18,6 +20,8 @@ use Illuminate\Redis\Events\CommandFailed;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Throwable;
+
+use function Fledge\Async\async;
 
 class FledgeRedisConnection extends Connection implements ConnectionContract
 {
@@ -927,17 +931,19 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             throw new \RuntimeException('No RedisSubscriber available for pub/sub.');
         }
 
+        $subscriptions = [];
+
         foreach ((array) $channels as $channel) {
             // phpredis OPT_PREFIX prefixes channel names, and subscribe
             // callbacks receive the prefixed name as sent by the server.
             $channel = $this->keyPrefixer->prefixChannel((string) $channel);
 
-            $subscription = $this->subscriber->subscribe($channel);
-
-            foreach ($subscription as $message) {
-                $callback($message, $channel);
-            }
+            $subscriptions[] = [$channel, $this->subscriber->subscribe($channel)];
         }
+
+        $this->consumeSubscriptions($subscriptions, static function (mixed $message, string $channel) use ($callback): void {
+            $callback($message, $channel);
+        });
     }
 
     /**
@@ -949,13 +955,90 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
             throw new \RuntimeException('No RedisSubscriber available for pub/sub.');
         }
 
+        $subscriptions = [];
+
         foreach ((array) $channels as $pattern) {
             $pattern = $this->keyPrefixer->prefixChannel((string) $pattern);
 
-            $subscription = $this->subscriber->subscribeToPattern($pattern);
+            $subscriptions[] = [$pattern, $this->subscriber->subscribeToPattern($pattern)];
+        }
 
-            foreach ($subscription as $message) {
-                $callback($message, $pattern);
+        // Pattern subscriptions yield [payload, channel]; phpredis hands the
+        // callback the matched channel, not the pattern.
+        $this->consumeSubscriptions($subscriptions, static function (mixed $message) use ($callback): void {
+            [$payload, $channel] = $message;
+
+            $callback($payload, $channel);
+        });
+    }
+
+    /**
+     * Consume every subscription until all complete, like one phpredis
+     * SUBSCRIBE over several channels: the callback runs in the calling
+     * fiber, one message at a time, in the order the subscriber received
+     * them. The first error (including one thrown by the callback) ends
+     * every subscription and is rethrown.
+     *
+     * @param  array<int, array{0: string, 1: RedisSubscription}>  $subscriptions
+     * @param  Closure(mixed, string): void  $consume
+     */
+    protected function consumeSubscriptions(array $subscriptions, Closure $consume): void
+    {
+        $futures = [];
+        $merged = null;
+
+        try {
+            if (count($subscriptions) === 1) {
+                [$name, $subscription] = $subscriptions[0];
+
+                foreach ($subscription as $message) {
+                    $consume($message, $name);
+                }
+
+                return;
+            }
+
+            // Each feeder hands its message to one unbuffered queue straight
+            // after taking it. RedisSubscriber reads one reply at a time and
+            // waits for its consumer, and fibers resume in FIFO order, so the
+            // merged queue keeps the connection's arrival order.
+            $queue = new Queue;
+            $merged = $queue->iterate();
+            $active = count($subscriptions);
+
+            foreach ($subscriptions as [$name, $subscription]) {
+                $futures[] = async(static function () use ($name, $subscription, $queue, &$active): void {
+                    try {
+                        foreach ($subscription as $message) {
+                            $queue->push([$name, $message]);
+                        }
+                    } catch (Throwable $e) {
+                        if (! $queue->isComplete() && ! $queue->isDisposed()) {
+                            $queue->error($e);
+                        }
+
+                        return;
+                    }
+
+                    if (--$active === 0 && ! $queue->isComplete() && ! $queue->isDisposed()) {
+                        $queue->complete();
+                    }
+                });
+            }
+
+            foreach ($merged as [$name, $message]) {
+                $consume($message, $name);
+            }
+        } finally {
+            foreach ($subscriptions as [, $subscription]) {
+                $subscription->unsubscribe();
+            }
+
+            // Releases feeders blocked in push() so their fibers end.
+            $merged?->dispose();
+
+            foreach ($futures as $future) {
+                $future->ignore();
             }
         }
     }
