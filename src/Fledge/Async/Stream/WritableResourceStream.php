@@ -133,11 +133,15 @@ final class WritableResourceStream implements WritableStream, ResourceStream
 
                         // Broken pipes between processes on macOS/FreeBSD do not detect EOF properly.
                         // fwrite() may write zero bytes on subsequent calls due to the buffer filling again.
+                        // A TLS stream whose peer is gone can write zero bytes without raising an error, so
+                        // feof() is checked as well; otherwise the watcher would retry the write forever.
                         /** @psalm-suppress TypeDoesNotContainType $errorCode may be set by error handler. */
-                        if ($written === 0 && $errorCode !== 0 && $firstWrite) {
+                        if ($written === 0 && ($errorCode !== 0 || \feof($resource)) && $firstWrite) {
                             $writable = false;
                             $suspension?->resume(static fn () => throw new StreamException(
-                                \sprintf('Failed to write to stream (%d): %s', $errorCode, $errorMessage)
+                                $errorCode !== 0
+                                    ? \sprintf('Failed to write to stream (%d): %s', $errorCode, $errorMessage)
+                                    : 'Failed to write to stream: the peer closed the connection'
                             ));
 
                             continue;
