@@ -10,7 +10,7 @@ namespace Fledge\Async\Redis\Connection;
  * decorrelated_jitter is stateful across consecutive attempts; callers pass
  * the previous delay back in.
  */
-final readonly class BackoffStrategy
+readonly class BackoffStrategy
 {
     public function __construct(
         public string $algorithm = RetryPolicy::BACKOFF_DEFAULT,
