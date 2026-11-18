@@ -75,7 +75,7 @@ services:
     ports:
       - "18080:80"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/get"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/get')"]
       interval: 5s
       timeout: 5s
       retries: 10
