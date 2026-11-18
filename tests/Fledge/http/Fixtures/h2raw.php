@@ -130,15 +130,18 @@ if (! class_exists('H2RawPeer')) {
 }
 
 if (! function_exists('startH2Driver')) {
-    /** @param  array<string,mixed>  $driverArgs Named Http2Driver constructor overrides. */
-    function startH2Driver(array $driverArgs = []): H2RawPeer
+    /**
+     * @param  array<string,mixed>  $driverArgs Named Http2Driver constructor overrides.
+     * @param  (\Closure():ServerResponse)|null  $handler Request handler; defaults to a 200 "ok" response.
+     */
+    function startH2Driver(array $driverArgs = [], ?\Closure $handler = null): H2RawPeer
     {
         \Revolt\EventLoop::setErrorHandler(null);
 
         [$serverSide, $peerSide] = createSocketPair();
 
         $driver = new Http2Driver(
-            new ClosureRequestHandler(fn (): ServerResponse => new ServerResponse(200, [], 'ok')),
+            new ClosureRequestHandler($handler ?? fn (): ServerResponse => new ServerResponse(200, [], 'ok')),
             new DefaultErrorHandler,
             new NullLogger,
             ...$driverArgs,

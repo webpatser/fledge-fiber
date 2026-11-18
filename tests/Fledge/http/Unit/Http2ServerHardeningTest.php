@@ -212,6 +212,50 @@ it('does not leave an unobserved future when a stream is reset before its reques
     }
 })->group('Http2');
 
+it('sends buffered DATA once and in order when window updates race a suspended write', function () {
+    // 1 MiB of distinct 40 byte blocks, so a duplicated or reordered frame changes the payload.
+    $body = '';
+    for ($i = 0; strlen($body) < 1 << 20; $i++) {
+        $body .= sha1((string) $i);
+    }
+
+    $peer = startH2Driver(handler: fn (): Fledge\Async\Http\Server\Response => new Fledge\Async\Http\Server\Response(200, [], $body));
+
+    try {
+        // A zero stream window makes the server buffer the whole body until the peer opens it.
+        $peer->sendFrame(Http2Parser::SETTINGS, 0, 0, pack('nN', Http2Parser::INITIAL_WINDOW_SIZE, 0));
+        $peer->openStream(1, [], true);
+        $peer->waitFor(fn (array $f) => $f['type'] === Http2Parser::HEADERS && $f['stream'] === 1);
+
+        // Open both windows while not reading: the server's write fills the socket and suspends.
+        $peer->sendFrame(Http2Parser::WINDOW_UPDATE, 0, 0, pack('N', 1 << 21));
+        $peer->sendFrame(Http2Parser::WINDOW_UPDATE, 0, 1, pack('N', 1 << 21));
+        Fledge\Async\delay(0.05);
+
+        // Further updates re-enter the buffered send while the first one is still suspended.
+        $peer->sendFrame(Http2Parser::WINDOW_UPDATE, 0, 0, pack('N', 1));
+        $peer->sendFrame(Http2Parser::WINDOW_UPDATE, 0, 1, pack('N', 1));
+        Fledge\Async\delay(0.05);
+
+        $received = '';
+        $ends = 0;
+        $peer->waitFor(function (array $f) use (&$received, &$ends): bool {
+            if ($f['type'] === Http2Parser::DATA && $f['stream'] === 1) {
+                $received .= $f['payload'];
+                $ends += ($f['flags'] & Http2Parser::END_STREAM) ? 1 : 0;
+            }
+
+            return false;
+        }, 0.5);
+
+        expect(strlen($received))->toBe(strlen($body))
+            ->and($received === $body)->toBeTrue()
+            ->and($ends)->toBe(1);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');
+
 it('keeps the deprecated Http2Parser low-value constants as aliases of the driver defaults', function () {
     expect(Http2Parser::LOW_VALUE_FRAME_LIMIT)->toBe(HttpDriver::DEFAULT_LOW_VALUE_FRAME_LIMIT)
         ->and(Http2Parser::LOW_VALUE_FRAME_WINDOW)->toBe(HttpDriver::DEFAULT_LOW_VALUE_FRAME_WINDOW);
