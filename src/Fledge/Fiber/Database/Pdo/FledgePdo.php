@@ -737,10 +737,12 @@ abstract class FledgePdo
     /**
      * Fails safe: true only for one plain SELECT / SHOW / EXPLAIN / DESCRIBE / WITH, or one
      * INSERT / UPDATE / DELETE / REPLACE, with no user variable, no SELECT ... INTO, no lock
-     * function, no LAST_INSERT_ID(), no SQL_CALC_FOUND_ROWS, no temporary table, no comment
-     * (MySQL runs the body of a /*! comment), no second statement after a semicolon, and no
-     * call except the built-ins in BUILTIN_CALLS (a schema-qualified or quoted name counts as
-     * a stored function). Anything else counts as changing the session.
+     * function, no LAST_INSERT_ID(), no SQL_CALC_FOUND_ROWS, no temporary table, no executable
+     * comment (MySQL runs the body of a /*! comment, MariaDB that of /*M!), no unterminated
+     * comment, no second statement after a semicolon, and no call except the built-ins in
+     * BUILTIN_CALLS (a schema-qualified or quoted name counts as a stored function). Plain
+     * comments, optimizer hints (/*+ ... *\/) and "-- " or "#" line comments are skipped.
+     * Anything else counts as changing the session.
      *
      * DML counts as clean: PDO::lastInsertId() does not depend on the connection (the shim takes
      * the id from each result and keeps it per fiber), and after DML the pin is kept for the
@@ -748,52 +750,79 @@ abstract class FledgePdo
      * ROW_COUNT(), FOUND_ROWS() or SHOW WARNINGS reads the same session. An open transaction
      * keeps the pin anyway, whatever ran in it.
      *
-     * Residual risk: a stored function or trigger reached through a view or a table (a SELECT
-     * from a view whose definition calls a function that sets a variable, a trigger that
-     * takes GET_LOCK) cannot be seen in the text, so such a session change can go to the
-     * next fiber with the connection.
+     * A backslash anywhere is dirty: whether it escapes depends on NO_BACKSLASH_ESCAPES (strings)
+     * and ANSI_QUOTES (double quotes as identifiers), which the text does not show. Without a
+     * backslash a double-quoted token has the same extent read as a string or as an identifier;
+     * the identifier reading can only name a stored function before "(" or ".", which is dirty.
+     * "--" followed by a control character is dirty (the server starts a comment there). Every
+     * name before "(", ASCII or not, must be in BUILTIN_CALLS, which lists only names that are
+     * built-in on both MySQL 8 and MariaDB 11. A PCRE error anywhere is dirty.
+     *
+     * Residual risk: triggers, views and stored code are invisible to text classification. A
+     * SELECT from a view whose definition calls a function that sets a variable, or DML that
+     * fires a trigger taking GET_LOCK, looks clean here, so such a session change can go to
+     * the next fiber with the connection.
      */
     public static function leavesSessionUnchanged(string $query): bool
     {
-        // Quoted literals become '' and backtick identifiers x, so their contents are not read as SQL.
-        $sql = preg_replace('/\'(?:[^\'\\\\]|\\\\.|\'\')*\'|"(?:[^"\\\\]|\\\\.|"")*"/s', "''", $query);
-        $sql = $sql === null ? null : preg_replace('/`(?:[^`]|``)*`/', 'x', $sql);
+        if (str_contains($query, '\\')) {
+            return false;
+        }
+
+        $sql = self::stripLiteralsAndComments($query);
 
         if ($sql === null) {
             return false;
         }
 
         // One trailing semicolon is the end of the statement; anything after one is a second statement.
+        // A /* left over is an unterminated comment. A "--" not followed by whitespace or a control
+        // character is two minus signs; followed by a control character the server reads a comment.
         $sql = rtrim(trim($sql), "; \t\r\n");
 
-        if (preg_match('/;|\/\*|--|#/', $sql)) {
+        if (preg_match('/;|\/\*|--[\x00-\x08\x0e-\x1f\x7f]/', $sql) !== 0) {
             return false;
         }
 
-        if (! preg_match('/^[\s(]*(select|show|explain|describe|desc|with|insert|update|delete|replace)\b/i', $sql, $verb)) {
+        if (preg_match('/^[\s(]*(select|show|explain|describe|desc|with|insert|update|delete|replace)\b/i', $sql, $verb) !== 1) {
             return false;
         }
 
         $dml = in_array(strtolower($verb[1]), ['insert', 'update', 'delete', 'replace'], true);
 
-        if (preg_match('/@|\b(get_lock|release_lock|release_all_locks|is_used_lock|is_free_lock|last_insert_id|sql_calc_found_rows|temporary)\b/i', $sql)) {
+        if (preg_match('/@|\b(get_lock|release_lock|release_all_locks|is_used_lock|is_free_lock|last_insert_id|sql_calc_found_rows|temporary)\b/i', $sql) !== 0) {
             return false;
         }
 
         // SELECT ... INTO @var / OUTFILE / DUMPFILE (INSERT INTO is DML's own INTO).
-        if (! $dml && preg_match('/\binto\b/i', $sql)) {
+        if (! $dml && preg_match('/\binto\b/i', $sql) !== 0) {
             return false;
         }
 
         // The column list of INSERT / REPLACE INTO table (...) is not a call.
-        $sql = preg_replace('/\binto\s+[\w$]+(?:\s*\.\s*[\w$]+)?\s*\(/i', 'into (', $sql) ?? '';
+        $sql = preg_replace('/\binto\s+[\w$]+(?:\s*\.\s*[\w$]+)?\s*\(/i', 'into (', $sql);
 
-        // db.fn(...), and "fn"(...) under ANSI_QUOTES: a stored function.
-        if (preg_match('/\.\s*[a-z_$][\w$]*\s*\(|\'\'\s*[.(]/i', $sql)) {
+        // The column list of a CTE, WITH [RECURSIVE] t (a, b) AS (...), [, t2 (c) AS (...)], is not a call.
+        $sql = $sql === null ? null : preg_replace('/(\bwith(?:\s+recursive)?|,)\s*[a-z_$][\w$]*\s*\(\s*[a-z_$][\w$]*(?:\s*,\s*[a-z_$][\w$]*)*\s*\)\s*as\s*\(/i', '$1 x as (', $sql);
+
+        // CAST(x AS DATETIME(6)) / NCHAR(4): sized type names that are not reserved words (the reserved
+        // ones, DECIMAL, CHAR, FLOAT, ..., are in BUILTIN_CALLS, as no stored function can take their name).
+        $sql = $sql === null ? null : preg_replace('/\bas\s+(datetime|nchar)\s*\(\s*\d+\s*\)/i', 'as $1', $sql);
+
+        // A PCRE error (backtrack or JIT stack limit) leaves null: fail safe.
+        if ($sql === null) {
             return false;
         }
 
-        preg_match_all('/\b([a-z_$][\w$]*)\s*\(/i', $sql, $calls);
+        // db.fn(...), and "fn"(...) or "db".fn(...) under ANSI_QUOTES: a stored function.
+        if (preg_match('/\.\s*[\w$\x80-\xff]+\s*\(|\'\'\s*[.(]/i', $sql) !== 0) {
+            return false;
+        }
+
+        // Any identifier before "(": MySQL names may start with a digit and hold bytes 0x80 and up.
+        if (preg_match_all('/([\w$\x80-\xff]+)\s*\(/', $sql, $calls) === false) {
+            return false;
+        }
 
         foreach ($calls[1] as $name) {
             if (! isset(self::BUILTIN_CALLS[strtolower($name)])) {
@@ -802,6 +831,37 @@ abstract class FledgePdo
         }
 
         return true;
+    }
+
+    /**
+     * One left-to-right pass, so a quote inside a comment and a comment marker inside a string are
+     * read as the server reads them: quoted literals become '', backtick identifiers " x " (spaced,
+     * so a keyword glued to one stays a word), and plain comments a space. The caller has already
+     * refused any backslash, so no escape sequence is honoured. Null for an executable comment
+     * (/*! or /*M!: the server runs its body) and for a PCRE error. A "--" comment needs whitespace
+     * after it here, and line comments end at "\n", as in MySQL's lexer.
+     */
+    private static function stripLiteralsAndComments(string $query): ?string
+    {
+        $executable = false;
+
+        $sql = preg_replace_callback(
+            '/\'(?:[^\']|\'\')*\'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\/\*.*?\*\/|(?:--(?=\s|$)|#)[^\n]*/s',
+            static function (array $match) use (&$executable): string {
+                if (preg_match('/^\/\*M?!/i', $match[0]) !== 0) {
+                    $executable = true;
+                }
+
+                return match ($match[0][0]) {
+                    '\'', '"' => "''",
+                    '`' => ' x ',
+                    default => ' ',
+                };
+            },
+            $query,
+        );
+
+        return $executable ? null : $sql;
     }
 
     /**
@@ -816,13 +876,18 @@ abstract class FledgePdo
      * Keywords and built-in functions that may appear before "(" in a query that leaves the
      * session unchanged. Functions that read per-session state (CONNECTION_ID, DATABASE,
      * FOUND_ROWS, ROW_COUNT) are left out, so a fiber that reads them keeps its connection.
+     * Only names built-in on both MySQL 8 and MariaDB 11: a name that is a built-in on one
+     * server only (or only at some arities, as POINT() and the geometry constructors on MariaDB)
+     * resolves to a stored function or UDF of that name on the other, so it is left out.
+     * Checked by calling each name at 0, 1, 2, 3 and 9 arguments on MySQL 8.0 and MariaDB
+     * 11.8: none answers "FUNCTION db.name does not exist".
      */
     private const BUILTIN_CALLS = [
         'select' => true, 'in' => true, 'values' => true, 'value' => true, 'exists' => true, 'and' => true, 'or' => true,
         'not' => true, 'as' => true, 'on' => true, 'using' => true, 'from' => true, 'join' => true, 'is' => true,
         'where' => true, 'into' => true, 'row' => true, 'over' => true, 'union' => true, 'all' => true, 'any' => true,
         'with' => true, 'set' => true, 'by' => true, 'having' => true, 'then' => true, 'else' => true, 'when' => true,
-        'like' => true, 'between' => true, 'some' => true, 'lateral' => true, 'index' => true, 'key' => true,
+        'like' => true, 'between' => true, 'some' => true, 'index' => true, 'key' => true,
         'partition' => true, 'except' => true, 'intersect' => true, 'case' => true, 'binary' => true, 'interval' => true,
         'count' => true, 'sum' => true, 'min' => true, 'max' => true, 'avg' => true, 'coalesce' => true,
         'ifnull' => true, 'if' => true, 'nullif' => true, 'isnull' => true, 'lower' => true, 'upper' => true,
@@ -831,8 +896,7 @@ abstract class FledgePdo
         'left' => true, 'right' => true, 'lpad' => true, 'rpad' => true, 'locate' => true, 'instr' => true,
         'replace' => true, 'reverse' => true, 'repeat' => true, 'field' => true, 'find_in_set' => true, 'hex' => true,
         'unhex' => true, 'md5' => true, 'sha1' => true, 'sha2' => true, 'crc32' => true, 'uuid' => true,
-        'uuid_to_bin' => true, 'bin_to_uuid' => true, 'match' => true, 'against' => true, 'regexp_like' => true,
-        'regexp_replace' => true, 'regexp_substr' => true, 'round' => true, 'floor' => true, 'ceil' => true,
+        'match' => true, 'regexp_replace' => true, 'regexp_substr' => true, 'round' => true, 'floor' => true, 'ceil' => true,
         'ceiling' => true, 'abs' => true, 'mod' => true, 'power' => true, 'pow' => true, 'sqrt' => true, 'rand' => true,
         'sign' => true, 'truncate' => true, 'format' => true, 'cast' => true, 'convert' => true, 'date' => true,
         'time' => true, 'timestamp' => true, 'now' => true, 'curdate' => true, 'curtime' => true, 'current_date' => true,
@@ -845,10 +909,44 @@ abstract class FledgePdo
         'json_overlaps' => true, 'json_search' => true, 'json_type' => true, 'json_contains_path' => true,
         'json_object' => true, 'json_array' => true, 'json_arrayagg' => true, 'json_objectagg' => true,
         'json_valid' => true, 'json_keys' => true, 'json_set' => true, 'json_insert' => true, 'json_replace' => true,
-        'json_remove' => true, 'json_merge_patch' => true, 'json_value' => true, 'json_table' => true,
+        'json_remove' => true, 'json_merge_patch' => true, 'json_value' => true,
         'group_concat' => true, 'distinct' => true, 'row_number' => true, 'rank' => true, 'dense_rank' => true,
         'lag' => true, 'lead' => true, 'first_value' => true, 'last_value' => true, 'greatest' => true, 'least' => true,
-        'st_distance_sphere' => true, 'point' => true, 'sleep' => true,
+        'st_distance_sphere' => true, 'sleep' => true,
+        // Sized type names in CAST / CONVERT; all reserved words, CHAR(n) also the built-in.
+        'char' => true, 'decimal' => true, 'dec' => true, 'numeric' => true, 'float' => true, 'double' => true,
+        'real' => true,
+        // Math.
+        'radians' => true, 'degrees' => true, 'cos' => true, 'sin' => true, 'tan' => true, 'cot' => true,
+        'acos' => true, 'asin' => true, 'atan' => true, 'atan2' => true, 'pi' => true, 'exp' => true, 'ln' => true,
+        'log' => true, 'log2' => true, 'log10' => true,
+        // Spatial: accessors, predicates and measures, all read-only.
+        'mbrcontains' => true, 'mbrdisjoint' => true,
+        'mbrequals' => true, 'mbrintersects' => true, 'mbroverlaps' => true, 'mbrtouches' => true, 'mbrwithin' => true,
+        'st_area' => true, 'st_asbinary' => true, 'st_asgeojson' => true, 'st_astext' => true, 'st_aswkb' => true,
+        'st_aswkt' => true, 'st_buffer' => true, 'st_centroid' => true, 'st_contains' => true, 'st_convexhull' => true,
+        'st_crosses' => true, 'st_difference' => true, 'st_dimension' => true, 'st_disjoint' => true,
+        'st_distance' => true, 'st_endpoint' => true, 'st_envelope' => true, 'st_equals' => true,
+        'st_exteriorring' => true, 'st_geomcollfromtext' => true, 'st_geomfromgeojson' => true,
+        'st_geomfromtext' => true, 'st_geomfromwkb' => true, 'st_geometryfromtext' => true,
+        'st_geometryfromwkb' => true, 'st_geometryn' => true, 'st_geometrytype' => true, 'st_interiorringn' => true,
+        'st_intersection' => true, 'st_intersects' => true, 'st_isclosed' => true, 'st_isempty' => true,
+        'st_issimple' => true, 'st_length' => true, 'st_linefromtext' => true,
+        'st_numgeometries' => true, 'st_numinteriorrings' => true,
+        'st_numpoints' => true, 'st_overlaps' => true, 'st_pointfromtext' => true,
+        'st_pointn' => true, 'st_polygonfromtext' => true, 'st_srid' => true,
+        'st_startpoint' => true, 'st_symdifference' => true, 'st_touches' => true,
+        'st_union' => true, 'st_within' => true, 'st_x' => true, 'st_y' => true,
+        // Date and time.
+        'dayname' => true, 'monthname' => true, 'to_days' => true, 'from_days' => true, 'to_seconds' => true,
+        'utc_date' => true, 'utc_time' => true, 'current_time' => true, 'localtime' => true,
+        'localtimestamp' => true, 'sysdate' => true, 'dayofyear' => true, 'weekofyear' => true, 'yearweek' => true,
+        'makedate' => true, 'maketime' => true, 'sec_to_time' => true, 'time_to_sec' => true, 'timediff' => true,
+        'addtime' => true, 'subtime' => true, 'adddate' => true, 'subdate' => true, 'period_add' => true,
+        'period_diff' => true, 'microsecond' => true, 'time_format' => true, 'get_format' => true,
+        // JSON (MySQL and MariaDB), all returning a value without side effects.
+        'json_quote' => true, 'json_array_append' => true, 'json_array_insert' => true, 'json_merge' => true,
+        'json_merge_preserve' => true, 'json_depth' => true, 'json_pretty' => true, 'json_schema_valid' => true,
     ];
 
     /**

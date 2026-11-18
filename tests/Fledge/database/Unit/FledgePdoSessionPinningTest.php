@@ -335,7 +335,144 @@ it('classifies only plain statements as leaving the session unchanged', function
     ['call proc()', false],
     ['select sql_calc_found_rows * from t', false],
     ['handler t open', false],
+    // Comments: block, optimizer hint, APM trailer, line comments; quotes inside comments and comments inside strings.
+    ['select * from `users` /* controller:users,action:index */', true],
+    ['/* traceparent=00-abc-def-01 */ select 1', true],
+    ['select /*+ MAX_EXECUTION_TIME(1000) */ * from `users`', true],
+    ['select /*+ BKA(t1) NO_ICP(t2) */ * from t1 join t2 on t1.id = t2.id', true],
+    ["select 1 -- trailing note\n", true],
+    ["select 1 -- it's a note", true],
+    ["select 1 # hash note", true],
+    ["select 1 # first\nfrom `users`", true],
+    ["select 1 /* it's fine */ from `users`", true],
+    ["select '/* not a comment */', '-- nor this', '# nor this' from `users`", true],
+    ['select 1; -- apm trailer', true],
+    ['select 1 /* unterminated', false],
+    ['select 1 /* x */; set names latin1', false],
+    ["select 1 -- note\n; set names latin1", false],
+    ["select 1 # note\n, get_lock('a', 0)", false],
+    ["select 1 /* ' */, get_lock('a', 0) /* ' */", false],
+    ["select 1 -- '\n, get_lock('a', 0) -- '", false],
+    ["select 'a /* b', get_lock('a', 0), 'c */'", false],
+    ["select 'x -- y'; set names latin1", false],
+    ["select 'x # y', release_lock('a')", false],
+    ['select 1--1', true],
+    ["select 1 --get_lock('a', 0)", false],
+    // Executable comments run their body as SQL: always dirty.
+    ['select /*! 1 */', false],
+    ['select 1 /*!40101 set @x = 1 */', false],
+    ['/*!40101 SET NAMES utf8mb4 */', false],
+    ['select 1 /*M!100100 set @x = 1 */', false],
+    ['select /*M! 1 */ 1', false],
+    // Built-ins: ANY_VALUE, CAST / CONVERT with sized types.
+    // ANY_VALUE is not a MariaDB built-in: a stored function of that name would run there.
+    ['select any_value(`name`) from `users` group by `team_id`', false],
+    ['select cast(`price` as decimal(10,2)) from `products`', true],
+    ['select cast(`price` as decimal(10, 2)), cast(`code` as char(8)) from `products`', true],
+    ['select cast(`at` as datetime(6)), cast(`n` as nchar(4)), cast(`x` as binary(16)) from t', true],
+    ['select cast(`at` as time(3)), cast(`v` as float(24)), cast(`v` as double) from t', true],
+    ['select convert(`price`, decimal(10,2)), convert(`code`, char(8)) from `products`', true],
+    ["select convert(`name` using utf8mb4), char(65) from `users`", true],
+    // Math.
+    ['select radians(`lat`), degrees(`lng`), cos(1), sin(1), tan(1), cot(1), acos(1), asin(1), atan(1), atan2(1, 2), pi()', true],
+    ['select sqrt(4), pow(2, 3), power(2, 3), exp(1), ln(2), log(2), log(2, 8), log2(8), log10(100), sign(-1)', true],
+    ["select 6371 * acos(cos(radians(?)) * cos(radians(`lat`)) * cos(radians(`lng`) - radians(?)) + sin(radians(?)) * sin(radians(`lat`))) as distance from `places` having distance < ?", true],
+    // Spatial.
+    ["select st_distance_sphere(st_geomfromtext(?), `location`), st_x(`location`), st_y(`location`) from `places`", true],
+    ["select st_astext(`geo`), st_asgeojson(`geo`), st_srid(`geo`), st_distance(`a`, `b`) from t", true],
+    ["select * from t where st_contains(st_geomfromtext(?), `geo`) and st_within(`geo`, st_geomfromtext(?, 4326))", true],
+    ["select * from t where st_intersects(`geo`, st_buffer(st_pointfromtext(?), 10)) and mbrcontains(`area`, st_geomfromtext(?))", true],
+    ['select st_area(`poly`), st_length(`line`), st_numpoints(`line`), st_issimple(`g`) from t', true],
+    ['select st_unknown_side_effect(`p`) from t', false],
+    // POINT() and the geometry constructors fall through to a stored function at other arities on MariaDB.
+    ["select st_distance_sphere(point(?, ?), `location`) from `places`", false],
+    ['select linestring(`a`, `b`), polygon(`r`) from t', false],
+    // Built-in on MySQL only.
+    ['select st_latitude(`p`), st_longitude(`p`) from t', false],
+    ['select st_isvalid(`g`) from t', false],
+    ['select st_geohash(`p`, 10) from t', false],
+    ['select uuid_to_bin(?), bin_to_uuid(`id`) from t', false],
+    ["select regexp_like(`name`, '^a') from t", false],
+    ["select * from t, lateral (select 1) as l", false],
+    ["select * from t where match(`body`) against(?)", false],
+    ["select * from json_table(`doc`, '$[*]' columns (a int path '$')) as j", false],
+    // Date and time.
+    ['select dayname(`at`), monthname(`at`), to_days(`at`), from_days(738000), dayofyear(`at`), weekofyear(`at`), yearweek(`at`) from t', true],
+    ['select utc_date(), utc_time(), utc_timestamp(), current_time(), curtime(), sysdate(), localtime(), localtimestamp()', true],
+    ['select timediff(`a`, `b`), addtime(`a`, ?), subtime(`a`, ?), adddate(`a`, 1), subdate(`a`, 1), sec_to_time(60), time_to_sec(`t`) from t', true],
+    ["select makedate(2026, 1), maketime(1, 2, 3), time_format(`t`, '%H'), to_seconds(`at`), microsecond(`at`), period_add(202601, 1), period_diff(202602, 202601)", true],
+    // JSON.
+    ['select json_quote(`name`), json_depth(`doc`), json_pretty(`doc`) from t', true],
+    ["select json_array_append(`doc`, '$.a', 1), json_array_insert(`doc`, '$[0]', 1), json_merge_patch(`a`, `b`), json_merge_preserve(`a`, `b`) from t", true],
+    ["select json_value(`doc`, '$.b'), json_contains(`doc`, ?), json_schema_valid(?, `doc`) from t", true],
+    // Built-in on MySQL only.
+    ['select json_storage_size(`doc`) from t', false],
+    ["select * from t where ? member of(`doc`->'$.tags')", false],
+    // Built-in on MariaDB only.
+    ["select json_query(`doc`, '$.a') from t", false],
+    ["select json_exists(`doc`, '$.c') from t", false],
+    ['select json_compact(`doc`), json_detailed(`doc`), json_loose(`doc`) from t', false],
+    ['select json_normalize(`doc`), json_equals(`a`, `b`) from t', false],
+    // CTEs with a column list.
+    ['with t (a, b) as (select 1, 2) select a, b from t', true],
+    ['with recursive seq (n) as (select 1 union all select n + 1 from seq where n < 10) select n from seq', true],
+    ['with t1 (a) as (select 1), t2 (b, c) as (select 2, 3) select * from t1, t2', true],
+    ['with t (a) as (select my_stored_function(1)) select a from t', false],
+    ['with t (a) as (select 1) select a from t into @x', false],
+    // Must stay dirty: locks, variables, LAST_INSERT_ID(expr), BENCHMARK, unknown functions.
+    ["select get_lock('a', 10) /* hint */", false],
+    ["select release_lock('a') -- done", false],
+    ['select release_all_locks()', false],
+    ['select is_used_lock(?)', false],
+    ['select last_insert_id(42)', false],
+    ['select 1 from t where id = last_insert_id(id)', false],
+    ['set @x = 1', false],
+    ['set session sql_mode = ?', false],
+    ['select @x := 1, `id` from `users`', false],
+    ['select `id` into @x from `users` limit 1', false],
+    ['select `id` from `users` limit 1 into @x', false],
+    ["select benchmark(1000000, md5('a'))", false],
+    ['select unknown_function(1)', false],
+    ['select cast(`x` as my_type(10))', false],
+    ['select datetime(6)', false],
+    ['select nchar(4)', false],
+    // A PCRE error (JIT stack or backtrack limit) must not empty the SQL into a clean verdict.
+    'pcre error' => ['select my_side_effect(1), f('.str_repeat('a,', 10000).'a) from t', false],
+    // "--" followed by a control character starts a comment on the server.
+    'dash dash ctrl 01' => ["SELECT 1 --\x01 '\n, GET_LOCK('rvw',0) -- '", false],
+    'dash dash ctrl 00' => ["SELECT 1 --\x00 '\n, GET_LOCK('rvw',0) -- '", false],
+    'dash dash ctrl 1f' => ["SELECT 1 --\x1f '\n, GET_LOCK('rvw',0) -- '", false],
+    'dash dash ctrl 7f' => ["SELECT 1 --\x7f '\n, GET_LOCK('rvw',0) -- '", false],
+    // A backslash is no escape under NO_BACKSLASH_ESCAPES (strings) or ANSI_QUOTES (identifiers).
+    'backslash no_backslash_escapes' => ["SELECT 'a\\', GET_LOCK('rvw',0), '\\'", false],
+    'backslash ansi_quotes' => ["SELECT 1 AS \"a\\\", GET_LOCK('rvw',0) AS \"\\\"", false],
+    'backslash in a string' => ["select 'it\\'s' from t", false],
+    // Under ANSI_QUOTES a double-quoted name before "(" or "." is a stored function.
+    'ansi quoted function' => ['select "fn"(1)', false],
+    'ansi quoted function spaced' => ['select "fn" /* c */ (1)', false],
+    'ansi quoted schema function' => ['select "db"."fn"(1)', false],
+    'ansi quoted schema bare function' => ['select "db".fn(1)', false],
+    'double quotes as string or alias' => ['select "a", 1 as "b", "c""d" from t', true],
+    'json path with double quotes' => ["select json_unquote(json_extract(`meta`, '$.\"key\"')) from t", true],
+    // Function names an ASCII-letter capture misses.
+    'digit-led function' => ['SELECT 1fn()', false],
+    'utf8 tail function' => ["SELECT fn\u{00e7}()", false],
+    'utf8 function' => ["SELECT \u{0192}()", false],
+    'utf8 schema function' => ["SELECT db.\u{0192}(1)", false],
+    'dollar function' => ['SELECT $fn(1)', false],
+    // A backtick identifier glued to a keyword still leaves that keyword visible.
+    'backtick glued into' => ["select `a`into outfile '/tmp/x'", false],
+    'backtick glued function' => ['select `a`last_insert_id(5)', false],
+    // Parentheses that are not calls stay clean.
+    'subquery in' => ['select * from `users` where `id` in (select `user_id` from `posts`) and (`a` = 1 or `b` = 2)', true],
+    'operators before parenthesis' => ['select (1 + 2) * (3), -(4), 5-(6), ?+(7) from t where not (`a` = 1)', true],
+    'multi row values' => ['insert into `t` (`a`, `b`) values (?, ?), (?, ?)', true],
+    'exists subquery' => ['select exists (select 1 from `t`) as `e`', true],
 ]);
+
+it('keeps SLEEP() clean: it waits but leaves the session unchanged', function () {
+    expect(Fledge\Fiber\Database\Pdo\FledgePdo::leavesSessionUnchanged('select sleep(0.05)'))->toBeTrue();
+});
 
 it('lets a fiber wait on a querying child fiber with a pool of one', function () {
     $this->connections[] = $connection = sessionPinningConnection(1);
