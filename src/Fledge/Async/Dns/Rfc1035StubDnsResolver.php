@@ -264,11 +264,13 @@ final class Rfc1035StubDnsResolver implements DnsResolver
             return $this->pendingQueries[$pendingQueryKey]->await($cancellation);
         }
 
-        $future = async(function () use ($name, $type, $cancellation): array {
+        // The shared query runs without any caller's cancellation, bounded by the config timeout;
+        // each caller awaits the shared future with its own cancellation below.
+        $future = async(function () use ($name, $type, $pendingQueryKey): array {
             try {
                 $this->loadConfigIfNotLoaded();
                 if ($this->configStatus === self::CONFIG_FAILED) {
-                    return $this->blockingFallbackResolver->query($name, $type, $cancellation);
+                    return $this->blockingFallbackResolver->query($name, $type);
                 }
 
                 \assert($this->config !== null);
@@ -283,8 +285,8 @@ final class Rfc1035StubDnsResolver implements DnsResolver
 
                     $result = [];
 
-                    foreach ($cachedValue as [$data, $type]) {
-                        $result[] = new DnsRecord($data, $type);
+                    foreach ($cachedValue as [$data, $cachedType]) {
+                        $result[] = new DnsRecord($data, $cachedType);
                     }
 
                     return $result;
@@ -314,7 +316,7 @@ final class Rfc1035StubDnsResolver implements DnsResolver
 
                         $attemptDescription[] = $uri;
 
-                        $response = $socket->ask($question, $this->config->getTimeout(), $cancellation);
+                        $response = $socket->ask($question, $this->config->getTimeout());
                         $this->assertAcceptableResponse($response, $name);
 
                         // UDP sockets are never reused, they're not in the $this->sockets map
@@ -388,11 +390,11 @@ final class Rfc1035StubDnsResolver implements DnsResolver
                     \implode(", ", $attemptDescription)
                 ));
             } finally {
-                unset($this->pendingQueries[$type . " " . $name]);
+                unset($this->pendingQueries[$pendingQueryKey]);
             }
         });
 
-        $this->pendingQueries[$type . " " . $name] = $future;
+        $this->pendingQueries[$pendingQueryKey] = $future;
 
         return $future->await($cancellation);
     }
