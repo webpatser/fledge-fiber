@@ -20,6 +20,9 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     /** @var Future<PostgresConnection>|null Connection used for notification listening. */
     private Future|null $listeningConnection = null;
 
+    /** The resolved listening connection, once $listeningConnection completed. */
+    private ?PostgresConnection $listeningLink = null;
+
     /** @var int Number of listeners on listening connection. */
     private int $listenerCount = 0;
 
@@ -82,7 +85,15 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         $connection = parent::pop();
 
         if ($this->resetConnections) {
-            $connection->query("DISCARD ALL");
+            try {
+                $connection->query("DISCARD ALL");
+            } catch (\Throwable $exception) {
+                // Session state is unknown: drop the connection and free its slot (the pool
+                // discards closed connections), or the pool slowly runs out of connections.
+                $connection->close();
+                $this->push($connection);
+                throw $exception;
+            }
         }
 
         return $connection;
@@ -150,26 +161,73 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     #[\Override]
     public function listen(string $channel): PostgresListener
     {
-        $this->listeningConnection ??= async($this->pop(...));
+        // The listening session died (server ended it) while listeners still hold it: they
+        // fail with the connection error, and new listeners get a fresh connection.
+        if ($this->listeningLink?->isClosed()) {
+            $this->resetListeningConnection();
+        }
 
-        $connection = $this->listeningConnection->await();
+        $future = $this->listeningConnection ??= async($this->pop(...));
 
+        // Count before awaiting, so a listener released meanwhile cannot hand the
+        // connection back to the pool while this one is still attaching.
         ++$this->listenerCount;
 
         try {
-            $listener = $connection->listen($channel);
+            $connection = $future->await();
         } catch (\Throwable $exception) {
-            if (--$this->listenerCount === 0) {
-                $this->push($connection);
+            // Every listener awaiting this future fails with it; the first one resets the state.
+            if ($this->listeningConnection === $future) {
+                $this->listeningConnection = null;
+                $this->listenerCount = 0;
             }
             throw $exception;
         }
 
-        return new Internal\PostgresPooledListener($listener, function () use ($connection): void {
-            if (--$this->listenerCount === 0) {
-                $this->push($connection);
-            }
-        });
+        $this->listeningLink = $connection;
+
+        try {
+            $listener = $connection->listen($channel);
+        } catch (\Throwable $exception) {
+            $this->releaseListeningConnection($future);
+            throw $exception;
+        }
+
+        return new Internal\PostgresPooledListener(
+            $listener,
+            fn () => $this->releaseListeningConnection($future),
+        );
+    }
+
+    /**
+     * @param Future<PostgresConnection> $future The listening connection the listener was attached to.
+     */
+    private function releaseListeningConnection(Future $future): void
+    {
+        if ($this->listeningConnection !== $future) {
+            return; // Already reset; the reset returned that connection to the pool.
+        }
+
+        if (--$this->listenerCount === 0 || $this->listeningLink?->isClosed()) {
+            $this->resetListeningConnection();
+        }
+    }
+
+    /**
+     * Returns the listening connection to the pool (which drops it when closed) and lets
+     * the next listener check out a connection of its own.
+     */
+    private function resetListeningConnection(): void
+    {
+        $connection = $this->listeningLink;
+
+        $this->listeningConnection = null;
+        $this->listeningLink = null;
+        $this->listenerCount = 0;
+
+        if ($connection !== null) {
+            $this->push($connection);
+        }
     }
 
     #[\Override]

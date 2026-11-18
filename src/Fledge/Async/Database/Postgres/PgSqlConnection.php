@@ -33,7 +33,8 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
             throw new SqlConnectionException("Failed to access connection socket");
         }
 
-        $hash = \sha1($config->getHost() . $config->getPort() . $config->getUser());
+        // Type OIDs are per database, so the cached type table is too.
+        $hash = \sha1(\serialize([$config->getHost(), $config->getPort(), $config->getUser(), $config->getDatabase()]));
 
         $deferred = new DeferredFuture();
 

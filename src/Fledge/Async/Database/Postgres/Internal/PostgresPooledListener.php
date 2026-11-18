@@ -38,9 +38,18 @@ final class PostgresPooledListener implements PostgresListener, \IteratorAggrega
 
     public function __destruct()
     {
-        if ($this->listener->isListening() && $this->release) {
-            EventLoop::queue(self::dispose(...), $this->listener, $this->release);
-            $this->release = null;
+        if (!$this->release) {
+            return;
+        }
+
+        $release = $this->release;
+        $this->release = null;
+
+        // Release the hold on the pool exactly once, also when the listener stopped listening.
+        if ($this->listener->isListening()) {
+            EventLoop::queue(self::dispose(...), $this->listener, $release);
+        } else {
+            EventLoop::queue($release);
         }
     }
 

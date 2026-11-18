@@ -211,10 +211,11 @@ final class PqHandle extends AbstractHandle
 
             case pq\Result::NONFATAL_ERROR:
             case pq\Result::FATAL_ERROR:
-                while ($this->handle->busy && $this->handle->getResult()) {
-                    // Clear all outstanding result rows from the connection
+                try {
+                    $this->drainResults();
+                } finally {
+                    throw new PostgresQueryError($result->errorMessage, $result->diag, $sql ?? '');
                 }
-                throw new PostgresQueryError($result->errorMessage, $result->diag, $sql ?? '');
 
             case pq\Result::BAD_RESPONSE:
                 $this->close();
@@ -235,11 +236,65 @@ final class PqHandle extends AbstractHandle
             throw new SqlConnectionException("Connection closed");
         }
 
-        if (!$this->handle->busy && ($next = $this->handle->getResult()) instanceof pq\Result) {
+        // A later statement of a multi-statement query may still be running: wait for its
+        // result instead of leaving it unread, which would leave the connection busy.
+        $next = $this->handle->busy ? $this->awaitNextResult() : $this->handle->getResult();
+
+        if ($next instanceof pq\Result) {
             return $this->makeResult($next, $sql);
         }
 
         return null;
+    }
+
+    /**
+     * Reads and discards every outstanding result of the running query, so the connection is
+     * idle again: buffered results directly, results still on their way through the poll watcher.
+     *
+     * @throws SqlException
+     */
+    private function drainResults(): void
+    {
+        while ($this->handle) {
+            $next = $this->handle->busy ? $this->awaitNextResult() : $this->handle->getResult();
+
+            if (!$next instanceof pq\Result) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Waits through the poll watcher for the next result of the running query, holding off
+     * other operations on this connection meanwhile.
+     */
+    private function awaitNextResult(): mixed
+    {
+        \assert($this->handle !== null);
+
+        $busy = $this->busy = new DeferredFuture;
+        $pending = $this->pendingOperation = new DeferredFuture;
+
+        try {
+            EventLoop::reference($this->poll);
+            if (!$this->handle->flush()) {
+                EventLoop::enable($this->await);
+            }
+
+            return $pending->getFuture()->await();
+        } catch (pq\Exception $exception) {
+            throw new SqlException($this->handle?->errorMessage ?? $exception->getMessage(), 0, $exception);
+        } finally {
+            if ($this->pendingOperation === $pending) {
+                $this->pendingOperation = null;
+            }
+
+            if ($this->busy === $busy) {
+                $this->busy = null;
+            }
+
+            $busy->complete();
+        }
     }
 
     private function fetch(?string $sql): ?pq\Result
