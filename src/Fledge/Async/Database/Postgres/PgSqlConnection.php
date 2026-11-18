@@ -52,8 +52,16 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
         ): void {
             switch ($result = \pg_connect_poll($connection)) {
                 case \PGSQL_POLLING_READING:
+                    // Wait for readability only: a connected socket is always writable, so
+                    // leaving the writable watcher on would spin this callback.
+                    EventLoop::disable($await);
+                    EventLoop::enable($poll);
+                    return;
+
                 case \PGSQL_POLLING_WRITING:
-                    return; // Connection still reading or writing, so return and leave callback enabled.
+                    EventLoop::disable($poll);
+                    EventLoop::enable($await);
+                    return;
 
                 case \PGSQL_POLLING_FAILED:
                     $deferred->error(new SqlConnectionException(\pg_last_error($connection)));
@@ -72,7 +80,9 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
             EventLoop::disable($await);
         };
 
-        $poll = EventLoop::onReadable($socket, $callback);
+        // libpq starts an async connect in the writing state, so wait for writability first
+        // and switch watchers as pg_connect_poll() reports what it needs next.
+        $poll = EventLoop::disable(EventLoop::onReadable($socket, $callback));
         $await = EventLoop::onWritable($socket, $callback);
 
         try {
