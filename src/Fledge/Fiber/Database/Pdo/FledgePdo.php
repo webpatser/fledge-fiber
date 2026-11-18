@@ -740,7 +740,8 @@ abstract class FledgePdo
      * function, no LAST_INSERT_ID(), no SQL_CALC_FOUND_ROWS, no temporary table, no executable
      * comment (MySQL runs the body of a /*! comment, MariaDB that of /*M!), no unterminated
      * comment, no second statement after a semicolon, and no call except the built-ins in
-     * BUILTIN_CALLS (a schema-qualified or quoted name counts as a stored function). Plain
+     * BUILTIN_CALLS (a schema-qualified or quoted name counts as a stored function; AGAINST counts
+     * only as the tail of MATCH (columns), never as a name of its own). Plain
      * comments, optimizer hints (/*+ ... *\/) and "-- " or "#" line comments are skipped.
      * Anything else counts as changing the session.
      *
@@ -808,6 +809,12 @@ abstract class FledgePdo
         // CAST(x AS DATETIME(6)) / NCHAR(4): sized type names that are not reserved words (the reserved
         // ones, DECIMAL, CHAR, FLOAT, ..., are in BUILTIN_CALLS, as no stored function can take their name).
         $sql = $sql === null ? null : preg_replace('/\bas\s+(datetime|nchar)\s*\(\s*\d+\s*\)/i', 'as $1', $sql);
+
+        // MATCH (cols) AGAINST (...): AGAINST is the tail of MATCH, not a call, but only directly after
+        // an unqualified MATCH with a flat column list (comments are already spaces). Anywhere else, and
+        // as a free or qualified name, against(...) is a stored function (a legal name on MariaDB) and
+        // stays a name before "(". The parentheses stay, so the AGAINST arguments are still checked.
+        $sql = $sql === null ? null : preg_replace('/(?<![\w$\x80-\xff.])match\s*\(([^()]*)\)\s*against\s*\(/i', 'match ($1) (', $sql);
 
         // A PCRE error (backtrack or JIT stack limit) leaves null: fail safe.
         if ($sql === null) {
