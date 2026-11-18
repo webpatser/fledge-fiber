@@ -2,6 +2,9 @@
 
 namespace Fledge\Async\Database;
 
+use Fledge\Async\Cancellation;
+use Fledge\Async\CancelledException;
+use Fledge\Async\DeferredCancellation;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
@@ -19,6 +22,7 @@ use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
 use Revolt\EventLoop;
 use function Fledge\Async\async;
+use function Fledge\Async\delay;
 
 /**
  * @template TConfig of SqlConfig
@@ -101,6 +105,8 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
      * @param SqlConnector<TConfig, TConnection> $connector
      * @param positive-int $maxConnections Maximum number of active connections in the pool.
      * @param positive-int $idleTimeout Number of seconds until idle connections are removed from the pool.
+     * @param float|null $waitTimeout Fledge: seconds a caller may wait for a connection (the wait on a full
+     *     pool and the connect included) before pop() throws an SqlException; null waits as long as it takes.
      */
     public function __construct(
         private readonly SqlConfig $config,
@@ -108,10 +114,15 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
         private readonly int $maxConnections = self::DEFAULT_MAX_CONNECTIONS,
         private int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
         private SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed,
+        private readonly ?float $waitTimeout = null,
     ) {
         /** @psalm-suppress TypeDoesNotContainType */
         if ($this->idleTimeout < 1) {
             throw new \Error("The idle timeout must be 1 or greater");
+        }
+
+        if ($this->waitTimeout !== null && $this->waitTimeout <= 0) {
+            throw new \Error("The wait timeout must be greater than 0");
         }
 
         /** @psalm-suppress TypeDoesNotContainType */
@@ -174,6 +185,14 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
     public function getIdleTimeout(): int
     {
         return $this->idleTimeout;
+    }
+
+    /**
+     * Fledge: seconds a caller may wait for a connection, or null for no limit.
+     */
+    public function getWaitTimeout(): ?float
+    {
+        return $this->waitTimeout;
     }
 
     public function getLastUsedAt(): int
@@ -311,7 +330,7 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
     /**
      * @return TConnection
      *
-     * @throws SqlException If creating a new connection fails.
+     * @throws SqlException If creating a new connection fails, or no connection came within the wait timeout.
      * @throws \Error If the pool has been closed.
      */
     protected function pop(): SqlConnection
@@ -320,8 +339,44 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
             throw new \Error("The pool has been closed");
         }
 
-        while ($this->future !== null) {
-            $this->future->await(); // Prevent simultaneous connection creation or waiting.
+        if ($this->waitTimeout === null) {
+            return $this->popConnection(null);
+        }
+
+        // Fledge: one deadline for the whole call, the wait for the turn and the connect included. The timer
+        // stays referenced, as a caller waiting for a connection keeps the loop alive until it gets one.
+        $deadline = new DeferredCancellation();
+        $timer = EventLoop::delay($this->waitTimeout, static fn () => $deadline->cancel());
+
+        try {
+            return $this->popConnection($deadline->getCancellation());
+        } finally {
+            EventLoop::cancel($timer);
+        }
+    }
+
+    /**
+     * @return TConnection
+     *
+     * @throws SqlException If creating a new connection fails or the deadline passed.
+     */
+    private function popConnection(?Cancellation $deadline): SqlConnection
+    {
+        // Prevent simultaneous connection creation or waiting. Only the fiber that owns the future clears the
+        // field, once it resumes; await() returns a completed future at once, so when the owner's resume is
+        // still queued, yield until it ran (a timer runs after every queued resume). That also keeps the order:
+        // the caller that waited first takes the connection before a newer one.
+        while (($future = $this->future) !== null) {
+            if ($future->isComplete()) {
+                delay(0);
+            }
+
+            try {
+                $future->await($deadline);
+            } catch (CancelledException $exception) {
+                // A queued caller holds nothing, so on its deadline it just leaves.
+                throw $this->timedOut($exception, $deadline);
+            }
         }
 
         do {
@@ -330,8 +385,20 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
                 if ($this->connections->count() < $this->getConnectionLimit()) {
                     // Max connection count has not been reached, so open another connection.
                     try {
-                        $this->future = async(fn () => $this->connector->connect($this->config));
-                        $connection = $this->future->await();
+                        $this->future = $connect = async(fn () => $this->connector->connect($this->config));
+
+                        try {
+                            $connection = $connect->await($deadline);
+                        } catch (CancelledException $exception) {
+                            if ($deadline?->isRequested()) {
+                                // Fledge: the connect goes on without a caller, so close what it opens. Callers
+                                // queued on it wake when it settles, or leave on their own deadlines.
+                                $connect->map(static fn (SqlConnection $late) => $late->close())->ignore();
+                            }
+
+                            throw $this->timedOut($exception, $deadline);
+                        }
+
                         /** @psalm-suppress DocblockTypeContradiction */
                         if (!$connection instanceof SqlLink) {
                             throw new \Error(\sprintf(
@@ -341,7 +408,9 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
                             ));
                         }
                     } finally {
-                        $this->future = null;
+                        if ($this->future === $connect) {
+                            $this->future = null;
+                        }
                     }
 
                     if ($this->isClosed()) {
@@ -360,13 +429,28 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
 
                 // All possible connections busy, so wait until one becomes available.
                 try {
-                    $this->awaitingConnection = new DeferredFuture;
+                    $this->awaitingConnection = $awaiting = new DeferredFuture;
 
-                    $this->future = $this->awaitingConnection->getFuture();
+                    $this->future = $future = $awaiting->getFuture();
                     // Connection will be pulled from $this->idle when future is resolved.
-                    $this->future->await();
+                    $future->await($deadline);
+                } catch (CancelledException $exception) {
+                    // Fledge: push() puts the connection into idle before it completes the future, so one that
+                    // came back after the deadline fired but before this caller resumed is taken, not left.
+                    if (!$deadline?->isRequested() || $this->idle->isEmpty()) {
+                        throw $this->timedOut($exception, $deadline);
+                    }
                 } finally {
-                    $this->future = null;
+                    if ($this->future === $future) {
+                        $this->future = null;
+                    }
+
+                    // Fledge: a caller that gives up before push() hands the turn on. Completing its future
+                    // without a connection wakes the callers queued on it, and the first one waits in its place.
+                    if ($this->awaitingConnection === $awaiting) {
+                        $this->awaitingConnection = null;
+                        $awaiting->complete(null);
+                    }
                 }
             }
 
@@ -381,6 +465,27 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
         } while (!$this->isClosed());
 
         throw new SqlException("Pool closed before an active connection could be obtained");
+    }
+
+    /**
+     * Fledge: the exception for a cancelled wait, the pool's timeout when $deadline fired.
+     *
+     * Code 2002 is mysqlnd's CR_CONNECTION_ERROR. The PDO shims report a plain SqlException as a general error
+     * with its code, and the message matches none of Laravel's lost connection texts, so Laravel throws the
+     * QueryException instead of reconnecting, which would build a second pool and bypass its limit.
+     */
+    private function timedOut(CancelledException $exception, ?Cancellation $deadline): \Throwable
+    {
+        if (!$deadline?->isRequested()) {
+            return $exception;
+        }
+
+        return new SqlException(\sprintf(
+            "Timed out after %ss waiting for a connection from the pool (%d of %d connections in use)",
+            $this->waitTimeout,
+            $this->connections->count() - $this->idle->count(),
+            $this->getConnectionLimit(),
+        ), 2002);
     }
 
     /**

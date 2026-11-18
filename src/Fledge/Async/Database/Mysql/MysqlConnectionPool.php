@@ -21,16 +21,24 @@ final class MysqlConnectionPool extends SqlCommonConnectionPool implements Mysql
      * @param positive-int $maxConnections
      * @param positive-int $idleTimeout
      * @param SqlConnector<MysqlConfig, MysqlConnection>|null $connector
+     * @param float|null $waitTimeout Fledge: seconds a caller may wait for a connection, null for no limit
      */
     public function __construct(
         MysqlConfig $config,
         int $maxConnections = self::DEFAULT_MAX_CONNECTIONS,
         int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
         ?SqlConnector $connector = null,
+        ?float $waitTimeout = null,
     ) {
         $this->seen = new \WeakMap();
 
-        parent::__construct($config, $connector ?? mysqlConnector(), $maxConnections, $idleTimeout);
+        parent::__construct(
+            $config,
+            $connector ?? mysqlConnector(),
+            $maxConnections,
+            $idleTimeout,
+            waitTimeout: $waitTimeout,
+        );
     }
 
     protected function pop(): SqlConnection
