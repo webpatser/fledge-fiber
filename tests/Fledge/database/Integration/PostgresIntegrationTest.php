@@ -280,7 +280,107 @@ it('keeps the type table of each database apart', function () {
     }
 });
 
-it('returns every result of a multi-statement query whose later statements are still running', function (string $class, string $extension) {
+it('returns a user type created after connect as a string, like pdo_pgsql', function (string $class, string $extension) {
+    if (! extension_loaded($extension)) {
+        $this->markTestSkipped("The {$extension} extension is not loaded");
+    }
+
+    $suffix = bin2hex(random_bytes(4));
+    $mood = "_fledge_late_mood_{$suffix}";
+    $pair = "_fledge_late_pair_{$suffix}";
+    $admin = adminPostgresPdo();
+    $connection = bufferedPostgresConnection($class);
+
+    try {
+        // The connection is open and has already read the type table when the types appear.
+        $connection->query('SELECT 1');
+
+        $admin->exec("CREATE TYPE {$mood} AS ENUM ('happy', 'sad')");
+        $admin->exec("CREATE TYPE {$pair} AS (a int, b text)");
+
+        $sql = "SELECT 'happy'::{$mood} AS mood, ROW(1, 'x')::{$pair} AS pair, ARRAY['happy', 'sad']::{$mood}[] AS moods";
+        $row = $connection->query($sql)->fetchRow();
+        $expected = $admin->query($sql)->fetch(PDO::FETCH_ASSOC);
+
+        expect($row['mood'])->toBe('happy')
+            ->and($row['pair'])->toBe('(1,x)')
+            ->and($row['moods'])->toBe('{happy,sad}')
+            ->and($row)->toBe($expected);
+    } finally {
+        $connection->close();
+        $admin->exec("DROP TYPE IF EXISTS {$pair}");
+        $admin->exec("DROP TYPE IF EXISTS {$mood}");
+    }
+})->with([
+    'pgsql' => [PgSqlConnection::class, 'pgsql'],
+    'pq' => [PqConnection::class, 'pq'],
+]);
+
+it('does not share casts between two databases that define a type of the same name differently', function (string $class, string $extension) {
+    if (! extension_loaded($extension)) {
+        $this->markTestSkipped("The {$extension} extension is not loaded");
+    }
+
+    $suffix = bin2hex(random_bytes(4));
+    $databases = ["fledge_twin_a_{$suffix}", "fledge_twin_b_{$suffix}"];
+    $admin = adminPostgresPdo();
+    $connections = [];
+
+    try {
+        foreach ($databases as $database) {
+            $admin->exec("CREATE DATABASE {$database}");
+        }
+
+        // Same name, different definition: an enum in the first database, a composite in the second.
+        adminPostgresPdo($databases[0])->exec("CREATE TYPE _fledge_twin AS ENUM ('one', 'two')");
+        adminPostgresPdo($databases[1])->exec('CREATE TYPE _fledge_twin AS (a int, b int)');
+
+        // Only the pgsql path parses arrays of a user type, from its per-database type table;
+        // the pq path hands back the array literal as a string, like pdo_pgsql.
+        $parses = $class === PgSqlConnection::class;
+        $queries = [
+            $databases[0] => ["SELECT 'one'::_fledge_twin AS v, ARRAY['one', 'two']::_fledge_twin[] AS vs", ['v' => 'one', 'vs' => $parses ? ['one', 'two'] : '{one,two}']],
+            $databases[1] => ['SELECT ROW(1, 2)::_fledge_twin AS v, ARRAY[ROW(1, 2)]::_fledge_twin[] AS vs', ['v' => '(1,2)', 'vs' => $parses ? ['(1,2)'] : '{"(1,2)"}']],
+        ];
+
+        $cache = $class === PgSqlConnection::class
+            ? new ReflectionProperty(Fledge\Async\Database\Postgres\Internal\PgSqlHandle::class, 'typeCache')
+            : null;
+        $before = $cache !== null && $cache->isInitialized() ? count($cache->getValue()) : 0;
+
+        // Fill the type table of the first database before the second one connects.
+        foreach ($databases as $database) {
+            $connection = $class::connect(asyncPostgresConfig($database));
+            if ($connection instanceof PqConnection) {
+                $connection->shouldBufferResults();
+            }
+            $connections[] = $connection;
+
+            [$sql, $expected] = $queries[$database];
+            expect($connection->query($sql)->fetchRow())->toBe($expected);
+        }
+
+        // Each database got its own type table, and the first one still casts after the second filled its own.
+        [$sql, $expected] = $queries[$databases[0]];
+        expect($connections[0]->query($sql)->fetchRow())->toBe($expected);
+
+        if ($cache !== null) {
+            expect(count($cache->getValue()))->toBe($before + 2);
+        }
+    } finally {
+        foreach ($connections as $connection) {
+            $connection->close();
+        }
+        foreach ($databases as $database) {
+            $admin->exec("DROP DATABASE IF EXISTS {$database} WITH (FORCE)");
+        }
+    }
+})->with([
+    'pgsql' => [PgSqlConnection::class, 'pgsql'],
+    'pq' => [PqConnection::class, 'pq'],
+]);
+
+it('returns every result of a multi-statement query whose later statements are still running',function (string $class, string $extension) {
     if (! extension_loaded($extension)) {
         $this->markTestSkipped("The {$extension} extension is not loaded");
     }
