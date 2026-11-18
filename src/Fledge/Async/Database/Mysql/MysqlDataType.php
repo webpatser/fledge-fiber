@@ -67,12 +67,18 @@ enum MysqlDataType: int
                 return self::decodeString($bytes, $offset);
 
             case self::Bit:
-                return (int) self::decodeString($bytes, $offset);
+                // Big-endian unsigned integer, as mysqlnd decodes it.
+                $bits = \substr(self::decodeString($bytes, $offset), -8);
+                return self::unsignedIntOrString(\unpack("J", \str_pad($bits, 8, "\0", \STR_PAD_LEFT))[1]);
 
             case self::LongLong:
-                return $unsigned
-                    ? self::decodeUnsigned64($bytes, $offset)
-                    : self::decodeInt64($bytes, $offset);
+                if ($unsigned) {
+                    // Above PHP_INT_MAX as a decimal string, as mysqlnd returns it.
+                    $offset += 8;
+                    return self::unsignedIntOrString(\unpack("P", $bytes, $offset - 8)[1]);
+                }
+
+                return self::decodeInt64($bytes, $offset);
 
             case self::Long:
                 return $unsigned
@@ -489,6 +495,16 @@ enum MysqlDataType: int
         }
 
         return $result;
+    }
+
+    /**
+     * Reads a 64-bit pattern as unsigned: an int up to PHP_INT_MAX, a decimal string above.
+     *
+     * @return int<0, max>|numeric-string
+     */
+    private static function unsignedIntOrString(int $int): int|string
+    {
+        return $int < 0 ? \sprintf('%u', $int) : $int;
     }
 
     /**
