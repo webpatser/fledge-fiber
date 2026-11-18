@@ -13,7 +13,12 @@ use Fledge\Async\Http\Client\SocketException;
 use Fledge\Async\Http\HPack;
 use Fledge\Async\Http\Http2\Http2Parser;
 use Fledge\Async\NullCancellation;
+use Fledge\Async\Stream\ReadableStreamIteratorAggregate;
 use Fledge\Async\Stream\ResourceSocket;
+use Fledge\Async\Stream\Socket;
+use Fledge\Async\Stream\SocketAddress;
+use Fledge\Async\Stream\TlsInfo;
+use Fledge\Async\Stream\TlsState;
 use Fledge\Async\TimeoutCancellation;
 
 use function Fledge\Async\async;
@@ -27,13 +32,18 @@ use function Fledge\Async\Stream\createSocketPair;
  *
  * @return array{Http2ConnectionProcessor, ResourceSocket, Http2Connection}
  */
-function startH2ClientProcessor(int $maxQueuedControlFrames = Http2ConnectionProcessor::DEFAULT_MAX_QUEUED_CONTROL_FRAMES): array
-{
+function startH2ClientProcessor(
+    int $maxQueuedControlFrames = Http2ConnectionProcessor::DEFAULT_MAX_QUEUED_CONTROL_FRAMES,
+    ?Closure $wrapClientSocket = null,
+): array {
     \Revolt\EventLoop::setErrorHandler(null);
 
     [$clientSide, $serverSide] = createSocketPair();
 
-    $processor = new Http2ConnectionProcessor($clientSide, $maxQueuedControlFrames);
+    $processor = new Http2ConnectionProcessor(
+        $wrapClientSocket !== null ? $wrapClientSocket($clientSide) : $clientSide,
+        $maxQueuedControlFrames,
+    );
 
     $serverSide->write(Http2Parser::compileFrame('', Http2Parser::SETTINGS, 0, 0));
     $processor->initialize(new TimeoutCancellation(3));
@@ -107,6 +117,95 @@ function countH2ClientFrames(ResourceSocket $server, callable $match, int $targe
     }
 
     return $matches;
+}
+
+/** Wraps a socket and counts the write() calls made on it. */
+function countingH2Socket(Socket $inner): Socket
+{
+    return new class($inner) implements IteratorAggregate, Socket
+    {
+        use ReadableStreamIteratorAggregate;
+
+        public int $writes = 0;
+
+        public function __construct(private readonly Socket $inner) {}
+
+        public function write(string $bytes): void
+        {
+            $this->writes++;
+            $this->inner->write($bytes);
+        }
+
+        public function read(?Cancellation $cancellation = null, ?int $limit = null): ?string
+        {
+            return $this->inner->read($cancellation, $limit);
+        }
+
+        public function end(): void
+        {
+            $this->inner->end();
+        }
+
+        public function isWritable(): bool
+        {
+            return $this->inner->isWritable();
+        }
+
+        public function isReadable(): bool
+        {
+            return $this->inner->isReadable();
+        }
+
+        public function close(): void
+        {
+            $this->inner->close();
+        }
+
+        public function isClosed(): bool
+        {
+            return $this->inner->isClosed();
+        }
+
+        public function onClose(Closure $onClose): void
+        {
+            $this->inner->onClose($onClose);
+        }
+
+        public function getLocalAddress(): SocketAddress
+        {
+            return $this->inner->getLocalAddress();
+        }
+
+        public function getRemoteAddress(): SocketAddress
+        {
+            return $this->inner->getRemoteAddress();
+        }
+
+        public function setupTls(?Cancellation $cancellation = null): void
+        {
+            $this->inner->setupTls($cancellation);
+        }
+
+        public function shutdownTls(?Cancellation $cancellation = null): void
+        {
+            $this->inner->shutdownTls($cancellation);
+        }
+
+        public function isTlsConfigurationAvailable(): bool
+        {
+            return $this->inner->isTlsConfigurationAvailable();
+        }
+
+        public function getTlsState(): TlsState
+        {
+            return $this->inner->getTlsState();
+        }
+
+        public function getTlsInfo(): ?TlsInfo
+        {
+            return $this->inner->getTlsInfo();
+        }
+    };
 }
 
 function waitUntilClosed(Http2ConnectionProcessor $processor, float $timeout = 3.0): bool
@@ -209,6 +308,35 @@ it('answers a large burst of PINGs from a server that reads the replies', functi
 
         expect($reader->await())->toBe($count)
             ->and($processor->isClosed())->toBeFalse();
+    } finally {
+        $server->close();
+    }
+})->group('Http2');
+
+it('writes the replies to a burst of PINGs in a few socket writes instead of one per ACK', function () {
+    $client = null;
+    [$processor, $server] = startH2ClientProcessor(wrapClientSocket: function (Socket $socket) use (&$client) {
+        return $client = countingH2Socket($socket);
+    });
+
+    try {
+        $count = 2000;
+
+        $reader = async(fn () => countH2ClientFrames(
+            $server,
+            fn (int $type, int $flags) => $type === Http2Parser::PING && ($flags & Http2Parser::ACK) !== 0,
+            $count,
+        ));
+
+        $writesBefore = $client->writes;
+
+        $server->write(str_repeat(Http2Parser::compileFrame('12345678', Http2Parser::PING, 0, 0), $count));
+
+        expect($reader->await())->toBe($count)
+            ->and($processor->isClosed())->toBeFalse()
+            // One write per read chunk (8 KiB, at most 481 PINGs), not one per ACK: per-ACK writes fill a Linux UNIX
+            // socket buffer by write count and trip the flood limit on a server that does read.
+            ->and($client->writes - $writesBefore)->toBeLessThan(50);
     } finally {
         $server->close();
     }

@@ -106,11 +106,23 @@ final class Http2ConnectionProcessor implements Http2Processor
 
     private ?int $shutdown = null;
 
-    /** @var Queue<string> */
+    /** @var Queue<string|null> Frames to write; each null stands for the oldest entry of $controlBatches. */
     private readonly Queue $frameQueue;
 
-    /** @var int Control frames queued in reply to the server and not yet taken by the write fiber. */
+    /** @var int Control frames queued in reply to the server and not yet written to the socket. */
     private int $queuedControlFrames = 0;
+
+    /**
+     * Control frames in reply to the server, grouped into batches that are each written in one socket write: a write
+     * per 17-byte PING ACK lets a burst fill the kernel buffer by write count (Linux charges every write on a UNIX
+     * socket a full buffer) long before a server that does read has had a chance to.
+     *
+     * @var list<array{string, int}> Compiled frames and their count, one entry per null in the frame queue.
+     */
+    private array $controlBatches = [];
+
+    /** Whether new control frames may join the last batch; false once another frame is queued behind it. */
+    private bool $controlBatchOpen = false;
 
     /**
      * @param positive-int $maxQueuedControlFrames
@@ -1121,6 +1133,14 @@ final class Http2ConnectionProcessor implements Http2Processor
 
             while (null !== $chunk = $this->socket->read()) {
                 $parser->push($chunk);
+
+                if ($this->controlBatches !== []) {
+                    // A direct read can return the next chunk without suspending; let the write fiber send the replies
+                    // to this chunk first, so only replies the server does not take count toward the limit.
+                    $suspension = EventLoop::getSuspension();
+                    EventLoop::defer(static fn () => $suspension->resume());
+                    $suspension->suspend();
+                }
             }
         } catch (\Throwable $exception) {
             $this->shutdown(new SocketException(
@@ -1159,12 +1179,15 @@ final class Http2ConnectionProcessor implements Http2Processor
             return Future::complete();
         }
 
+        // Control frames queued after this frame must not join a batch that is written before it.
+        $this->controlBatchOpen = false;
+
         return $this->frameQueue->pushAsync(Http2Parser::compileFrame($data, $type, $flags, $stream));
     }
 
     /**
      * Queues a control frame sent in reply to the server without awaiting it, so the read fiber never blocks on a
-     * server that does not read. The number of such frames waiting in the queue is bounded: past the limit the
+     * server that does not read. The number of such frames not yet written is bounded: past the limit the
      * connection is closed with ENHANCE_YOUR_CALM, like libnghttp2 does on its max_outbound_ack limit.
      */
     private function writeControlFrame(
@@ -1193,11 +1216,15 @@ final class Http2ConnectionProcessor implements Http2Processor
 
         ++$this->queuedControlFrames;
 
-        $this->frameQueue->pushAsync(Http2Parser::compileFrame($data, $type, $flags, $stream))
-            ->finally(function (): void {
-                --$this->queuedControlFrames;
-            })
-            ->ignore();
+        if (!$this->controlBatchOpen) {
+            $this->controlBatchOpen = true;
+            $this->controlBatches[] = ['', 0];
+            $this->frameQueue->pushAsync(null)->ignore();
+        }
+
+        $last = \array_key_last($this->controlBatches);
+        $this->controlBatches[$last][0] .= Http2Parser::compileFrame($data, $type, $flags, $stream);
+        ++$this->controlBatches[$last][1];
     }
 
     private function applySetting(int $setting, int $value): void
@@ -1680,7 +1707,25 @@ final class Http2ConnectionProcessor implements Http2Processor
                 }
 
                 $frame = $iterator->getValue();
-                $this->socket->write($frame);
+
+                if ($frame !== null) {
+                    $this->socket->write($frame);
+
+                    continue;
+                }
+
+                [$batch, $frames] = \array_shift($this->controlBatches);
+
+                if ($this->controlBatches === []) {
+                    // The batch is being written, so control frames queued from here on start a new one.
+                    $this->controlBatchOpen = false;
+                }
+
+                try {
+                    $this->socket->write($batch);
+                } finally {
+                    $this->queuedControlFrames -= $frames;
+                }
             }
         } catch (\Throwable $exception) {
             $this->hasWriteError = true;
