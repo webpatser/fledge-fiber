@@ -1,5 +1,27 @@
 # Changelog
 
+## v13.42.0.3 - 2026-11-18
+
+### Changed
+- `pool_wait_timeout` now defaults to 30 seconds on the amphp MySQL pool (`fledge-mysql`, `fledge-mariadb`) and on the Postgres pool (`fledge-pgsql`) when the key is unset, as the native pool already did. A value of 0, '0' or '' means no limit, the old behaviour. The wait includes the connect, and on Postgres the `DISCARD ALL` reset counts against the same deadline. A timeout throws `SqlException` with code 2002, which surfaces as a `QueryException`, not as a lost connection. A pool class built directly through the async API keeps no limit unless `waitTimeout` is passed. The native pool still rejects 0.
+- MySQL and Redis connects fail at once. `SocketMysqlConnector` and `SocketRedisConnector` default to a plain `DnsSocketConnector`, so a refused connect no longer retries with 2 s and 4 s of backoff (about 6 s before). Both no longer pick up a globally set `Stream\socketConnector()`. The HTTP pool, IPC and proxies keep the retrying default. The previous-exception text of a refused Redis connect is now the single-attempt message.
+- Redis: `RedisSubscriber` opens or keeps no connection when the last subscription is removed during a connect or during the reconnect backoff. After an established subscription drops, refused reconnects are retried with the subscriber's backoff for up to about 6 s (`RECONNECT_REFUSED_WINDOW`); a refused first connect fails at once. A refused reconnect waits at least 0.05 s (`RECONNECT_REFUSED_MIN_DELAY`) even when the backoff strategy returns 0, so a zero backoff cannot spin.
+- Livewire (`FiberHandleRequests`): unchanged reactive children are skipped as in stock Livewire (`SupportReactiveProps::shouldSkipUpdate`) and `temporarilyPropagateExceptions()` is honoured. In concurrent mode a component with reactive props runs after all earlier components of the batch finished, in batch order; other components stay concurrent.
+
+### Fixed
+- Postgres (`fledge-pgsql` on ext-pgsql, used when ext-pq is absent): closing a connection while a statement is still running, for example when `pool_wait_timeout` ends a `DISCARD ALL` against a server that stopped answering, no longer freezes the whole process. With ext-sockets loaded the socket is shut down first and the close returns at once. Without ext-sockets the caller still gets its timeout, but the link is only freed when the server answers; ext-sockets is recommended on the pgsql driver (like `tcp_keepalive`, it is not listed in `composer.json`).
+- Native driver (`fledge-mysql-native`, `fledge-mariadb-native`): a fiber that holds a pinned connection with changed session state (user variables, locks) and whose pool another fiber or context replaced or disconnected, between statements or during an in-flight statement, now gets one `Illuminate\Database\LostConnectionException`; its next statement runs on a fresh session. Laravel's lost-connection retry does not swallow it. Before, the fiber continued silently on a fresh session and lost its state. Clean leases still move to the new pool silently, and a genuinely lost server connection still retries as stock.
+- MySQL PDO shim: the session check judges `MATCH (columns) AGAINST (...)` (what `whereFullText` emits) as clean, so it no longer pins a connection. `against(` anywhere else stays dirty.
+- `LOAD DATA LOCAL INFILE` without ext-parallel, ext-uv and ext-eio: `DefaultContextFactory` called undefined functions; it now forwards the child's output itself.
+- Tests: user-defined Postgres types (enum, composite) created after connect come back as strings on pgsql and pq, as with `pdo_pgsql`, and the type cache is per database.
+- `docker-compose.yml`: the httpbin healthcheck uses `python3`, as the image has no `curl`.
+- Tests: `PdoErrorParityTest` skips the cases that need a second session when mysqli (or pgsql) is not loaded.
+
+### Upgrade notes
+- A pool that waited without limit now fails after 30 s with a `QueryException` (code 2002) on `fledge-mysql`, `fledge-mariadb` and `fledge-pgsql`. Set `'pool_wait_timeout' => 0` on the connection for no limit.
+- A refused MySQL or Redis connect now fails at once. There is no config switch; the connectors use the retrying socket connector only when you pass one, for example `new SocketMysqlConnector(new RetrySocketConnector(new DnsSocketConnector()))` through the async API.
+- Known limit: in-process browser tests (the Pest browser plugin) on the native driver cannot use `RefreshDatabase` or `DatabaseTransactions`, because each request fiber gets its own connection and cannot see the test's uncommitted transaction. Use `DatabaseTruncation`, or run browser tests on the stock driver. This is not new in this release.
+
 ## v13.42.0.2 - 2026-11-18
 
 ### Changed
