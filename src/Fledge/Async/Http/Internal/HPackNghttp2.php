@@ -2,6 +2,8 @@
 
 namespace Fledge\Async\Http\Internal;
 
+use Fledge\Async\ForbidCloning;
+use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Http\HPack;
 use Fledge\Async\Http\HPackException;
 use FFI;
@@ -12,6 +14,9 @@ use FFI;
  */
 final class HPackNghttp2
 {
+    use ForbidCloning;
+    use ForbidSerialization;
+
     private const FLAG_NO_INDEX = 0x01;
     private const FLAG_NO_COPY_NAME = 0x02;
     private const FLAG_NO_COPY_VALUE = 0x04;
@@ -129,13 +134,37 @@ final class HPackNghttp2
 
         $return = self::$ffi->nghttp2_hd_deflate_new(FFI::addr($this->deflatePtr), $maxSize);
         if ($return !== 0) {
+            $this->free();
+
             throw new \RuntimeException('Failed to init deflate context');
         }
 
         $return = self::$ffi->nghttp2_hd_inflate_new(FFI::addr($this->inflatePtr));
         if ($return !== 0) {
+            // PHP skips __destruct() when the constructor throws.
+            $this->free();
+
             throw new \RuntimeException('Failed to init inflate context');
         }
+    }
+
+    public function __destruct()
+    {
+        $this->free();
+    }
+
+    private function free(): void
+    {
+        if ($this->deflatePtr !== null && !FFI::isNull($this->deflatePtr)) {
+            self::$ffi->nghttp2_hd_deflate_del($this->deflatePtr);
+        }
+
+        if ($this->inflatePtr !== null && !FFI::isNull($this->inflatePtr)) {
+            self::$ffi->nghttp2_hd_inflate_del($this->inflatePtr);
+        }
+
+        $this->deflatePtr = null;
+        $this->inflatePtr = null;
     }
 
     /**
