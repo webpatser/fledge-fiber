@@ -155,8 +155,9 @@ function localInfileConfig(int $port): MysqlConfig
 }
 
 beforeEach(function () {
-    // Without ext-uv or ext-eio the default is ParallelFilesystemDriver, which is broken here
-    // (undefined ByteStream\pipe() in DefaultContextFactory); this file tests the MySQL protocol, not that.
+    // Without ext-uv or ext-eio the default is ParallelFilesystemDriver, which runs file I/O in worker
+    // processes. This file tests the MySQL protocol, so the blocking driver keeps it deterministic and
+    // free of worker processes.
     filesystem(new BlockingFilesystemDriver);
 
     $this->root = sys_get_temp_dir().'/fledge-mysql-infile-'.bin2hex(random_bytes(4));

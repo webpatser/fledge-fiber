@@ -13,9 +13,9 @@ use function Fledge\Async\async;
 use function Fledge\Async\delay;
 
 /*
- * The parallel driver cannot start real workers in this environment (DefaultContextFactory fails), so this
- * tests the worker limit logic of selectWorker() against an in-memory pool: getWorker() suspends like a real
- * worker start, and its workers never run tasks. The pool stands in for the child processes only.
+ * This tests the worker limit logic of selectWorker() against an in-memory pool, so worker usage is counted
+ * deterministically without spawning child processes: getWorker() suspends like a real worker start, and its
+ * workers never run tasks. The pool stands in for the child processes only.
  */
 
 function limitTestWorker(): Worker
