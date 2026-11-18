@@ -371,9 +371,10 @@ it('grows the requested backoff while connections drop before any confirmation',
     waitForSubscriberConnects($connector, 5);
     delay(0.05);
 
-    // Five connects, then the connector refuses and the loop stops.
+    // Five connects, then the connector refuses: a refused reconnect after
+    // a drop is one more failure, so the requested attempts keep growing.
     expect($connector->connects)->toBe(5)
-        ->and($backoff->attempts->getArrayCopy())->toBe([1, 2, 3, 4, 5]);
+        ->and(array_slice($backoff->attempts->getArrayCopy(), 0, 6))->toBe([1, 2, 3, 4, 5, 6]);
 
     $subscription->unsubscribe();
     unset($subscription);

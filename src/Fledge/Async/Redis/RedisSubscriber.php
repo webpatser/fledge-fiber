@@ -20,6 +20,16 @@ final class RedisSubscriber
     use ForbidCloning;
     use ForbidSerialization;
 
+    /**
+     * Seconds of refused reconnects, after an established connection
+     * dropped, before the subscriptions fail. Matches the 2 s plus 4 s the
+     * socket-level connect retry used to give a subscriber across a restart.
+     */
+    private const RECONNECT_REFUSED_WINDOW = 6.0;
+
+    /** Minimum seconds to wait after a refused reconnect, so a zero backoff cannot spin a connect storm. */
+    private const RECONNECT_REFUSED_MIN_DELAY = 0.05;
+
     private ?RedisConnection $connection = null;
 
     private bool $running = false;
@@ -134,6 +144,9 @@ final class RedisSubscriber
             try {
                 $failures = 0;
                 $lastDelay = null;
+                $established = false;
+                $refusedSince = null;
+                $afterRefusal = false;
 
                 while ($running) {
                     if ($failures > 0) {
@@ -141,14 +154,62 @@ final class RedisSubscriber
                          * connection right after SUBSCRIBE otherwise turns this
                          * loop into a connect storm. */
                         $lastDelay = $backoff->delay($failures, $lastDelay);
-                        \Fledge\Async\delay($lastDelay);
+                        \Fledge\Async\delay(
+                            $afterRefusal ? \max($lastDelay, self::RECONNECT_REFUSED_MIN_DELAY) : $lastDelay,
+                        );
 
                         if (!$running) {
                             break;
                         }
                     }
 
-                    $connection = $connector->connect();
+                    /* The last subscription went away while no connection
+                     * existed (during the backoff, or before the first
+                     * connect): stop instead of opening an idle connection.
+                     * The next subscribe() starts a fresh loop. */
+                    if (!$queues && !$patternQueues) {
+                        $running = false;
+
+                        break;
+                    }
+
+                    try {
+                        $newConnection = $connector->connect();
+                    } catch (RedisConnectionException $exception) {
+                        /* The first connect fails at once, like phpredis. A
+                         * refused reconnect after a drop (a Redis restart) is
+                         * one more failure in the backoff loop, until the
+                         * refusals have lasted RECONNECT_REFUSED_WINDOW. */
+                        if (!$established) {
+                            throw $exception;
+                        }
+
+                        $now = \hrtime(true) / 1e9;
+                        $refusedSince ??= $now;
+
+                        if ($now - $refusedSince >= self::RECONNECT_REFUSED_WINDOW) {
+                            throw $exception;
+                        }
+
+                        $failures++;
+                        $afterRefusal = true;
+
+                        continue;
+                    }
+
+                    $established = true;
+                    $refusedSince = null;
+                    $afterRefusal = false;
+
+                    if (!$queues && !$patternQueues) {
+                        // Unsubscribed while the connect was in flight.
+                        $newConnection->close();
+                        $running = false;
+
+                        break;
+                    }
+
+                    $connection = $newConnection;
                     $pending = [];
 
                     try {
