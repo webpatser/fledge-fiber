@@ -27,7 +27,10 @@ final class SocketMysqlConnector implements SqlConnector
             throw new \TypeError(\sprintf("Must provide an instance of %s to MySQL connectors", MysqlConfig::class));
         }
 
-        $connector = $this->connector ?? Stream\socketConnector();
+        // pdo_mysql makes a single connect attempt; the global socketConnector()
+        // retries a refused connect with 2 s and 4 s of backoff. Connect
+        // retries belong to the caller (RetrySqlConnector, the pool).
+        $connector = $this->connector ?? new Stream\DnsSocketConnector();
 
         return SocketMysqlConnection::connect($connector, $config, $cancellation);
     }

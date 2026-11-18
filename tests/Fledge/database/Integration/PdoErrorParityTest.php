@@ -14,7 +14,6 @@
  * fiberio: php -d extension=<path>/fiberio.so vendor/bin/pest <this file>.
  */
 
-use Fledge\Async\Stream\DnsSocketConnector;
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
 use Fledge\Fiber\Database\Connections\FledgeMySqlConnection;
 use Fledge\Fiber\Database\Connections\FledgePostgresConnection;
@@ -34,8 +33,6 @@ use Illuminate\Database\MariaDbConnection;
 use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\PostgresConnection;
 use Pdo\Mysql;
-
-use function Fledge\Async\Stream\socketConnector;
 
 /**
  * One side of the comparison: a raw PDO (real or shim) or a Laravel Connection.
@@ -212,6 +209,21 @@ function parityAsyncSession(string $engine): mysqli|PgSql\Connection
     return new mysqli($config['host'], 'root', 'root', $config['database'], $config['port']);
 }
 
+/**
+ * Why a case cannot run here: the scenarios that open a parityAsyncSession() need mysqli or
+ * pgsql. Without the extension that helper throws an Error on both sides, which the PDO tests
+ * report as "real PDO did not fail" and the Laravel tests would count as parity.
+ */
+function paritySkipReason(string $engine, string $case): ?string
+{
+    $extension = $engine === 'pgsql' ? 'pgsql' : 'mysqli';
+    $needsSession = in_array($case, ['deadlock', 'killed mid-query', 'terminated mid-query'], true);
+
+    return $needsSession && ! extension_loaded($extension)
+        ? "{$extension} extension not loaded: the {$case} scenario needs it for a second session"
+        : null;
+}
+
 function parityAsyncSend(mysqli|PgSql\Connection $session, string $sql): void
 {
     if ($session instanceof mysqli) {
@@ -288,7 +300,7 @@ function parityScenarios(string $family): array
         'unknown column' => [[], fn (PdoParitySubject $s) => $s->statement('SELECT nope FROM _parity_users WHERE id = ?', [1])],
         'syntax error' => [[], fn (PdoParitySubject $s) => $s->statement('SELEC id FROM _parity_users')],
         'unprepared syntax error' => [[], fn (PdoParitySubject $s) => $s->exec('SELEC id FROM _parity_users')],
-        'connection refused' => [['port' => 1], fn (PdoParitySubject $s) => parityWithoutConnectRetry(fn () => $s->scalar('SELECT 1'))],
+        'connection refused' => [['port' => 1], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
         'bad password' => [['password' => 'wrong'], fn (PdoParitySubject $s) => $s->scalar('SELECT 1')],
     ];
 
@@ -427,28 +439,6 @@ function parityScenarios(string $family): array
             }
         }],
     ];
-}
-
-/**
- * Run with the global socket connector swapped for one that does not retry.
- *
- * The default socket connector retries a refused connect twice, sleeping 2s and
- * 4s in between, so each Fledge MySQL run of the refused scenario took 6s and the
- * file outgrew the 60s per-file limit. The error shape is the same without the
- * retries: FledgePdoException maps any refused socket to mysqlnd's text. Only the
- * Fledge MySQL shim connects through this connector; real PDO, the native driver
- * and Postgres (libpq) are unaffected.
- */
-function parityWithoutConnectRetry(Closure $run): mixed
-{
-    $previous = socketConnector();
-    socketConnector(new DnsSocketConnector);
-
-    try {
-        return $run();
-    } finally {
-        socketConnector($previous);
-    }
 }
 
 /**
@@ -669,6 +659,10 @@ beforeEach(function () {
 afterEach(fn () => nativeDriverReset());
 
 it('raises the same PDOException through the Fledge shim as through real PDO', function (string $engine, string $case) {
+    if (($reason = paritySkipReason($engine, $case)) !== null) {
+        $this->markTestSkipped($reason);
+    }
+
     ['real' => $real, 'fledge' => $fledge] = parityCompare($engine, $case, laravel: false);
 
     // Real PDO raises its own exception; the shim keeps the driver exception as previous (house rule).
@@ -679,14 +673,43 @@ it('raises the same PDOException through the Fledge shim as through real PDO', f
 })->with(parityDataset());
 
 it('raises the same Laravel exception through a Fledge connection as through a PDO connection', function (string $engine, string $case) {
+    if (($reason = paritySkipReason($engine, $case)) !== null) {
+        $this->markTestSkipped($reason);
+    }
+
     ['real' => $real, 'fledge' => $fledge] = parityCompare($engine, $case, laravel: true);
 
     expect($real['class'])->not->toBeNull("Laravel on real PDO did not fail on {$engine}: {$case}")
         ->and($fledge)->toBe($real, parityMismatch($real, $fledge));
 })->with(parityDataset());
 
+it('fails a refused connect through the Fledge shim at once, like pdo_mysql', function (string $engine, bool $laravel) {
+    $config = array_replace(parityConfig($engine), ['port' => 1]);
+    $subject = $laravel
+        ? PdoParitySubject::laravel(parityLaravelConnection($engine, 'fledge', $config, reconnector: true))
+        : PdoParitySubject::raw(fn () => parityPdoFactories($engine)['fledge']($config));
+
+    $started = hrtime(true);
+    $error = null;
+
+    try {
+        $subject->scalar('SELECT 1');
+    } catch (Throwable $e) {
+        $error = $e;
+    } finally {
+        $subject->close();
+    }
+
+    $elapsed = (hrtime(true) - $started) / 1e9;
+
+    // One connect attempt per try, as pdo_mysql makes: no socket-level retry with 2 s and 4 s backoff.
+    expect($error)->not->toBeNull()
+        ->and($error->getMessage())->toContain('[2002] Connection refused')
+        ->and($elapsed)->toBeLessThan(1.0);
+})->with(['mysql', 'mariadb'])->with(['pdo' => false, 'laravel' => true]);
+
 it('raises the same PDOException through the native driver as through real PDO', function (string $engine, string $case) {
-    if (($reason = nativeDriverSkipReason($engine)) !== null) {
+    if (($reason = nativeDriverSkipReason($engine) ?? paritySkipReason($engine, $case)) !== null) {
         $this->markTestSkipped($reason);
     }
 
@@ -697,7 +720,7 @@ it('raises the same PDOException through the native driver as through real PDO',
 })->with(parityNativeDataset());
 
 it('raises the same Laravel exception through a native connection as through a PDO connection', function (string $engine, string $case) {
-    if (($reason = nativeDriverSkipReason($engine)) !== null) {
+    if (($reason = nativeDriverSkipReason($engine) ?? paritySkipReason($engine, $case)) !== null) {
         $this->markTestSkipped($reason);
     }
 

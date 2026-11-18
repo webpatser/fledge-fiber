@@ -43,7 +43,10 @@ final readonly class SocketRedisConnector implements RedisConnector
     public function connect(?Cancellation $cancellation = null): RedisConnection
     {
         try {
-            $socketConnector = $this->socketConnector ?? Stream\socketConnector();
+            // phpredis makes a single connect attempt; the global socketConnector()
+            // retries a refused connect with 2 s and 4 s of backoff. Reconnect
+            // retries belong to ReconnectingRedisLink and its own backoff.
+            $socketConnector = $this->socketConnector ?? new Stream\DnsSocketConnector();
             $socket = $socketConnector->connect($this->uri, $this->connectContext, $cancellation);
             if ($this->connectContext->getTlsContext()) {
                 $socket->setupTls($cancellation);
