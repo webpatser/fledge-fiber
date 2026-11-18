@@ -11,6 +11,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
+use Revolt\EventLoop;
 use function Fledge\Async\async;
 
 /**
@@ -43,6 +44,8 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
      * @param bool $resetConnections True to execute DISCARD ALL on checkout of a connection whose session
      *     may have changed (fresh connections included); see Internal\PostgresSessionClassifier.
      * @param SqlConnector<PostgresConfig, PostgresConnection>|null $connector
+     * @param float|null $waitTimeout Fledge: seconds a caller may wait for a connection (the wait on a full
+     *     pool, the connect and the DISCARD ALL on checkout included), null for no limit.
      */
     public function __construct(
         PostgresConfig $config,
@@ -51,6 +54,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         private readonly bool $resetConnections = true,
         ?SqlConnector $connector = null,
         SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed,
+        ?float $waitTimeout = null,
     ) {
         $this->clean = new \WeakMap();
 
@@ -60,6 +64,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
             maxConnections: $maxConnections,
             idleTimeout: $idleTimeout,
             transactionIsolation: $transactionIsolation,
+            waitTimeout: $waitTimeout,
         );
     }
 
@@ -144,6 +149,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
     #[\Override]
     protected function pop(): PostgresConnection
     {
+        $start = \hrtime(true);
         $connection = parent::pop();
 
         // Dirty from here on until the caller hands it back through release() as clean.
@@ -151,18 +157,63 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         unset($this->clean[$connection]);
 
         if ($this->resetConnections && !$clean) {
-            try {
-                $connection->query("DISCARD ALL");
-            } catch (\Throwable $exception) {
-                // Session state is unknown: drop the connection and free its slot (the pool
-                // discards closed connections), or the pool slowly runs out of connections.
-                $connection->close();
-                $this->push($connection);
-                throw $exception;
-            }
+            $this->resetSession($connection, $start);
         }
 
         return $connection;
+    }
+
+    /**
+     * Run DISCARD ALL on a popped connection. Fledge: with a wait timeout the reset counts against the
+     * same deadline as the wait and the connect, so a server that stops answering cannot hold the caller
+     * past it; on the deadline the connection is closed, which ends the pending statement.
+     */
+    private function resetSession(PostgresConnection $connection, int|float $start): void
+    {
+        $waitTimeout = $this->getWaitTimeout();
+        $timedOut = false;
+        $timer = null;
+
+        if ($waitTimeout !== null) {
+            $remaining = \max(0.0, $waitTimeout - (\hrtime(true) - $start) / 1e9);
+            $timer = EventLoop::delay($remaining, static function () use ($connection, &$timedOut): void {
+                $timedOut = true;
+                $connection->close();
+            });
+        }
+
+        try {
+            $connection->query("DISCARD ALL");
+
+            // The deadline fired after the reset finished but before this fiber resumed: the connection is
+            // closed already, so it goes back and the caller gets the timeout, not a dead handle.
+            if ($timedOut) {
+                throw new SqlException("The session reset outlived the wait timeout");
+            }
+        } catch (\Throwable $exception) {
+            $inUse = $this->getConnectionCount() - $this->getIdleConnectionCount();
+
+            // Session state is unknown: drop the connection and free its slot (the pool
+            // discards closed connections), or the pool slowly runs out of connections.
+            $connection->close();
+            $this->push($connection);
+
+            if ($timedOut) {
+                // Same error as a timed-out wait in the parent (code 2002, see SqlCommonConnectionPool::timedOut()).
+                throw new SqlException(\sprintf(
+                    "Timed out after %ss waiting for a connection from the pool (%d of %d connections in use)",
+                    $waitTimeout,
+                    $inUse,
+                    $this->getConnectionLimit(),
+                ), 2002);
+            }
+
+            throw $exception;
+        } finally {
+            if ($timer !== null) {
+                EventLoop::cancel($timer);
+            }
+        }
     }
 
     /**

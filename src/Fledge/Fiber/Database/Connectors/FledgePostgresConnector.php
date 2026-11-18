@@ -75,7 +75,24 @@ class FledgePostgresConnector implements ConnectorInterface
         // GUCs to the startup-packet session defaults. Session settings therefore
         // ride the libpq startup packet via buildOptions() instead of SET
         // statements, which the first DISCARD ALL would wipe out.
-        return new PostgresConnectionPool($config, $maxConnections, $idleTimeout);
+        return new PostgresConnectionPool(
+            $config,
+            $maxConnections,
+            $idleTimeout,
+            waitTimeout: $this->poolWaitTimeout($appConfig),
+        );
+    }
+
+    /**
+     * Fledge only: seconds a query waits for a connection from the pool (the wait on a full pool, the
+     * connect and the session reset included), 30 when unset or null; 0 or '' waits as long as it takes.
+     */
+    protected function poolWaitTimeout(array $config): ?float
+    {
+        $waitTimeout = $config['pool_wait_timeout'] ?? 30;
+        $waitTimeout = $waitTimeout === '' ? 0.0 : (float) $waitTimeout;
+
+        return $waitTimeout > 0 ? $waitTimeout : null;
     }
 
     /**

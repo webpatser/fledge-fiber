@@ -211,10 +211,7 @@ class FledgeMySqlConnector implements ConnectorInterface
         $maxConnections = (int) ($appConfig['pool_size'] ?? MysqlConnectionPool::DEFAULT_MAX_CONNECTIONS);
         $idleTimeout = (int) ($appConfig['pool_idle_timeout'] ?? MysqlConnectionPool::DEFAULT_IDLE_TIMEOUT);
 
-        // Fledge only: seconds a query waits for a connection on a full pool; unset or 0 waits as long as it takes.
-        $waitTimeout = (float) ($appConfig['pool_wait_timeout'] ?? 0);
-        $waitTimeout = $waitTimeout > 0 ? $waitTimeout : null;
-
+        $waitTimeout = $this->poolWaitTimeout($appConfig);
         $statements = $this->sessionStatements($appConfig);
 
         if ($statements === []) {
@@ -228,6 +225,18 @@ class FledgeMySqlConnector implements ConnectorInterface
             new SessionInitializingConnector(mysqlConnector(), $statements),
             $waitTimeout,
         );
+    }
+
+    /**
+     * Fledge only: seconds a query waits for a connection from the pool (the wait on a full pool and the
+     * connect included), 30 when unset or null; 0 or '' waits as long as it takes.
+     */
+    protected function poolWaitTimeout(array $config): ?float
+    {
+        $waitTimeout = $config['pool_wait_timeout'] ?? 30;
+        $waitTimeout = $waitTimeout === '' ? 0.0 : (float) $waitTimeout;
+
+        return $waitTimeout > 0 ? $waitTimeout : null;
     }
 
     /**
