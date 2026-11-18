@@ -181,6 +181,14 @@ final class MysqlConnectionStatement implements MysqlStatement
         return $this->query;
     }
 
+    /**
+     * Whether long data from bind() still waits on the server, which only a reset (or an execute) drops.
+     */
+    public function hasPendingLongData(): bool
+    {
+        return $this->prebound !== [];
+    }
+
     public function reset(): void
     {
         $this->prebound = [];

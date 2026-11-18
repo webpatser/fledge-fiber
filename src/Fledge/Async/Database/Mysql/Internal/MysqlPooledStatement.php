@@ -58,4 +58,16 @@ final class MysqlPooledStatement extends SqlPooledStatement implements MysqlStat
     {
         $this->statement->reset();
     }
+
+    /**
+     * Whether the wrapped statement holds long data on the server; an unknown statement is assumed to.
+     */
+    public function hasPendingLongData(): bool
+    {
+        $statement = $this->statement;
+
+        return $statement instanceof MysqlConnectionStatement || $statement instanceof self
+            ? $statement->hasPendingLongData()
+            : true;
+    }
 }

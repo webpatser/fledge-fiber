@@ -4,6 +4,7 @@ use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\MysqlConnection;
 use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlQueryError;
+use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
 use Revolt\EventLoop;
 
@@ -582,6 +583,66 @@ describe('a repeated named parameter', function () {
     });
 });
 
+/**
+ * The Com_stmt_reset counter of the session a pinned PDO statement runs on, read by that statement.
+ */
+function reexecuteResetCount(FledgePdoStatement $statement, array $params): ?int
+{
+    $statement->execute($params);
+    $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+    return $rows === [] ? null : (int) $rows[0]['Value'];
+}
+
+describe('a PDO statement on the test server', function () {
+    beforeEach(function () {
+        if (! mysqlAvailable()) {
+            $this->markTestSkipped('MySQL not available');
+        }
+    });
+
+    it('sends no COM_STMT_RESET between re-executes, as pdo_mysql', function () {
+        $pdo = (new FledgeMySqlConnector)->connect(mysqlConfig());
+
+        try {
+            $statement = $pdo->prepare("SHOW SESSION STATUS WHERE Variable_name = ? AND ? <> ''");
+            $resets = [];
+
+            // Plain values and uuids (which go out as long data) alike.
+            foreach (['plain', STATEMENT_REEXECUTE_U1, 'plain', STATEMENT_REEXECUTE_U2, 'plain'] as $value) {
+                $resets[] = reexecuteResetCount($statement, ['Com_stmt_reset', $value]);
+            }
+
+            $prepares = $pdo->serverPrepareCount();
+        } finally {
+            $pdo->close();
+        }
+
+        expect($resets)->toBe([0, 0, 0, 0, 0])
+            ->and($prepares)->toBe(1);
+    });
+
+    it('still resets once for long data whose execute never left, and the next execute sees its own values', function () {
+        $pdo = (new FledgeMySqlConnector)->connect(mysqlConfig());
+
+        try {
+            $statement = $pdo->prepare("SHOW SESSION STATUS WHERE Variable_name = ? AND ? = 'go'");
+            $before = reexecuteResetCount($statement, ['Com_stmt_reset', 'go']);
+
+            // The uuid goes out as long data for parameter 0, the execute never does.
+            expect(static fn () => $statement->execute([STATEMENT_REEXECUTE_U1]))->toThrow(PDOException::class, 'HY093');
+
+            // Stale long data for parameter 0 would replace this name and shift 'go': no row.
+            $after = reexecuteResetCount($statement, ['Com_stmt_reset', 'go']);
+        } finally {
+            $pdo->close();
+        }
+
+        expect($before)->toBe(0)
+            ->and($after)->toBe(1);
+    });
+});
+
 describe('a PDO statement', function () {
     it('costs no extra round trip on a single execute', function (array $params, array $frames) {
         runStatementReexecuteScenario(static function (MysqlConnection $connection, StatementReexecuteFakeServer $server) use ($params, $frames): void {
@@ -597,7 +658,7 @@ describe('a PDO statement', function () {
         'a plain value' => [['plain'], [0x17]],
     ]);
 
-    it('resets once, then sends the new uuid, on a second execute', function () {
+    it('sends the new uuid without a reset on a second execute, as pdo_mysql', function () {
         runStatementReexecuteScenario(static function (MysqlConnection $connection, StatementReexecuteFakeServer $server): void {
             $statement = new FledgePdoStatement($connection->prepare('SELECT ?'));
             $statement->execute([STATEMENT_REEXECUTE_U1]);
@@ -605,7 +666,8 @@ describe('a PDO statement', function () {
 
             $statement->execute([STATEMENT_REEXECUTE_U2]);
 
-            expect($server->commandBytes())->toBe([0x1a, 0x18, 0x17])
+            // The first execute used up its long data, so there is nothing to reset.
+            expect($server->commandBytes())->toBe([0x18, 0x17])
                 ->and($server->longDataValues())->toBe([STATEMENT_REEXECUTE_U2]);
         });
     });
@@ -618,7 +680,7 @@ describe('a PDO statement', function () {
 
             $statement->execute(['plain']);
 
-            expect($server->commandBytes())->toBe([0x1a, 0x17])
+            expect($server->commandBytes())->toBe([0x17])
                 ->and($server->lastExecuteValues(1))->toBe("\x05plain");
         });
     });
@@ -656,7 +718,7 @@ describe('a PDO statement', function () {
             $statement->bindValue(1, STATEMENT_REEXECUTE_U2);
             $statement->execute();
 
-            expect($server->commandBytes())->toBe([0x1a, 0x18, 0x17])
+            expect($server->commandBytes())->toBe([0x18, 0x17])
                 ->and($server->longDataValues())->toBe([STATEMENT_REEXECUTE_U2]);
         });
     });
@@ -688,7 +750,7 @@ describe('a PDO statement', function () {
             $server->forgetCommands();
             $statement->execute(['a' => STATEMENT_REEXECUTE_U2]);
 
-            expect($server->commandBytes())->toBe([0x1a, 0x18, 0x18, 0x17])
+            expect($server->commandBytes())->toBe([0x18, 0x18, 0x17])
                 ->and($server->longDataValues())->toBe([STATEMENT_REEXECUTE_U2, STATEMENT_REEXECUTE_U2]);
         });
     });
@@ -732,13 +794,13 @@ describe('a PDO statement', function () {
             $statement->execute(['first']);
             $server->forgetCommands();
 
-            // The read fiber waits for someone to take those rows, so a reset queued behind them only
-            // runs once the result is gone.
+            // The read fiber waits for someone to take those rows, so the execute queued behind them
+            // only runs once the result is gone; there is no server cursor, so no reset either.
             $server->rowsOnNextExecute = 2;
             $statement->execute(['second']);
 
             expect($statement->fetchAll(PDO::FETCH_NUM))->toHaveCount(2)
-                ->and($server->commandBytes())->toBe([0x1a, 0x17]);
+                ->and($server->commandBytes())->toBe([0x17]);
         }, timeout: 3);
     });
 
@@ -752,7 +814,8 @@ describe('a PDO statement', function () {
             $server->forgetCommands();
             $statement->execute([STATEMENT_REEXECUTE_U2]);
 
-            expect($server->commandBytes())->toBe([0x1a, 0x18, 0x17])
+            // The rejected execute reached the server, which dropped its long data: no reset.
+            expect($server->commandBytes())->toBe([0x18, 0x17])
                 ->and($server->longDataValues())->toBe([STATEMENT_REEXECUTE_U2]);
         });
     });

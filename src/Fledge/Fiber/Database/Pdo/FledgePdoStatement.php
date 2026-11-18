@@ -2,6 +2,8 @@
 
 namespace Fledge\Fiber\Database\Pdo;
 
+use Fledge\Async\Database\Mysql\Internal\MysqlConnectionStatement;
+use Fledge\Async\Database\Mysql\Internal\MysqlPooledStatement;
 use Fledge\Async\Database\Mysql\MysqlResult;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\Postgres\PostgresByteA;
@@ -220,7 +222,7 @@ class FledgePdoStatement
                 // Pre-binds append on the driver statement, so start the next execute from nothing.
                 if ($this->executed) {
                     $this->result = null;
-                    $this->statement->reset();
+                    $this->resetPrebinds($this->statement);
                 }
 
                 $this->executed = true;
@@ -452,6 +454,22 @@ class FledgePdoStatement
     private function usesBytea(): bool
     {
         return $this->pdo instanceof FledgePostgresPdo || ($this->pdo === null && $this->driver === 'pgsql');
+    }
+
+    /**
+     * Drop what earlier pre-binds left. A connection statement only holds long data on the server
+     * when the execute after a bind never left (an execute that reached the server used it up), so
+     * like pdo_mysql it gets no COM_STMT_RESET between executes otherwise. A statement pool keeps
+     * its binds locally, and its reset() costs no round trip.
+     */
+    private function resetPrebinds(MysqlStatement $statement): void
+    {
+        if (($statement instanceof MysqlPooledStatement || $statement instanceof MysqlConnectionStatement)
+            && ! $statement->hasPendingLongData()) {
+            return;
+        }
+
+        $statement->reset();
     }
 
     /**

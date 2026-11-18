@@ -42,6 +42,17 @@ final class MysqlStatementPool extends SqlStatementPool implements MysqlStatemen
             return;
         }
 
+        // Like pdo_mysql, reset only to drop long data the server still holds (binds whose
+        // execute never left): an execute that reached the server used them up already.
+        $pendingLongData = $statement instanceof MysqlPooledStatement || $statement instanceof MysqlConnectionStatement
+            ? $statement->hasPendingLongData()
+            : true;
+
+        if (!$pendingLongData) {
+            parent::push($statement);
+            return;
+        }
+
         // push() runs from release callbacks queued on the event loop, where an exception
         // would surface as an UncaughtThrowable in an unrelated query. A reset that fails
         // means the connection is gone (KILL, wait_timeout): discard the statement instead.
