@@ -4,6 +4,8 @@ namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\Mysql\MysqlConnectionPool;
 use Fledge\Async\Database\Mysql\MysqlResult;
+use Fledge\Async\Database\Mysql\SocketMysqlConnection;
+use Fledge\Async\Database\SqlConnection;
 use Fledge\Async\Database\SqlConnectionPool;
 use PDO;
 
@@ -12,9 +14,76 @@ use PDO;
  */
 class FledgeMySqlPdo extends FledgePdo
 {
-    public function __construct(SqlConnectionPool $pool)
+    /**
+     * Resets a released pinned connection (see sessionReset()), built once per PDO.
+     *
+     * @var \Closure(SqlConnection): bool
+     */
+    private \Closure $sessionReset;
+
+    /**
+     * Round trips spent on session resets so far.
+     */
+    private int $resetRoundTrips = 0;
+
+    /**
+     * @param  list<string>  $sessionStatements  The connector's per-connection session statements,
+     *                                           run again after every session reset.
+     * @param  bool  $bufferedQueries  Pdo\Mysql::ATTR_USE_BUFFERED_QUERY (pdo_mysql default: true).
+     */
+    public function __construct(SqlConnectionPool $pool, array $sessionStatements = [], bool $bufferedQueries = true)
     {
         parent::__construct($pool);
+
+        $this->bufferedQueries = $bufferedQueries;
+
+        // Static, so pins (which outlive fiber scopes) never keep the PDO alive.
+        $resetUnsupported = false;
+        $roundTrips = &$this->resetRoundTrips;
+
+        $this->sessionReset = static function (SqlConnection $connection) use ($sessionStatements, &$resetUnsupported, &$roundTrips): bool {
+            if ($resetUnsupported || ! $connection instanceof SocketMysqlConnection) {
+                return false;
+            }
+
+            $before = $connection->getResetRoundTrips();
+
+            try {
+                if ($connection->resetSession($sessionStatements)) {
+                    return true;
+                }
+            } finally {
+                $roundTrips += $connection->getResetRoundTrips() - $before;
+            }
+
+            // The server does not know COM_RESET_CONNECTION (MySQL before 5.7.3, MariaDB before
+            // 10.2.4, some proxies): from now on this pool closes released connections whose
+            // session changed instead of returning them with another fiber's session state.
+            $resetUnsupported = true;
+            \error_log('fledge-mysql: the server does not support COM_RESET_CONNECTION; connections whose session changed are closed on release instead of reset.');
+
+            return false;
+        };
+    }
+
+    /**
+     * COM_RESET_CONNECTION, then the session settings and the configured database again: two
+     * round trips, only for a released connection whose session may have changed (see
+     * FledgePdo::leavesSessionUnchanged()); a clean connection goes back without a reset.
+     */
+    protected function sessionReset(): ?\Closure
+    {
+        return $this->sessionReset;
+    }
+
+    /**
+     * Round trips this PDO spent on session resets so far (for tests and diagnostics).
+     *
+     * @internal
+     */
+    public function sessionResetRoundTrips(): int
+    {
+        return $this->resetRoundTrips;
     }
 
     protected function getVersionQuery(): string
@@ -25,6 +94,14 @@ class FledgeMySqlPdo extends FledgePdo
     protected function getDriverName(): string
     {
         return 'mysql';
+    }
+
+    /**
+     * pdo_mysql is one connection per PDO, so session state carries over between statements.
+     */
+    protected function pinsSessions(): bool
+    {
+        return true;
     }
 
     /**

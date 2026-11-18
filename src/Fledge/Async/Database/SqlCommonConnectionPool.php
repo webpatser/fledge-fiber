@@ -51,6 +51,9 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
 
     private readonly DeferredFuture $onClose;
 
+    /** @var (\Closure():bool)|null See setReclaimer(). */
+    private ?\Closure $reclaimer = null;
+
     /** @var \WeakMap<TStatement, true> */
     private \WeakMap $statements;
 
@@ -236,6 +239,60 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
         return $connection;
     }
 
+    /**
+     * Take a connection for exclusive use while it stays part of the pool: it counts against the
+     * connection limit (callers wait for it like for any busy connection) and closes with the pool.
+     * Hand it back with {@see releaseConnection()}.
+     *
+     * @return TConnection
+     *
+     * @throws SqlException
+     */
+    public function leaseConnection(): SqlConnection
+    {
+        return $this->pop();
+    }
+
+    /**
+     * Return a connection taken with {@see leaseConnection()}. Once the pool is closed the connection
+     * is dropped; a closed connection goes back like any other and pop() discards it (which also wakes
+     * a caller waiting for a free slot, so it can open a replacement).
+     */
+    public function releaseConnection(SqlConnection $connection): void
+    {
+        if (!isset($this->connections[$connection])) {
+            return;
+        }
+
+        if ($this->isClosed()) {
+            $this->connections->offsetUnset($connection);
+
+            return;
+        }
+
+        $this->push($connection);
+    }
+
+    /**
+     * Fledge: called when a caller is about to wait because every connection is taken. It may
+     * hand a leased connection back with {@see releaseConnection()} and return true, so the
+     * caller looks again instead of waiting. Must not suspend.
+     *
+     * @param (\Closure():bool)|null $reclaimer
+     */
+    public function setReclaimer(?\Closure $reclaimer): void
+    {
+        $this->reclaimer = $reclaimer;
+    }
+
+    /**
+     * Fledge: whether a caller is waiting for a connection to come back.
+     */
+    public function isAwaitingConnection(): bool
+    {
+        return $this->awaitingConnection !== null;
+    }
+
     public function getConnectionCount(): int
     {
         return $this->connections->count();
@@ -294,6 +351,11 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
 
                     $this->connections->offsetSet($connection);
                     return $connection;
+                }
+
+                // Fledge: a holder of a leased connection it does not need right now may hand it back.
+                if ($this->reclaimer !== null && ($this->reclaimer)()) {
+                    continue;
                 }
 
                 // All possible connections busy, so wait until one becomes available.

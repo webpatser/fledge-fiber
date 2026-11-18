@@ -14,6 +14,8 @@ use Illuminate\Database\MySqlConnection;
  */
 class FledgeMySqlConnection extends MySqlConnection
 {
+    use KeepsLastInsertIdPerFiber;
+
     /**
      * Configure a PDOStatement or FledgePdoStatement after preparing.
      *

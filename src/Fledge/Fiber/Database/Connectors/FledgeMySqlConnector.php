@@ -33,7 +33,12 @@ class FledgeMySqlConnector implements ConnectorInterface
         try {
             $mysqlConfig = $this->buildConfig($config);
 
-            return new FledgeMySqlPdo($this->createPool($mysqlConfig, $config));
+            // The session statements also run again after each session reset of a pinned connection.
+            return new FledgeMySqlPdo(
+                $this->createPool($mysqlConfig, $config),
+                $this->sessionStatements($config),
+                (bool) ($config['options'][\Pdo\Mysql::ATTR_USE_BUFFERED_QUERY] ?? true),
+            );
         } catch (\Throwable $e) {
             throw FledgePdoException::fromThrowable($e, 'mysql');
         }

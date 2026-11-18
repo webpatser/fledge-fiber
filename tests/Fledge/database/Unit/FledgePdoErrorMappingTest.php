@@ -205,10 +205,20 @@ it('describes unlisted SQLSTATEs like PDO does', function () {
 /*
  * Every public method of the shims must run through guard(), so a future method cannot leak
  * driver exceptions. Only the constructor and the guard plumbing itself are exempt, plus the
- * cross-fiber transaction check, which never calls the driver and must throw its LogicException unmapped.
+ * cross-fiber transaction check, which never calls the driver and must throw its LogicException unmapped,
+ * and the few methods listed below with their reason.
  */
 it('routes every public shim method through guard', function (string $class) {
-    $exempt = ['__construct', 'guard', 'toPdoException', 'trackLastInsertId', 'ownsTransaction', 'assertOwnsTransaction'];
+    $exempt = [
+        '__construct', 'guard', 'toPdoException', 'trackLastInsertId', 'ownsTransaction', 'assertOwnsTransaction',
+        // Test counters: read a property, no driver call.
+        'serverPrepareCount', 'sessionResetRoundTrips', 'driverRowsRead',
+        // Static SQL classifier: no connection, no driver call (and no $this to guard with).
+        'leavesSessionUnchanged',
+        // Swallows every driver error itself, and runs inside a pin release (settlePin, the pool
+        // reclaimer, a destructor) where guard() would re-enter the pin bookkeeping.
+        'detachFromConnection',
+    ];
     $unguarded = [];
 
     foreach ((new ReflectionClass($class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {

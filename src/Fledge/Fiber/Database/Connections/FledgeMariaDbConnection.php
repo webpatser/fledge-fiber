@@ -12,6 +12,8 @@ use Illuminate\Database\MariaDbConnection;
  */
 class FledgeMariaDbConnection extends MariaDbConnection
 {
+    use KeepsLastInsertIdPerFiber;
+
     protected function prepared($statement)
     {
         $statement->setFetchMode($this->fetchMode);

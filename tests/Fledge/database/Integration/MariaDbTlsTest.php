@@ -41,7 +41,9 @@ it('negotiates tls when ssl options are configured', function (string $driver) {
     }
 
     $connector = new FledgeMySqlConnector;
-    $pdo = $connector->connect(mariadbConfig() + $options);
+    // A present SSL_CA key requests TLS, as with pdo_mysql; the empty value keeps the system
+    // trust store. SSL_VERIFY_SERVER_CERT alone does not request TLS (see buildConnectContext()).
+    $pdo = $connector->connect(mariadbConfig() + ['options' => $options['options'] + [Mysql::ATTR_SSL_CA => '']]);
 
     $stmt = $pdo->prepare("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
     $stmt->execute();

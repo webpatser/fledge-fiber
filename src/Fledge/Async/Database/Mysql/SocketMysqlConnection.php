@@ -9,6 +9,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Stream\SocketConnector;
 use Fledge\Async\Stream\SocketException;
 use Fledge\Async\Database\SqlException;
+use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
 use Revolt\EventLoop;
@@ -19,6 +20,13 @@ final class SocketMysqlConnection implements MysqlConnection
     use ForbidSerialization;
 
     private SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed;
+
+    /**
+     * Fledge: whether a level was passed to setTransactionIsolation(). Until then
+     * beginTransaction() sends a plain START TRANSACTION, as pdo_mysql does, so the
+     * session's own level (server default or a SET SESSION at connect) applies.
+     */
+    private bool $isolationSet = false;
 
     private ?DeferredFuture $busy = null;
 
@@ -53,8 +61,18 @@ final class SocketMysqlConnection implements MysqlConnection
         return new self($processor);
     }
 
+    /** Server error for a command it does not know (ER_UNKNOWN_COM_ERROR). */
+    private const ER_UNKNOWN_COM_ERROR = 1047;
+
+    /** The database the connection was opened with, selected again by resetSession(). */
+    private readonly ?string $database;
+
+    private int $resetRoundTrips = 0;
+
     private function __construct(private readonly Internal\ConnectionProcessor $processor)
     {
+        $this->database = $processor->getConfig()->getDatabase();
+
         $busy = &$this->busy;
         $this->release = static function () use (&$busy): void {
             $busy?->complete();
@@ -83,6 +101,7 @@ final class SocketMysqlConnection implements MysqlConnection
     public function setTransactionIsolation(SqlTransactionIsolation $isolation): void
     {
         $this->transactionIsolation = $isolation;
+        $this->isolationSet = true;
     }
 
     /**
@@ -141,7 +160,7 @@ final class SocketMysqlConnection implements MysqlConnection
 
         $this->busy = $deferred = new DeferredFuture();
 
-        $sql = \sprintf(
+        $sql = !$this->isolationSet ? "START TRANSACTION" : \sprintf(
             "SET SESSION TRANSACTION ISOLATION LEVEL %s; START TRANSACTION",
             $this->transactionIsolation->toSql(),
         );
@@ -161,6 +180,86 @@ final class SocketMysqlConnection implements MysqlConnection
     public function ping(): void
     {
         $this->processor->ping()->await();
+    }
+
+    /**
+     * Round trips resetSession() has spent on this connection.
+     */
+    public function getResetRoundTrips(): int
+    {
+        return $this->resetRoundTrips;
+    }
+
+    /**
+     * Reset the session to its state right after connect: COM_RESET_CONNECTION (user variables,
+     * temporary tables, locks, prepared statements and session variables are gone; the current
+     * database is kept), then the session settings connect() applied (SET NAMES, sql_mode),
+     * $statements and USE of the database the connection was opened with, in one query.
+     *
+     * Two round trips. The two commands are not pipelined: the processor runs one command at a
+     * time (one parse callback and one packet sequence per command), so a second packet written
+     * before the first reply would be parsed by the first command's handler.
+     *
+     * @param list<string> $statements
+     *
+     * @return bool False when the server does not know COM_RESET_CONNECTION (error 1047, MySQL
+     *              before 5.7.3, MariaDB before 10.2.4, some proxies): the session is unchanged.
+     *
+     * @throws \Throwable When the connection fails, the server refuses the reset for another
+     *                    reason, or the session settings fail after the reset.
+     */
+    public function resetSession(array $statements = []): bool
+    {
+        while ($this->busy) {
+            $this->busy->getFuture()->await();
+        }
+
+        try {
+            $this->resetRoundTrips++;
+            $this->processor->resetConnection()->await();
+        } catch (\Throwable $exception) {
+            if (!$this->processor->isClosed()
+                && $exception instanceof SqlQueryError
+                && $exception->getErrorCode() === self::ER_UNKNOWN_COM_ERROR
+            ) {
+                return false;
+            }
+
+            throw $exception;
+        }
+
+        $config = $this->processor->getConfig();
+        $init = [];
+
+        if ($config->getCharset() !== '') {
+            $collate = $config->getCollation();
+            $init[] = "SET NAMES '{$config->getCharset()}'" . ($collate === '' ? '' : " COLLATE '$collate'");
+        }
+
+        if ($config->getSqlMode() !== null) {
+            $init[] = "SET SESSION sql_mode='{$config->getSqlMode()}'";
+        }
+
+        $init = [...$init, ...$statements];
+
+        // COM_RESET_CONNECTION keeps the current database, which a USE on this session changed.
+        if ($this->database !== null && $this->database !== '') {
+            $init[] = 'USE `' . \str_replace('`', '``', $this->database) . '`';
+        }
+
+        if ($init === []) {
+            return true;
+        }
+
+        $this->resetRoundTrips++;
+
+        for ($result = $this->processor->query(\implode('; ', $init))->await();$result !== null; $result = $result->getNextResult()) {
+            foreach ($result as $_) {
+                // discard
+            }
+        }
+
+        return true;
     }
 
     public function prepare(string $sql): MysqlStatement

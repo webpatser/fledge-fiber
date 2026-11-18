@@ -2,6 +2,7 @@
 
 namespace Fledge\Fiber\Database\Pdo;
 
+use Fledge\Async\Database\Mysql\MysqlResult;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\Postgres\PostgresByteA;
 use Fledge\Async\Database\SqlResult;
@@ -64,15 +65,70 @@ class FledgePdoStatement
     protected ?SqlTransaction $transaction;
 
     /**
+     * Whether execute() reads every result set into memory (pdo_mysql's default buffered
+     * queries), freeing a pinned connection for the fiber's next statement.
+     */
+    protected bool $buffered;
+
+    /**
+     * The unread rows of the current result set when buffered (read ones are unset).
+     *
+     * @var array<int, array<string, mixed>>|null
+     */
+    protected ?array $rows = null;
+
+    /**
+     * Position of the next buffered row.
+     */
+    protected int $rowIndex = 0;
+
+    /**
+     * Row count of the current buffered result set.
+     */
+    protected int $bufferedRowCount = 0;
+
+    /**
+     * The buffered result sets after the current one: row count and rows.
+     *
+     * @var list<array{int, list<array<string, mixed>>}>
+     */
+    protected array $pendingRowsets = [];
+
+    /**
+     * Set when the driver statement was dropped (its transaction ended, or its pinned connection
+     * was released); the next execute() prepares $sql again on the current fiber's connection.
+     */
+    protected bool $detached = false;
+
+    /**
+     * The SQL, kept to re-prepare a detached statement.
+     */
+    protected ?string $sql;
+
+    /**
+     * The pin an unbuffered result with unread rows holds (weak: the pin belongs to its fiber).
+     *
+     * @var \WeakReference<SessionPin>|null
+     */
+    protected ?\WeakReference $cursorPin = null;
+
+    /**
+     * Rows taken from the driver result since the last execute().
+     */
+    protected int $driverRowsRead = 0;
+
+    /**
      * Create a new Fledge Async PDO statement shim.
      */
-    public function __construct(?SqlStatement $statement = null, ?SqlResult $result = null, ?FledgePdo $pdo = null, ?string $driver = null, ?SqlTransaction $transaction = null)
+    public function __construct(?SqlStatement $statement = null, ?SqlResult $result = null, ?FledgePdo $pdo = null, ?string $driver = null, ?SqlTransaction $transaction = null, bool $buffered = false, ?string $sql = null)
     {
         $this->statement = $statement;
         $this->result = $result;
         $this->pdo = $pdo;
         $this->driver = $driver;
         $this->transaction = $transaction;
+        $this->buffered = $buffered;
+        $this->sql = $sql;
     }
 
     /**
@@ -122,11 +178,30 @@ class FledgePdoStatement
     {
         // A statement prepared inside a pinned transaction runs on that transaction's
         // connection, so another fiber must not execute it while the transaction is open.
-        if ($this->transaction !== null) {
+        if ($this->transaction !== null && ! $this->detached) {
             $this->pdo?->assertOwnsTransaction($this->transaction);
         }
 
+        if ($this->detached) {
+            $this->pdo?->assertOwnsTransaction();
+        }
+
         return $this->guard(function () use ($params): bool {
+            // Like pdo_mysql, executing again first discards this statement's own unread rows;
+            // another statement's unread rows on the connection refuse the execute (error 2014).
+            $this->discardUnreadRows();
+            $this->pdo?->assertNoUnreadResult();
+
+            if ($this->detached) {
+                // pdo_mysql keeps a statement usable across transactions: prepare it again
+                // on the current fiber's connection (or its open transaction).
+                if ($this->pdo === null || $this->sql === null) {
+                    throw FledgePdoException::pdoError('The connection this statement was prepared on is gone');
+                }
+
+                $this->pdo->reattach($this, $this->sql);
+            }
+
             // Like PDO, bound values stay for the next execute(), and an array replaces all of them.
             if ($params !== null) {
                 $this->bindings = [];
@@ -157,9 +232,19 @@ class FledgePdoStatement
                 // right-hand side before releasing the old value, so the stale result
                 // would still pin a pooled connection while execute() waits for one.
                 $this->result = null;
+                $this->clearBuffer();
+                $this->driverRowsRead = 0;
+                $this->pdo?->statementExecuting($this, $this->sql);
                 $this->result = $this->statement->execute($executeParams);
 
                 $this->pdo?->trackLastInsertId($this->result);
+
+                if ($this->buffered) {
+                    $this->bufferResults($this->result);
+                } elseif ($this->sql !== null && $this->pdo !== null && $this->hasRows($this->result)) {
+                    // Unbuffered on a pinned connection: the rows stay on the socket and keep the pin.
+                    $this->cursorPin = $this->pdo->openCursor($this);
+                }
             }
 
             return true;
@@ -172,9 +257,124 @@ class FledgePdoStatement
     public function closeCursor(): bool
     {
         return $this->guard(function (): bool {
+            $this->discardUnreadRows();
             $this->result = null;
+            $this->clearBuffer();
 
             return true;
+        });
+    }
+
+    /**
+     * Rows taken from the driver result since the last execute(): all of them at execute()
+     * when buffered, one per fetch() when not.
+     *
+     * @internal
+     */
+    public function driverRowsRead(): int
+    {
+        return $this->driverRowsRead;
+    }
+
+    private function hasRows(SqlResult $result): bool
+    {
+        return $result instanceof MysqlResult && $result->getColumnDefinitions() !== null;
+    }
+
+    /**
+     * Read and drop what is left of an unbuffered result, as mysqlnd does when a result is freed,
+     * so the connection is free for the next statement.
+     */
+    private function discardUnreadRows(): void
+    {
+        if ($this->cursorPin === null) {
+            return;
+        }
+
+        try {
+            while ($this->result?->fetchRow() !== null) {
+                // discard
+            }
+        } finally {
+            $this->closeUnbufferedCursor();
+        }
+    }
+
+    /**
+     * The unbuffered result has no unread rows left: give up its hold on the pin.
+     */
+    private function closeUnbufferedCursor(): void
+    {
+        $pin = $this->cursorPin?->get();
+        $this->cursorPin = null;
+
+        if ($pin !== null) {
+            unset($pin->unread[$this]);
+        }
+    }
+
+    /**
+     * Read every row of every result set, so nothing is left unread on the connection.
+     */
+    private function bufferResults(SqlResult $result): void
+    {
+        $this->rows = iterator_to_array($result, false);
+        $this->bufferedRowCount = $result->getRowCount() ?? 0;
+        $this->driverRowsRead = count($this->rows);
+
+        for ($next = $result->getNextResult(); $next !== null; $next = $next->getNextResult()) {
+            $this->pendingRowsets[] = [$next->getRowCount() ?? 0, $rows = iterator_to_array($next, false)];
+            $this->driverRowsRead += count($rows);
+        }
+
+        // Keep no driver result: inside a transaction each one holds the connection busy.
+        $this->result = null;
+    }
+
+    private function clearBuffer(): void
+    {
+        $this->rows = null;
+        $this->rowIndex = 0;
+        $this->bufferedRowCount = 0;
+        $this->pendingRowsets = [];
+    }
+
+    /**
+     * Close and drop the driver statement: its transaction ended (the connection stays busy
+     * until every statement of the transaction is gone, and a pinned connection is the one
+     * the fiber's next transaction needs), or its pinned connection is being released and
+     * reset (which frees every server-side statement id). Buffered rows stay readable; the
+     * next execute() prepares the SQL again.
+     *
+     * @internal
+     */
+    public function detachFromConnection(): void
+    {
+        $statement = $this->statement;
+        $this->statement = null;
+        $this->result = null;
+        $this->detached = true;
+        $this->closeUnbufferedCursor();
+
+        try {
+            $statement?->close();
+        } catch (\Throwable) {
+            // The connection is already gone.
+        }
+    }
+
+    /**
+     * Take a freshly prepared driver statement for a detached statement.
+     *
+     * @internal
+     */
+    public function attach(SqlStatement $statement, ?SqlTransaction $transaction): void
+    {
+        $this->guard(function () use ($statement, $transaction): void {
+            $this->statement = $statement;
+            $this->transaction = $transaction;
+            $this->executed = false;
+            $this->detached = false;
         });
     }
 
@@ -275,7 +475,20 @@ class FledgePdoStatement
      */
     public function fetchAll(int $mode = PDO::FETCH_DEFAULT, mixed ...$args): array
     {
-        $rows = $this->guard(fn (): array => $this->result === null ? [] : iterator_to_array($this->result, false));
+        $rows = $this->guard(function (): array {
+            if ($this->rows !== null) {
+                $rows = array_values($this->rows);
+                $this->rows = [];
+
+                return $rows;
+            }
+
+            $rows = $this->result === null ? [] : iterator_to_array($this->result, false);
+            $this->driverRowsRead += count($rows);
+            $this->closeUnbufferedCursor();
+
+            return $rows;
+        });
 
         $effectiveMode = $mode === PDO::FETCH_DEFAULT ? $this->fetchMode : $mode;
 
@@ -287,7 +500,24 @@ class FledgePdoStatement
      */
     public function fetch(int $mode = PDO::FETCH_DEFAULT, mixed ...$args): mixed
     {
-        $row = $this->guard(fn (): ?array => $this->result?->fetchRow());
+        $row = $this->guard(function (): ?array {
+            if ($this->rows === null) {
+                $row = $this->result?->fetchRow();
+
+                if ($row === null) {
+                    $this->closeUnbufferedCursor();
+                } else {
+                    $this->driverRowsRead++;
+                }
+
+                return $row;
+            }
+
+            $row = $this->rows[$this->rowIndex] ?? null;
+            unset($this->rows[$this->rowIndex++]);
+
+            return $row;
+        });
 
         if ($row === null) {
             return false;
@@ -303,7 +533,7 @@ class FledgePdoStatement
      */
     public function rowCount(): int
     {
-        return $this->guard(fn (): int => $this->result?->getRowCount() ?? 0);
+        return $this->guard(fn (): int => $this->rows !== null ? $this->bufferedRowCount : ($this->result?->getRowCount() ?? 0));
     }
 
     /**
@@ -312,6 +542,17 @@ class FledgePdoStatement
     public function nextRowset(): bool
     {
         return $this->guard(function (): bool {
+            if ($this->rows !== null) {
+                if ($this->pendingRowsets === []) {
+                    return false;
+                }
+
+                [$this->bufferedRowCount, $this->rows] = array_shift($this->pendingRowsets);
+                $this->rowIndex = 0;
+
+                return true;
+            }
+
             $next = $this->result?->getNextResult();
 
             if ($next === null) {
