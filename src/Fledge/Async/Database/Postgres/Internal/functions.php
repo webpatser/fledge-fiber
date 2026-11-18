@@ -9,8 +9,25 @@ use Fledge\Async\Database\Postgres\PostgresExecutor;
 /** @internal */
 const STATEMENT_PARAM_REGEX = <<<'REGEX'
 [
-    # Skip all quoted groups.
-    (['"])(?:\\(?:\\|\1)|(?!\1).)*+\1(*SKIP)(*FAIL)
+    # Skip comments, dollar-quoted bodies and quoted groups, following the pdo_pgsql scanner:
+    # -- and non-nested block comments, $tag$...$tag$, E'' strings with backslash escapes,
+    # and '' strings and "" identifiers where only a doubled quote escapes.
+    (?:
+        --[^\n]*+
+        |
+        /\*.*?\*/
+        |
+        \$(?<tag>(?:[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*+)?)\$.*?\$\g{tag}\$
+        |
+        [eE]'(?:[^'\\]++|\\.|'')*+'
+        |
+        '(?:[^']++|'')*+'
+        |
+        "(?:[^"]++|"")*+"
+    )(*SKIP)(*FAIL)
+    |
+    # An escaped question mark (??) is a literal ?, as with PDO.
+    (?<escaped>\?\?)
     |
     # Unnamed parameters.
     (?<unnamed>
@@ -44,6 +61,10 @@ function parseNamedParams(string $sql, ?array &$names): string
     return \preg_replace_callback(STATEMENT_PARAM_REGEX, function (array $matches) use (&$names): string {
         static $index = 0, $unnamed = 0, $numbered = 1;
 
+        if (isset($matches['escaped'])) {
+            return '?';
+        }
+
         if (isset($matches['named'])) {
             $names[$index] = $matches['named'];
         } elseif (!isset($matches['numbered'])) {
@@ -63,7 +84,7 @@ function parseNamedParams(string $sql, ?array &$names): string
         }
 
         return '$' . ++$index;
-    }, $sql);
+    }, $sql, flags: \PREG_UNMATCHED_AS_NULL);
 }
 
 /**

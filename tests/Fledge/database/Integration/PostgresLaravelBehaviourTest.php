@@ -223,3 +223,40 @@ it('runs the query on a fresh connection after the server terminated it outside 
     expect($fresh)->not->toEqual($killed)
         ->and($connection->table('_fledge_behaviour_pg_counters')->count())->toBe(2);
 });
+
+it('runs a whereJsonContainsKey query with bindings like pdo_pgsql', function () {
+    $this->connections[] = $connection = fledgePostgresBehaviourConnection();
+
+    $this->admin->exec('ALTER TABLE _fledge_behaviour_pg_users ADD COLUMN options JSONB NULL');
+    $connection->table('_fledge_behaviour_pg_users')->insert([
+        ['email' => 'a@example.com', 'options' => '{"languages": ["en"]}'],
+        ['email' => 'b@example.com', 'options' => '{"theme": "dark"}'],
+    ]);
+
+    $emails = $connection->table('_fledge_behaviour_pg_users')
+        ->whereJsonContainsKey('options->languages')
+        ->where('email', '!=', 'nobody@example.com')
+        ->pluck('email')
+        ->all();
+
+    expect($emails)->toBe(['a@example.com']);
+});
+
+it('sends the same SQL as pdo_pgsql for ??, comments and dollar quotes', function (string $sql, array $bindings) {
+    $this->connections[] = $connection = fledgePostgresBehaviourConnection();
+
+    $stock = $this->admin->prepare($sql);
+    $stock->execute($bindings);
+
+    expect(array_map(fn (object $row) => (array) $row, $connection->select($sql, $bindings)))
+        ->toBe($stock->fetchAll(PDO::FETCH_ASSOC));
+})->with([
+    'jsonb ?? without other bindings' => ["SELECT ('{\"a\": 1}'::jsonb ?? 'a')::text AS v", []],
+    'jsonb ??| and ??& with bindings' => ["SELECT ('{\"a\": 1}'::jsonb ??| array[?] AND '{\"a\": 1}'::jsonb ??& array[?])::text AS v", ['a', 'a']],
+    'placeholder and :name inside a block comment' => ['SELECT ?::text AS v /* :ignored or ? */', ['x']],
+    'placeholder and $2 inside a line comment' => ["SELECT ?::text AS v -- what about $2?\n", ['x']],
+    'placeholder and :name inside a dollar quote' => ['SELECT $$ is it? :name $1 $$ AS body, ?::text AS v', ['x']],
+    'placeholder inside an E string' => ["SELECT E'it\\'s ? :name' AS body, ?::text AS v", ['x']],
+    'backslash before the closing quote of a plain string' => ["SELECT 'C:\\' AS body, ?::text AS v", ['x']],
+    'named binding next to a cast' => ['SELECT :value::text AS v', ['value' => 'x']],
+]);

@@ -358,9 +358,10 @@ it('prepares a whereJsonContainsKey query compiled by the PostgresGrammar', func
 
     expect($sql)->toBe('select * from "users" where coalesce(("options")::jsonb ?? \'languages\', false) and "id" = ?');
 
+    // The executor parses placeholders again, so the escape reaches it intact.
     $mockPool->shouldReceive('prepare')
         ->once()
-        ->with('select * from "users" where coalesce(("options")::jsonb ? \'languages\', false) and "id" = $1')
+        ->with('select * from "users" where coalesce(("options")::jsonb ?? \'languages\', false) and "id" = $1')
         ->andReturn(Mockery::mock(SqlStatement::class));
 
     $pdo->prepare($sql);

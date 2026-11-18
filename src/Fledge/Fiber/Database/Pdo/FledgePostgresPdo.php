@@ -195,7 +195,7 @@ class FledgePostgresPdo extends FledgePdo
     {
         $this->assertOwnsTransaction();
 
-        return $this->guard(fn () => parent::prepare($this->convertPlaceholders($query), $options));
+        return $this->guard(fn () => parent::prepare($this->convertPlaceholders($query, keepEscapes: true), $options));
     }
 
     /**
@@ -207,8 +207,12 @@ class FledgePostgresPdo extends FledgePdo
      * verbatim; ?? outside a literal becomes a literal ? (the PDO 8.4+ escape
      * used for jsonb operators). Like PDO, ?? inside a dollar-quoted body is
      * also unescaped, while a lone ? there stays as is.
+     *
+     * With $keepEscapes, ?? outside a dollar-quoted body stays ??: the Postgres
+     * executor parses placeholders again and would take a lone ? for one, so it
+     * receives the escape and unescapes it itself.
      */
-    protected function convertPlaceholders(string $query): string
+    protected function convertPlaceholders(string $query, bool $keepEscapes = false): string
     {
         $result = '';
         $paramIndex = 1;
@@ -233,7 +237,7 @@ class FledgePostgresPdo extends FledgePdo
 
             $result .= match ($type) {
                 self::TOKEN_PLACEHOLDER => '$'.$paramIndex++,
-                self::TOKEN_ESCAPED_QUESTION => '?',
+                self::TOKEN_ESCAPED_QUESTION => $keepEscapes ? '??' : '?',
                 default => $token,
             };
 
