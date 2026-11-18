@@ -30,12 +30,16 @@ final class Resp3ExtensionParser implements ParserInterface
     use ForbidSerialization;
 
     /**
-     * Oldest extension release safe to use. Versions before 0.1.4 corrupt the
-     * parser state machine on RESP2 nulls nested inside aggregates ($-1 / *-1
-     * as array elements, e.g. XPENDING summaries and MGET with missing keys),
-     * failing every such reply on the connection.
+     * Oldest extension release safe to use. Before 0.2.0 only top-level error
+     * replies became \Resp3\RedisException; an error nested in an aggregate
+     * (one failed command in an EXEC reply, redis.error_reply in an EVAL
+     * table) came back as a plain string, indistinguishable from a value.
+     * That turns a failed command into a success, for example a failed SELECT
+     * queued in MULTI that the database tracking would then record. Versions
+     * before 0.1.4 also corrupt the parser state machine on RESP2 nulls nested
+     * inside aggregates.
      */
-    public const string MINIMUM_VERSION = '0.1.4';
+    public const string MINIMUM_VERSION = '0.2.0';
 
     private static bool $warnedOutdated = false;
 
@@ -65,8 +69,9 @@ final class Resp3ExtensionParser implements ParserInterface
             self::$warnedOutdated = true;
             \trigger_error(
                 \sprintf(
-                    'resp3 extension %s is older than %s, which fixes a wire-corruption bug on nested RESP2 nulls; '
-                    . 'falling back to the pure-PHP RESP parser. Upgrade via `pie install webpatser/php-resp3`.',
+                    'resp3 extension %s is older than %s, which returns nested error replies as errors instead of '
+                    . 'plain strings; falling back to the pure-PHP RESP parser. Upgrade via '
+                    . '`pie install webpatser/php-resp3:^0.2`.',
                     $version ?? 'unknown',
                     self::MINIMUM_VERSION,
                 ),
@@ -90,6 +95,15 @@ final class Resp3ExtensionParser implements ParserInterface
      */
     public function __construct(private readonly \Closure $push)
     {
+        // An injected parser factory must not bypass the gate: an older
+        // extension hands nested errors back as values.
+        if (!self::versionIsSupported(\phpversion('resp3') ?: null)) {
+            throw new \LogicException(\sprintf(
+                'Resp3ExtensionParser needs the resp3 extension %s or newer; use RespParser instead.',
+                self::MINIMUM_VERSION,
+            ));
+        }
+
         $this->parser = new \Resp3\Parser();
     }
 
@@ -113,10 +127,14 @@ final class Resp3ExtensionParser implements ParserInterface
 
             // Same shape as RespParser: errors nested in an aggregate become
             // QueryException values in their position instead of throwing.
+            // Since 0.2.0 nested verbatim strings are wrapped too; unwrap them
+            // like the top-level ones.
             if (\is_array($value)) {
                 \array_walk_recursive($value, static function (mixed &$item): void {
                     if ($item instanceof \Resp3\RedisException) {
                         $item = new QueryException($item->getMessage());
+                    } elseif ($item instanceof \Resp3\VerbatimString) {
+                        $item = $item->value;
                     }
                 });
             }

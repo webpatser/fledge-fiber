@@ -72,6 +72,17 @@ it('keeps errors nested deeper than one level in position', function (string $pa
         ->and($result[1])->toBe(7);
 })->with('resp parsers');
 
+it('never returns a failed SELECT inside EXEC as a string', function (string $parserClass) {
+    // EXEC reply for: SELECT 9999 (out of range), PING
+    $responses = respParseResponses($parserClass, "*2\r\n-ERR DB index is out of range\r\n+PONG\r\n");
+
+    $result = $responses[0]->unwrap();
+
+    expect($result[0])->toBeInstanceOf(QueryException::class)
+        ->and($result[0]->getMessage())->toBe('ERR DB index is out of range')
+        ->and($result[1])->toBe('PONG');
+})->with('resp parsers');
+
 it('still throws on a top-level error reply', function (string $parserClass) {
     $responses = respParseResponses($parserClass, "-ERR unknown command\r\n");
 

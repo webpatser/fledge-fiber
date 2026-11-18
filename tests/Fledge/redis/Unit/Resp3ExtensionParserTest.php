@@ -7,8 +7,8 @@ use Fledge\Async\Redis\Protocol\Resp3ExtensionParser;
 use Fledge\Async\Redis\Protocol\RespParser;
 
 beforeEach(function () {
-    if (!extension_loaded('resp3')) {
-        $this->markTestSkipped('resp3 PECL extension not loaded; install via `pie install webpatser/php-resp3`.');
+    if (!extension_loaded('resp3') || !Resp3ExtensionParser::versionIsSupported(phpversion('resp3') ?: null)) {
+        $this->markTestSkipped('resp3 PECL extension ' . Resp3ExtensionParser::MINIMUM_VERSION . '+ not loaded; install via `pie install webpatser/php-resp3:^0.2`.');
     }
 });
 

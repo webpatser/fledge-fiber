@@ -96,7 +96,7 @@ jobs:
 
       - name: Install resp3 extension via PIE (prebuilt binary)
         run: |
-          sudo --preserve-env=PATH env "PATH=$PATH" pie install webpatser/php-resp3:^0.1.1
+          sudo --preserve-env=PATH env "PATH=$PATH" pie install webpatser/php-resp3:^0.2
           php -m | grep -F resp3
 
       - name: Install dependencies
