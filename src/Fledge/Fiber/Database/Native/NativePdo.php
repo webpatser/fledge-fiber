@@ -19,7 +19,8 @@ use PDOStatement;
  * come out as NativePdoStatement, which guards execute().
  *
  * A raw PDO that is handed out (getPdo()) and never used holds its
- * connection until the fiber's outermost scope ends.
+ * connection until the fiber's outermost scope ends, or until the callback
+ * ends (main context: DB::disconnect()) if its session changed.
  *
  * Session changes are judged here, where SQL reaches the connection, not
  * where a PDO is handed out: prepare(), exec() and query() mark the lease's

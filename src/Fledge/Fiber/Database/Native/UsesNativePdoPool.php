@@ -31,6 +31,7 @@ use WeakMap;
  * - cursor() holds a scope until its generator ends (or is destroyed).
  * - A PDO taken outside any scope (DB::getPdo(), isMaria(), escape()) stays
  *   leased until that fiber's next outermost scope ends.
+ * - A lease whose session changed stays pinned to the fiber (see below).
  *
  * Transaction levels are per fiber: `$transactions` is a hooked property
  * backed by the fiber's LeaseScope. setPdo() (disconnect, DatabaseManager
@@ -44,10 +45,19 @@ use WeakMap;
  * `$lastInsertId` is per fiber as well (same hooked-property pattern), so an
  * insertGetId() never reads the id of another fiber's insert.
  *
- * Session state never passes from one lessee to the next. A lease whose
- * owner may have changed its session is discarded when the scope ends, so
- * the next lessee gets a fresh connection (pdo_mysql cannot send
- * COM_RESET_CONNECTION, see LeaseScope::giveBack()). The judgement is made
+ * Session state lasts for the fiber's scope and never passes from one lessee
+ * to the next. A lease whose owner may have changed its session is pinned to
+ * that fiber when the statement's scope ends: the fiber's following
+ * statements on that slot (write, read or direct, each pinned on its own)
+ * reuse the connection, so Schema::disableForeignKeyConstraints() or SET @x
+ * holds for the next statement as on one stock PDO, and a transaction begun
+ * later runs on it too. The pin ends when Revolt clears the fiber's
+ * FiberLocal after the callback (the request or job), or on disconnect(),
+ * a reconnect, or a lost connection; in the main context it lasts until
+ * disconnect(). The connection is then discarded, never returned, so the
+ * next lessee gets a fresh one (pdo_mysql cannot send COM_RESET_CONNECTION,
+ * see LeaseScope::giveBack()). A pinned connection counts against pool_size
+ * until the pin ends. The judgement is made
  * where SQL reaches the connection, not where a PDO is handed out: NativePdo
  * marks the lease changed for every prepare(), exec() or query() whose SQL
  * NativePdo::leavesSessionUnchanged() does not prove clean (plain SELECT /
@@ -721,11 +731,7 @@ trait UsesNativePdoPool
 
         $lease = $scope->leases[$slot] ?? null;
 
-        if ($lease !== null) {
-            if (! $lease->isBroken()) {
-                return $lease->pdo;
-            }
-
+        if ($lease !== null && $lease->isBroken()) {
             // Keep a broken transaction connection pinned until the caller
             // rolls back (performRollBack drops it), exactly like a lost
             // connection inside a transaction: never continue silently on a
@@ -739,6 +745,21 @@ trait UsesNativePdoPool
 
             unset($scope->leases[$slot]);
             $lease->discard();
+            $lease = null;
+        }
+
+        // A lease kept past its statement (pinned, or taken outside any scope)
+        // from a pool that was replaced since (another fiber or context
+        // disconnected or reconnected) is handed back, as a stock disconnect
+        // drops the one connection for every caller. A transaction keeps its
+        // lease: setPdo() marks it broken, so the case above fails it loudly.
+        if ($lease !== null) {
+            if ($lease->pool === $pool || ($slot === 'write' && $scope->transactions > 0)) {
+                return $lease->pdo;
+            }
+
+            unset($scope->leases[$slot]);
+            $scope->giveBack($lease);
         }
 
         $pdo = $pool->acquire();
@@ -789,7 +810,15 @@ trait UsesNativePdoPool
         $scope->leases = [];
         $scope->lastSlot = null;
 
-        foreach ($leases as $lease) {
+        foreach ($leases as $slot => $lease) {
+            // A lease whose session changed stays pinned to this fiber, so its
+            // next statements see their own session state as on one stock PDO.
+            if ($scope->shouldPin($lease)) {
+                $scope->leases[$slot] = $lease;
+
+                continue;
+            }
+
             $scope->giveBack($lease);
         }
     }

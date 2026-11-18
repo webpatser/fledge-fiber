@@ -18,12 +18,13 @@ use function Fledge\Async\Future\await;
  * and MariaDB (13307) with pdo_mysql made fiber-aware by fiberio:
  * php -d extension=<path>/fiberio.so vendor/bin/pest <this file>
  *
- * The pool holds one physical connection, so every lessee gets the same
- * connection unless the previous lessee's was discarded. A lessee that may
- * have changed its session (user or session variables, temporary tables,
- * named locks, the current database, or raw PDO use) never hands that session
- * to the next lessee; a lessee that ran only clean statements returns its
- * connection without any extra round trip.
+ * The pool holds one physical connection (unless a test asks for more), so
+ * every lessee gets the same connection unless the previous lessee's was
+ * discarded. A lessee that may have changed its session (user or session
+ * variables, temporary tables, named locks, the current database, or raw PDO
+ * use) keeps that connection pinned for its own following statements and
+ * never hands that session to the next lessee; a lessee that ran only clean
+ * statements returns its connection without any extra round trip.
  */
 
 /**
@@ -49,13 +50,13 @@ function nativeSessionResetAdmin(string $flavor): PDO
  * A native connection on a pool of one physical connection; $opened->count
  * counts the physical connections the pool opened.
  */
-function nativeSessionResetConnection(string $flavor, stdClass $opened): NativeMySqlConnection|NativeMariaDbConnection
+function nativeSessionResetConnection(string $flavor, stdClass $opened, int $size = 1): NativeMySqlConnection|NativeMariaDbConnection
 {
     if (($reason = nativeDriverSkipReason($flavor)) !== null) {
         test()->markTestSkipped($reason);
     }
 
-    $config = nativeDriverConfig($flavor, ['pool_size' => 1]);
+    $config = nativeDriverConfig($flavor, ['pool_size' => $size]);
     $connector = $flavor === 'mysql' ? new NativeMySqlConnector : new NativeMariaDbConnector;
 
     // Enables fiberio exactly as the driver does; the pool it returns opens nothing.
@@ -67,7 +68,7 @@ function nativeSessionResetConnection(string $flavor, stdClass $opened): NativeM
         $opened->count++;
 
         return $stock->connect($config);
-    }, 1, 60.0);
+    }, $size, 60.0);
 
     return $flavor === 'mysql'
         ? new NativeMySqlConnection($pool, $config['database'], '', $config)
@@ -159,32 +160,41 @@ it('resets a lease that changed its session outside a transaction, through a sta
     $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
     $config = nativeDriverConfig($flavor);
 
-    $db->statement('SET @fledge_plain = 1');
-    $plain = $db->scalar('SELECT @fledge_plain');
+    // The lessee keeps its own session for its next statements; the next lessee does not get it.
+    $ownPlain = (int) async(function () use ($db) {
+        $db->statement('SET @fledge_plain = 1');
 
-    // A PDO taken outside any scope stays leased until the fiber's next outermost
-    // scope ends, so the lessee still sees its own raw SET; the next one does not.
+        return $db->scalar('SELECT @fledge_plain');
+    })->await();
+    $plain = async(fn () => $db->scalar('SELECT @fledge_plain'))->await();
+
     $own = async(function () use ($db) {
         $db->getPdo()->exec('SET @fledge_raw = 7');
 
         return (int) $db->scalar('SELECT @fledge_raw');
     })->await();
-    $raw = $db->scalar('SELECT @fledge_raw');
+    $raw = async(fn () => $db->scalar('SELECT @fledge_raw'))->await();
 
     // Abandoned: the fiber ends with the raw lease still held, so its scope is destroyed.
     async(function () use ($db) {
         $db->getPdo()->exec('SET @fledge_abandoned = 3');
     })->await();
-    $abandoned = $db->scalar('SELECT @fledge_abandoned');
+    $abandoned = async(fn () => $db->scalar('SELECT @fledge_abandoned'))->await();
 
-    // The configured database is selected again for the next lessee.
-    $db->unprepared('USE information_schema');
-    $database = $db->scalar('SELECT DATABASE()');
+    // The lessee stays in the database it chose; the next one gets the configured database again.
+    $ownDatabase = async(function () use ($db) {
+        $db->unprepared('USE information_schema');
 
-    expect($plain)->toBeNull()
+        return $db->scalar('SELECT DATABASE()');
+    })->await();
+    $database = async(fn () => $db->scalar('SELECT DATABASE()'))->await();
+
+    expect($ownPlain)->toBe(1)
+        ->and($plain)->toBeNull()
         ->and($own)->toBe(7)
         ->and($raw)->toBeNull()
         ->and($abandoned)->toBeNull()
+        ->and(strtolower($ownDatabase))->toBe('information_schema')
         ->and($database)->toBe($config['database'])
         ->and(count($db->getRawPdo()))->toBeLessThanOrEqual(1)
         ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
@@ -272,7 +282,7 @@ it('judges raw PDO use by what it runs: exec of a SET is dirty, query of a SELEC
     $own = async(function () use ($db) {
         $db->getPdo()->exec('SET @x = 1');
 
-        // One statement: the raw lease is given back when this scope ends.
+        // A separate statement: the dirty raw lease stays pinned to this fiber.
         $row = $db->selectOne('SELECT CONNECTION_ID() AS id, @x AS x');
 
         return [(int) $row->id, (int) $row->x];
@@ -461,4 +471,185 @@ it('hands a fiber waiting on a pool of one a clean session when the dirty lessee
         ->and(count($db->getRawPdo()))->toBeLessThanOrEqual(1)
         ->and($db->getRawPdo()->getWaitingCount())->toBe(0)
         ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('keeps foreign key checks off for the caller\'s following statements, so tables drop in any order', function (string $flavor, bool $inFiber) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $tables = ['_native_session_fk_child', '_native_session_fk_parent'];
+
+    $admin = nativeSessionResetAdmin($flavor);
+
+    foreach ($tables as $table) {
+        $admin->exec("DROP TABLE IF EXISTS {$table}");
+    }
+
+    $admin->exec('CREATE TABLE _native_session_fk_parent (id INT PRIMARY KEY) ENGINE=InnoDB');
+    $admin->exec('CREATE TABLE _native_session_fk_child (id INT PRIMARY KEY, parent_id INT NOT NULL, '
+        .'FOREIGN KEY (parent_id) REFERENCES _native_session_fk_parent (id)) ENGINE=InnoDB');
+
+    // What dropAllTables() (migrate:fresh, db:wipe, RefreshDatabase) does, as separate statements.
+    $run = function () use ($db) {
+        $schema = $db->getSchemaBuilder();
+        $schema->disableForeignKeyConstraints();
+        $off = (int) $db->scalar('SELECT @@foreign_key_checks');
+
+        // The wrong order: the parent first, while the child still references it.
+        $db->statement('DROP TABLE _native_session_fk_parent');
+        $db->statement('DROP TABLE _native_session_fk_child');
+
+        $schema->enableForeignKeyConstraints();
+
+        return [$off, (int) $db->scalar('SELECT @@foreign_key_checks')];
+    };
+
+    try {
+        $result = $inFiber ? async($run)->await() : $run();
+    } finally {
+        $admin->exec('SET FOREIGN_KEY_CHECKS = 0');
+
+        foreach ($tables as $table) {
+            $admin->exec("DROP TABLE IF EXISTS {$table}");
+        }
+    }
+
+    expect($result)->toBe([0, 1]);
+})->with(['mariadb', 'mysql'])->with(['in a fiber' => true, 'in the main context' => false]);
+
+it('keeps a user variable for the fiber that set it, never for another fiber, and gives the next lessee a fresh session', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened, 2);
+    $lock = "fledge_session_pin_{$flavor}";
+
+    $a = async(function () use ($db, $lock) {
+        $db->statement('SET @x = 1');
+        $locked = (int) $db->scalar("SELECT GET_LOCK('{$lock}', 0)");
+
+        // B runs its statements meanwhile.
+        delay(0.05);
+
+        return [
+            'id' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+            'x' => (int) $db->scalar('SELECT @x'),
+            'locked' => $locked,
+        ];
+    });
+
+    $b = async(function () use ($db) {
+        delay(0.01);
+
+        return ['id' => (int) $db->scalar('SELECT CONNECTION_ID()'), 'x' => $db->scalar('SELECT @x')];
+    });
+
+    [$first, $other] = await([$a, $b]);
+
+    $next = async(fn () => [
+        'id' => (int) $db->scalar('SELECT CONNECTION_ID()'),
+        'x' => $db->scalar('SELECT @x'),
+        // Waits up to 2 s for the server to drop A's closed session and its lock.
+        'locked' => (int) $db->scalar("SELECT GET_LOCK('{$lock}', 2)"),
+        'released' => (int) $db->scalar("SELECT RELEASE_LOCK('{$lock}')"),
+    ])->await();
+
+    expect($first)->toMatchArray(['x' => 1, 'locked' => 1])
+        ->and($other['id'])->not->toBe($first['id'])
+        ->and($other['x'])->toBeNull()
+        ->and($next['id'])->not->toBe($first['id'])
+        ->and($next['x'])->toBeNull()
+        ->and($next['locked'])->toBe(1)
+        ->and($next['released'])->toBe(1)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('runs many dirty statements of one fiber on one connection instead of reconnecting for each', function (string $flavor) {
+    $this->resetFlavor = $flavor;
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+
+    $admin = nativeSessionResetAdmin($flavor);
+    $admin->exec('DROP TABLE IF EXISTS _native_session_reset');
+    $admin->exec('CREATE TABLE _native_session_reset (id INT PRIMARY KEY, label VARCHAR(20) NOT NULL, FULLTEXT (label)) ENGINE=InnoDB');
+    $admin->exec("INSERT INTO _native_session_reset VALUES (1, 'stoked'), (2, 'surf')");
+
+    [$ids, $hits, $dirty] = async(function () use ($db) {
+        $ids = [];
+        $hits = 0;
+
+        for ($i = 0; $i < 20; $i++) {
+            $hits += $db->table('_native_session_reset')->whereFullText('label', 'surf')->count();
+            $ids[] = (int) $db->scalar('SELECT CONNECTION_ID()');
+        }
+
+        return [array_values(array_unique($ids)), $hits, $db->getPdo()->leaseGuard()->sessionChanged()];
+    })->await();
+
+    $openedByFiber = $opened->count;
+
+    async(fn () => $db->scalar('SELECT 1'))->await();
+
+    // Full-text queries count as dirty, so the test is not vacuous.
+    expect($dirty)->toBeTrue()
+        ->and($hits)->toBe(20)
+        ->and($ids)->toHaveCount(1)
+        ->and($openedByFiber)->toBe(1)
+        // One more for the next lessee, since the pinned connection was discarded.
+        ->and($opened->count)->toBe(2)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('lets a fiber that pinned the only connection of a pool of one keep querying, and hands a waiter a fresh one when it ends', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $waiting = null;
+
+    $a = async(function () use ($db, &$waiting) {
+        $db->statement('SET @x = 5');
+        $id = (int) $db->scalar('SELECT CONNECTION_ID()');
+
+        // B queues for the only connection meanwhile.
+        delay(0.05);
+        $waiting = $db->getRawPdo()->getWaitingCount();
+
+        $seen = [];
+
+        for ($i = 0; $i < 3; $i++) {
+            $seen[] = (int) $db->scalar('SELECT @x');
+        }
+
+        return ['id' => $id, 'x' => $seen];
+    });
+
+    $b = async(function () use ($db) {
+        delay(0.01);
+
+        return ['id' => (int) $db->scalar('SELECT CONNECTION_ID()'), 'x' => $db->scalar('SELECT @x')];
+    });
+
+    [$first, $second] = await([$a, $b]);
+
+    expect($waiting)->toBe(1)
+        ->and($first['x'])->toBe([5, 5, 5])
+        ->and($second['id'])->not->toBe($first['id'])
+        ->and($second['x'])->toBeNull()
+        ->and($opened->count)->toBe(2)
+        ->and($db->getRawPdo()->getWaitingCount())->toBe(0)
+        ->and($db->getRawPdo()->getLeasedCount())->toBe(0);
+})->with(['mariadb', 'mysql']);
+
+it('keeps the main context session across statements until disconnect() releases it', function (string $flavor) {
+    $opened = (object) ['count' => 0];
+    $this->resetConnection = $db = nativeSessionResetConnection($flavor, $opened);
+    $pool = $db->getRawPdo();
+
+    $db->statement('SET @x = 1');
+    $x = (int) $db->scalar('SELECT @x');
+    $pinned = [$pool->getLeasedCount(), count($pool)];
+
+    $db->disconnect();
+
+    expect($x)->toBe(1)
+        ->and($pinned)->toBe([1, 1])
+        ->and($opened->count)->toBe(1)
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool)->toHaveCount(0);
 })->with(['mariadb', 'mysql']);

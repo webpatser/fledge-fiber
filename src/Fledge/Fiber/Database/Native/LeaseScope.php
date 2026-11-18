@@ -15,14 +15,19 @@ use Throwable;
  * - `$transactions` is the fiber's Laravel transaction level (the hooked
  *   `$transactions` property reads and writes it).
  * - `$leases` holds at most one lease per PDO slot (write, read, direct).
- * - A lease whose guard recorded a possible session change is discarded
- *   instead of released (see giveBack()).
+ * - A lease whose guard recorded a possible session change is pinned: it is
+ *   kept when the outermost scope ends (see shouldPin()), so the fiber's
+ *   following statements on that slot run on the same connection and see
+ *   their own session state. It is discarded, never released, when the pin
+ *   ends (see giveBack()).
  *
  * Scopes are stored in a FiberLocal. Revolt reuses callback fibers and clears
  * FiberLocal storage after every callback, so a scope a callback left behind
- * (an abandoned transaction, a PDO taken outside any scope) is destroyed
- * before the next callback runs on that fiber. The destructor also covers a
- * fiber that dies while still holding a lease.
+ * (a pinned lease, an abandoned transaction, a PDO taken outside any scope)
+ * is destroyed before the next callback runs on that fiber: that is where a
+ * fiber's pin ends. The destructor also covers a fiber that dies while still
+ * holding a lease. The main context's scope lives as long as the connection,
+ * so its pin lasts until disconnect() (or a reconnect), as with one stock PDO.
  *
  * @internal
  */
@@ -42,8 +47,9 @@ final class LeaseScope
     public array $leases = [];
 
     /**
-     * Hand a lease back: released to the pool when its session is as connect()
-     * left it, discarded otherwise.
+     * Hand a lease back for good (the pin ended, or the slot is replaced):
+     * released to the pool when its session is as connect() left it,
+     * discarded otherwise.
      *
      * A lease is dirty when its guard recorded a possible session change
      * (user or session variables, temporary tables, named locks, another
@@ -59,9 +65,22 @@ final class LeaseScope
      */
     public function giveBack(Lease $lease): void
     {
-        $dirty = ! $lease->pdo instanceof GuardedPdo || $lease->pdo->leaseGuard()->sessionChanged();
+        self::isDirty($lease) ? $lease->discard() : $lease->release();
+    }
 
-        $dirty ? $lease->discard() : $lease->release();
+    /**
+     * Whether a lease stays with this scope when its outermost scope ends:
+     * its session may have changed, it still works, and its pool is open.
+     * Its connection then counts against pool_size until the pin ends.
+     */
+    public function shouldPin(Lease $lease): bool
+    {
+        return self::isDirty($lease) && ! $lease->isBroken() && ! $lease->pool->isClosed();
+    }
+
+    private static function isDirty(Lease $lease): bool
+    {
+        return ! $lease->pdo instanceof GuardedPdo || $lease->pdo->leaseGuard()->sessionChanged();
     }
 
     public function __destruct()

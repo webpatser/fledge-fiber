@@ -1290,25 +1290,157 @@ function nativeLeaseMarkDirty(): Closure
     };
 }
 
-it('discards a lease whose session changed when its scope ends and opens a new connection for the next lessee', function () {
+it('discards a lease whose session changed when the fiber ends and opens a new connection for the next lessee', function () {
     [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
 
-    $connection->unprepared('dirty set');
+    $during = async(function () use ($connection, $pool) {
+        $connection->unprepared('dirty set');
+        $connection->unprepared('own next');
 
-    expect($pool)->toHaveCount(0)
+        return [$pool->isLeased($connection->getPdo()), count($pool)];
+    })->await();
+
+    expect($during)->toBe([true, 1])
+        ->and($pool)->toHaveCount(0)
         ->and($pool->isLeased($pdos[1]))->toBeFalse()
         ->and($pool->getIdleCount())->toBe(0);
 
-    $connection->unprepared('next');
-    $connection->unprepared('clean again');
+    async(fn () => $connection->unprepared('next'))->await();
+    async(fn () => $connection->unprepared('clean again'))->await();
 
     expect($pdos)->toHaveCount(2)
-        ->and($pdos[1]->log)->toBe(['dirty set'])
+        // The fiber's own next statement ran on its pinned connection.
+        ->and($pdos[1]->log)->toBe(['dirty set', 'own next'])
         // A clean lessee keeps its connection: the second one serves both.
         ->and($pdos[2]->log)->toBe(['next', 'clean again'])
         ->and($pool)->toHaveCount(1)
         ->and($pool->getIdleCount())->toBe(1)
         ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('pins a dirty lease to its fiber for every following statement, a transaction included, and never lends it to another fiber', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(4, [], nativeLeaseMarkDirty());
+
+    $a = async(function () use ($connection) {
+        $connection->unprepared('a dirty');
+        delay(0.02);
+        $connection->select('a select');
+        $connection->transaction(fn ($c) => $c->unprepared('a in transaction'));
+
+        return $connection->getPdo()->id;
+    });
+
+    $b = async(function () use ($connection) {
+        delay(0.01);
+        $connection->unprepared('b clean');
+
+        return $connection->getPdo()->id;
+    });
+
+    [$pdoOfA, $pdoOfB] = await([$a, $b]);
+
+    expect($pdoOfA)->toBe(1)
+        ->and($pdoOfB)->toBe(2)
+        ->and($pdos[1]->log)->toBe(['a dirty', 'a select', 'begin', 'a in transaction', 'commit'])
+        ->and($pdos[2]->log)->toBe(['b clean'])
+        // A's connection was discarded when A ended; B's clean one went back.
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getIdleCount())->toBe(1)
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('opens one extra connection, not one per statement, for a fiber running many dirty statements', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+
+    async(function () use ($connection) {
+        for ($i = 0; $i < 20; $i++) {
+            $connection->select("select dirty {$i}");
+        }
+    })->await();
+
+    async(fn () => $connection->select('select clean'))->await();
+
+    expect($pdos)->toHaveCount(2)
+        ->and($pdos[1]->log)->toHaveCount(20)
+        ->and($pdos[2]->log)->toBe(['select clean'])
+        ->and($pool)->toHaveCount(1);
+});
+
+it('lets a fiber that pinned the only connection of a pool of one keep querying, and hands a waiter a fresh one when it ends', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(1, [], nativeLeaseMarkDirty());
+    $waiting = null;
+
+    $a = async(function () use ($connection, $pool, &$waiting) {
+        $connection->unprepared('a dirty');
+        delay(0.02);
+        $waiting = $pool->getWaitingCount();
+
+        foreach (['a one', 'a two', 'a three'] as $sql) {
+            $connection->unprepared($sql);
+        }
+
+        return $connection->getPdo()->id;
+    });
+
+    $b = async(function () use ($connection) {
+        delay(0.01);
+        $connection->unprepared('b');
+
+        return $connection->getPdo()->id;
+    });
+
+    [$pdoOfA, $pdoOfB] = await([$a, $b]);
+
+    expect($waiting)->toBe(1)
+        ->and($pdoOfA)->toBe(1)
+        ->and($pdoOfB)->toBe(2)
+        ->and($pdos[1]->log)->toBe(['a dirty', 'a one', 'a two', 'a three'])
+        ->and($pdos[2]->log)->toBe(['b'])
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getWaitingCount())->toBe(0)
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('keeps the main context pin across statements until disconnect() releases it', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+
+    $connection->unprepared('dirty set');
+    $connection->select('select after');
+
+    $pinned = [$pool->isLeased($pdos[1]), count($pool)];
+
+    $connection->disconnect();
+
+    expect($pinned)->toBe([true, 1])
+        ->and($pdos)->toHaveCount(1)
+        ->and($pdos[1]->log)->toBe(['dirty set', 'select after'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool->getLeasedCount())->toBe(0);
+});
+
+it('releases a fiber\'s pin when another context replaces the pool', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2, [], nativeLeaseMarkDirty());
+    $replacement = null;
+
+    $a = async(function () use ($connection) {
+        $connection->unprepared('a dirty');
+        delay(0.02);
+        $connection->unprepared('a after');
+
+        return $connection->getPdo();
+    });
+
+    delay(0.01);
+    $connection->setPdo($replacement = new NativePdoPool(fn () => nativeLeaseFakePdo(99), 1, 60.0));
+
+    $pdoOfA = $a->await();
+
+    expect($pdoOfA->id)->toBe(99)
+        ->and($pdos[1]->log)->toBe(['a dirty'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pool)->toHaveCount(0)
+        ->and($replacement->getLeasedCount())->toBe(0);
 });
 
 it('hands a fiber waiting on a pool of one a fresh connection when a dirty lessee lets go', function () {
@@ -1380,14 +1512,21 @@ it('always discards a pooled PDO that is not a GuardedPdo, since it cannot repor
         'driver' => 'fledge-mariadb-native',
     ]);
 
+    // Pinned to its owner like any dirty lease: the main context keeps its own.
     $connection->unprepared('select 1');
     $connection->select('select 2');
     async(fn () => $connection->unprepared('select 3'))->await();
+    async(fn () => $connection->unprepared('select 4'))->await();
+
+    $pinned = $pool->getLeasedCount();
+
+    $connection->disconnect();
 
     expect($pdos)->toHaveCount(3)
-        ->and($pdos[1]->log)->toBe(['select 1'])
-        ->and($pdos[2]->log)->toBe(['select 2'])
-        ->and($pdos[3]->log)->toBe(['select 3'])
+        ->and($pdos[1]->log)->toBe(['select 1', 'select 2'])
+        ->and($pdos[2]->log)->toBe(['select 3'])
+        ->and($pdos[3]->log)->toBe(['select 4'])
+        ->and($pinned)->toBe(1)
         ->and($pool)->toHaveCount(0)
         ->and($pool->getIdleCount())->toBe(0)
         ->and($pool->getLeasedCount())->toBe(0);
