@@ -3,8 +3,10 @@
 use Fledge\Fiber\Database\FiberDatabaseServiceProvider;
 use Fledge\Fiber\Database\Native\FiberAwareTransactionsManager;
 use Fledge\Fiber\Database\Native\GuardedPdo;
+use Fledge\Fiber\Database\Native\Lease;
 use Fledge\Fiber\Database\Native\LeaseGuard;
 use Fledge\Fiber\Database\Native\LeaseOwnershipException;
+use Fledge\Fiber\Database\Native\LeaseScope;
 use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
 use Fledge\Fiber\Database\Native\NativePdoPool;
 use Illuminate\Container\Container;
@@ -1088,3 +1090,188 @@ it('keeps afterCommit callbacks with the fiber whose transaction registered them
 
     expect($events)->toBe(['B callback', 'B committed', 'A callback', 'A committed']);
 });
+
+it('drops only the read lease when a read-only fiber loses its connection before the write PDO was ever resolved', function () {
+    $lost = false;
+    $readPdos = new ArrayObject;
+
+    $readPool = new NativePdoPool(function () use ($readPdos, &$lost) {
+        $pdo = nativeLeaseFakePdo(count($readPdos) + 1, [], function (string $sql) use (&$lost) {
+            if ($sql === 'boom' && ! $lost) {
+                $lost = true;
+                // Fails mid-call, while another fiber waits for a read connection.
+                delay(0.01);
+
+                throw new PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+            }
+        });
+        $readPdos[$pdo->id] = $pdo;
+
+        return $pdo;
+    }, 2, 60.0);
+
+    $writeResolved = false;
+
+    // The lazy write factory a read/write split leaves in the raw slot.
+    $connection = new NativeMariaDbConnection(function () use (&$writeResolved) {
+        $writeResolved = true;
+
+        return new NativePdoPool(fn () => nativeLeaseFakePdo(100), 2, 60.0);
+    }, 'native_lease', '', [
+        'name' => 'native-lease',
+        'driver' => 'fledge-mariadb-native',
+    ]);
+    $connection->setReadPdo($readPool);
+
+    $reconnects = 0;
+
+    // What DatabaseManager::reconnect() does: disconnect, then install fresh PDOs.
+    $connection->setReconnector(function ($c) use (&$reconnects) {
+        $reconnects++;
+        $c->disconnect();
+        $c->setPdo(fn () => new NativePdoPool(fn () => nativeLeaseFakePdo(200), 2, 60.0));
+        $c->setReadPdo(new NativePdoPool(fn () => nativeLeaseFakePdo(300), 2, 60.0));
+    });
+
+    $select = function (string $sql, float $after) use ($connection) {
+        return async(function () use ($connection, $sql, $after) {
+            delay($after);
+
+            try {
+                return $connection->select($sql);
+            } catch (Throwable $e) {
+                return $e;
+            }
+        });
+    };
+
+    $b = $select('sleep 0.02', 0);
+    $a = $select('boom', 0.002);
+    $c = $select('c', 0.005);
+
+    [$resultB, $resultA, $resultC] = await([$b, $a, $c]);
+
+    expect($resultA)->toBe([])
+        ->and($resultB)->toBe([])
+        ->and($resultC)->toBe([])
+        ->and($reconnects)->toBe(0)
+        ->and($writeResolved)->toBeFalse()
+        ->and($connection->getRawReadPdo())->toBe($readPool)
+        ->and($readPool->isClosed())->toBeFalse()
+        // A's broken connection was discarded, never handed to C.
+        ->and($readPdos[2]->log)->toBe([])
+        ->and($readPool->isLeased($readPdos[2]))->toBeFalse()
+        ->and($readPdos[1]->log)->toBe(['sleep 0.02'])
+        ->and($readPool->getLeasedCount())->toBe(0)
+        ->and($readPool)->toHaveCount(2);
+});
+
+it('starts each Revolt callback with a clean transaction level, lease and insert id when the callback fiber is reused', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(2);
+    $connection->setTransactionManager(new DatabaseTransactionsManager);
+    $events = [];
+    $fibers = [];
+
+    // Neither callback suspends, so Revolt runs both on the same callback fiber.
+    $a = async(function () use ($connection, &$events, &$fibers) {
+        $fibers[] = Fiber::getCurrent();
+
+        $connection->insert('insert a');
+        $connection->beginTransaction();
+        $connection->afterCommit(function () use (&$events) {
+            $events[] = 'A after commit';
+        });
+        $connection->unprepared('a1');
+
+        throw new RuntimeException('A gave up');
+    });
+
+    $b = async(function () use ($connection, &$events, &$fibers) {
+        $fibers[] = Fiber::getCurrent();
+
+        $seen = [$connection->transactionLevel(), $connection->getLastInsertId()];
+
+        $connection->transaction(function ($c) use (&$events) {
+            $c->afterCommit(function () use (&$events) {
+                $events[] = 'B after commit';
+            });
+            $c->unprepared('b1');
+        });
+
+        return [...$seen, $connection->transactionLevel()];
+    });
+
+    $seenByB = $b->await();
+
+    expect(fn () => $a->await())->toThrow(RuntimeException::class, 'A gave up')
+        ->and($fibers)->toHaveCount(2)
+        ->and($fibers[0])->toBe($fibers[1])
+        ->and($seenByB)->toBe([0, null, 0])
+        ->and($events)->toBe(['B after commit'])
+        // A's abandoned transaction never reached B: its connection was dropped, not reused.
+        ->and($pdos[1]->log)->toBe(['insert a', 'begin', 'a1'])
+        ->and($pool->isLeased($pdos[1]))->toBeFalse()
+        ->and($pdos[2]->log)->toBe(['begin', 'b1', 'commit'])
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool)->toHaveCount(1)
+        ->and($connection->transactionLevel())->toBe(0);
+});
+
+it('returns a PDO taken outside any scope to the pool when the callback ends, without growing the pool', function () {
+    [$connection, $pool, $pdos] = nativeLeaseSetup(4);
+    $taken = [];
+
+    // The DB::getPdo() / isMaria() / escape() path: no run() scope around it.
+    for ($i = 0; $i < 3; $i++) {
+        async(function () use ($connection, $pool, &$taken) {
+            $pdo = $connection->getPdo();
+            $taken[] = [$pdo->id, $pool->getLeasedCount()];
+        })->await();
+
+        expect($pool->getLeasedCount())->toBe(0)
+            ->and($pool->getIdleCount())->toBe(1);
+    }
+
+    $connection->unprepared('reused');
+
+    expect($taken)->toBe([[1, 1], [1, 1], [1, 1]])
+        ->and($pdos)->toHaveCount(1)
+        ->and($pdos[1]->log)->toBe(['reused'])
+        ->and($pool)->toHaveCount(1)
+        ->and($pool->getIdleCount())->toBe(1);
+});
+
+it('discards, never returns, the leases of a scope destroyed mid-transaction or mid-query', function (int $depth, int $transactions, bool $returned) {
+    $pdos = new ArrayObject;
+    $pool = new NativePdoPool(function () use ($pdos) {
+        $pdo = nativeLeaseFakePdo(count($pdos) + 1);
+        $pdos[$pdo->id] = $pdo;
+
+        return $pdo;
+    }, 2, 60.0);
+
+    $pdo = $pool->acquire();
+    // Report no open transaction, so only the scope state decides: the pool
+    // would take a reported transaction back as unusable on its own.
+    $pdo->open = false;
+
+    $scope = new LeaseScope;
+    $scope->depth = $depth;
+    $scope->transactions = $transactions;
+    $scope->leases['write'] = new Lease($pool, $pdo);
+
+    unset($scope);
+
+    expect($pool->isLeased($pdo))->toBeFalse()
+        ->and($pool->getLeasedCount())->toBe(0)
+        ->and($pool->getIdleCount())->toBe($returned ? 1 : 0)
+        ->and($pool)->toHaveCount($returned ? 1 : 0);
+
+    // A returned connection is handed out again; a discarded one never is.
+    expect($pool->acquire())->toBe($returned ? $pdo : $pdos[2]);
+})->with([
+    'idle scope' => [0, 0, true],
+    'open transaction' => [0, 1, false],
+    'unfinished query or cursor' => [1, 0, false],
+    'query inside a transaction' => [1, 2, false],
+]);

@@ -16,9 +16,11 @@ use Throwable;
  *   `$transactions` property reads and writes it).
  * - `$leases` holds at most one lease per PDO slot (write, read, direct).
  *
- * Scopes are keyed by fiber in a WeakMap. Revolt reuses callback fibers, so
- * leases never outlive the outermost scope; the destructor is only a safety
- * net for a fiber that dies while still holding one.
+ * Scopes are stored in a FiberLocal. Revolt reuses callback fibers and clears
+ * FiberLocal storage after every callback, so a scope a callback left behind
+ * (an abandoned transaction, a PDO taken outside any scope) is destroyed
+ * before the next callback runs on that fiber. The destructor also covers a
+ * fiber that dies while still holding a lease.
  *
  * @internal
  */
@@ -39,11 +41,16 @@ final class LeaseScope
 
     public function __destruct()
     {
+        // No open scope and no transaction: an idle lease (a PDO taken outside
+        // any scope) goes back to the pool, which still refuses a connection
+        // that is broken or inside a transaction.
+        $idle = $this->depth === 0 && $this->transactions === 0;
+
         foreach ($this->leases as $lease) {
             try {
-                // The owner is gone, possibly mid-transaction or mid-query:
+                // Otherwise the owner is gone mid-transaction or mid-query:
                 // never hand this connection to anyone else.
-                $lease->discard();
+                $idle ? $lease->release() : $lease->discard();
             } catch (Throwable) {
                 // Destructors may run during shutdown, after the loop is gone.
             }

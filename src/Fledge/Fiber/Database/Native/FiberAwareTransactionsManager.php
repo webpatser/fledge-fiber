@@ -6,7 +6,7 @@ use Fiber;
 use Illuminate\Database\DatabaseTransactionRecord;
 use Illuminate\Database\DatabaseTransactionsManager;
 use Illuminate\Support\Collection;
-use WeakMap;
+use Revolt\EventLoop\FiberLocal;
 
 /**
  * Transactions manager that keeps the transaction records and after-commit /
@@ -34,8 +34,14 @@ use WeakMap;
  */
 class FiberAwareTransactionsManager extends DatabaseTransactionsManager
 {
-    /** @var WeakMap<Fiber, DatabaseTransactionsManager> */
-    private WeakMap $fiberManagers;
+    /**
+     * Per-fiber inner managers. Revolt clears a FiberLocal after every
+     * callback, so records a callback abandoned (a transaction it never
+     * committed or rolled back) never reach the next callback on that fiber.
+     *
+     * @var FiberLocal<DatabaseTransactionsManager|null>
+     */
+    private FiberLocal $fiberManagers;
 
     /** @var array<string, true> */
     private array $fiberScopedConnections = [];
@@ -44,7 +50,7 @@ class FiberAwareTransactionsManager extends DatabaseTransactionsManager
     {
         parent::__construct();
 
-        $this->fiberManagers = new WeakMap;
+        $this->fiberManagers = new FiberLocal(static fn () => null);
     }
 
     public static function wrap(DatabaseTransactionsManager $manager): self
@@ -168,7 +174,14 @@ class FiberAwareTransactionsManager extends DatabaseTransactionsManager
             return $this->mainManager;
         }
 
-        return $this->fiberManagers[$fiber] ??= new DatabaseTransactionsManager;
+        $manager = $this->fiberManagers->get();
+
+        if ($manager === null) {
+            $manager = new DatabaseTransactionsManager;
+            $this->fiberManagers->set($manager);
+        }
+
+        return $manager;
     }
 
     /**
@@ -182,7 +195,7 @@ class FiberAwareTransactionsManager extends DatabaseTransactionsManager
             return null;
         }
 
-        $manager = $this->fiberManagers[$fiber] ?? null;
+        $manager = $this->fiberManagers->get();
 
         return $manager !== null && $manager->getPendingTransactions()->isNotEmpty() ? $manager : null;
     }
@@ -216,16 +229,18 @@ class FiberAwareTransactionsManager extends DatabaseTransactionsManager
      */
     private function forgetIdleFiber(): void
     {
-        $fiber = Fiber::getCurrent();
-
-        if ($fiber === null || ! isset($this->fiberManagers[$fiber])) {
+        if (Fiber::getCurrent() === null) {
             return;
         }
 
-        $manager = $this->fiberManagers[$fiber];
+        $manager = $this->fiberManagers->get();
+
+        if ($manager === null) {
+            return;
+        }
 
         if ($manager->getPendingTransactions()->isEmpty() && $manager->getCommittedTransactions()->isEmpty()) {
-            unset($this->fiberManagers[$fiber]);
+            $this->fiberManagers->unset();
         }
     }
 }

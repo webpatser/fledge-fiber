@@ -8,6 +8,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseTransactionsManager;
 use Illuminate\Database\LostConnectionException;
 use Illuminate\Database\QueryException;
+use Revolt\EventLoop\FiberLocal;
 use Throwable;
 use WeakMap;
 
@@ -22,7 +23,8 @@ use WeakMap;
  * the main context has a lease of its own.
  *
  * Lease scope (keyed on the current fiber plus a scope depth, never on fiber
- * lifetime, because Revolt reuses callback fibers):
+ * lifetime, because Revolt reuses callback fibers; the per-fiber state lives
+ * in a FiberLocal, which Revolt clears after every callback):
  * - run() and the transaction methods open a scope; the outermost scope
  *   releases the fiber's leases in `finally` when its transaction level is 0.
  * - A transaction pins the lease until the final commit or rollback.
@@ -50,13 +52,28 @@ use WeakMap;
  */
 trait UsesNativePdoPool
 {
-    /** @var WeakMap<Fiber, LeaseScope> */
-    private WeakMap $fiberLeaseScopes;
+    /**
+     * Per-fiber lease scopes. Revolt clears a FiberLocal after every callback,
+     * so a callback fiber it reuses never inherits the previous callback's
+     * transaction level or leases (an abandoned scope is destroyed, and its
+     * destructor drops a connection with an open transaction).
+     *
+     * @var FiberLocal<LeaseScope|null>
+     */
+    private FiberLocal $fiberLeaseScopes;
+
+    /**
+     * Every live fiber scope, for breakOtherOpenTransactions(); weak, so a
+     * cleared scope is gone from here too.
+     *
+     * @var WeakMap<LeaseScope, true>
+     */
+    private WeakMap $liveLeaseScopes;
 
     private ?LeaseScope $mainLeaseScope = null;
 
-    /** @var WeakMap<Fiber, string|int|false|null> */
-    private WeakMap $fiberLastInsertIds;
+    /** @var FiberLocal<string|int|false|null> */
+    private FiberLocal $fiberLastInsertIds;
 
     /**
      * The last insert id of the current fiber (or the main context, which
@@ -68,7 +85,7 @@ trait UsesNativePdoPool
         get {
             $fiber = Fiber::getCurrent();
 
-            return $fiber === null ? $this->lastInsertId : ($this->fiberLastInsertIds[$fiber] ?? null);
+            return $fiber === null ? $this->lastInsertId : ($this->fiberLastInsertIds ?? null)?->get();
         }
         set {
             $fiber = Fiber::getCurrent();
@@ -79,8 +96,8 @@ trait UsesNativePdoPool
                 return;
             }
 
-            $this->fiberLastInsertIds ??= new WeakMap;
-            $this->fiberLastInsertIds[$fiber] = $value;
+            $this->fiberLastInsertIds ??= new FiberLocal(static fn () => null);
+            $this->fiberLastInsertIds->set($value);
         }
     }
 
@@ -272,13 +289,18 @@ trait UsesNativePdoPool
      *
      * The stock reconnect() rebuilds the whole connection through the
      * DatabaseManager, which would tear down every other fiber's connection
-     * and transaction. Here the next getPdo() simply leases a fresh PDO.
+     * and transaction. Here the next getPdo() simply leases a fresh PDO. The
+     * stock rebuild only runs when no slot holds a pool: a read-only workload
+     * never resolves the lazy write factory, and the shared read pool must
+     * survive a lost read connection too.
      *
      * @return $this|mixed
      */
     public function reconnect()
     {
-        if (! $this->pdo instanceof NativePdoPool) {
+        if (! $this->pdo instanceof NativePdoPool
+            && ! $this->readPdo instanceof NativePdoPool
+            && ! $this->directPdo instanceof NativePdoPool) {
             return parent::reconnect();
         }
 
@@ -634,8 +656,8 @@ trait UsesNativePdoPool
         $current = $this->leaseScope(false);
         $scopes = $this->mainLeaseScope !== null ? [$this->mainLeaseScope] : [];
 
-        if (isset($this->fiberLeaseScopes)) {
-            foreach ($this->fiberLeaseScopes as $scope) {
+        if (isset($this->liveLeaseScopes)) {
+            foreach ($this->liveLeaseScopes as $scope => $_) {
                 $scopes[] = $scope;
             }
         }
@@ -660,7 +682,7 @@ trait UsesNativePdoPool
     {
         parent::__clone();
 
-        unset($this->fiberLeaseScopes, $this->fiberLastInsertIds);
+        unset($this->fiberLeaseScopes, $this->liveLeaseScopes, $this->fiberLastInsertIds);
         $this->mainLeaseScope = null;
     }
 
@@ -720,11 +742,19 @@ trait UsesNativePdoPool
             return $create ? ($this->mainLeaseScope ??= new LeaseScope) : $this->mainLeaseScope;
         }
 
-        $this->fiberLeaseScopes ??= new WeakMap;
+        $this->fiberLeaseScopes ??= new FiberLocal(static fn () => null);
 
-        return $create
-            ? ($this->fiberLeaseScopes[$fiber] ??= new LeaseScope)
-            : ($this->fiberLeaseScopes[$fiber] ?? null);
+        $scope = $this->fiberLeaseScopes->get();
+
+        if ($scope === null && $create) {
+            $scope = new LeaseScope;
+            $this->fiberLeaseScopes->set($scope);
+
+            $this->liveLeaseScopes ??= new WeakMap;
+            $this->liveLeaseScopes[$scope] = true;
+        }
+
+        return $scope;
     }
 
     private function enterLeaseScope(): LeaseScope
