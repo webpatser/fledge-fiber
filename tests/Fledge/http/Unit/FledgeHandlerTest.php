@@ -1,7 +1,86 @@
 <?php
 
+use Fledge\Async\Http\Client\BufferedContent;
+use Fledge\Async\Http\Client\StreamedContent;
+use Fledge\Async\Http\Server\Request as ServerRequest;
+use Fledge\Async\Http\Server\Response as ServerResponse;
 use Fledge\Fiber\Http\FledgeHandler;
+use Fledge\Fiber\Http\Psr7ReadableStream;
+use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\StreamDecoratorTrait;
+use GuzzleHttp\Psr7\Utils;
+use Psr\Http\Message\StreamInterface;
+
+require_once __DIR__.'/../Fixtures/loopback.php';
+
+if (! class_exists('CountingRequestBody')) {
+    /**
+     * PSR-7 decorator that counts how the handler reads a request body: whole
+     * body copies (__toString, getContents) versus bounded read() calls.
+     */
+    final class CountingRequestBody implements StreamInterface
+    {
+        use StreamDecoratorTrait;
+
+        public int $wholeCopies = 0;
+
+        public int $reads = 0;
+
+        public int $largestRead = 0;
+
+        private StreamInterface $stream;
+
+        public function __construct(StreamInterface $stream)
+        {
+            $this->stream = $stream;
+        }
+
+        public function __toString(): string
+        {
+            $this->wholeCopies++;
+
+            if ($this->isSeekable()) {
+                $this->seek(0);
+            }
+
+            return $this->stream->getContents();
+        }
+
+        public function getContents(): string
+        {
+            $this->wholeCopies++;
+
+            return $this->stream->getContents();
+        }
+
+        public function read($length): string
+        {
+            $chunk = $this->stream->read($length);
+            $this->reads++;
+            $this->largestRead = max($this->largestRead, strlen($chunk));
+
+            return $chunk;
+        }
+    }
+}
+
+/**
+ * Drain an async request body the way the HTTP/1 connection does.
+ *
+ * @return list<string>
+ */
+function drainAsyncRequestBody(\Fledge\Async\Http\Client\HttpContent $content): array
+{
+    $stream = $content->getContent();
+    $chunks = [];
+
+    while (($chunk = $stream->read()) !== null) {
+        $chunks[] = $chunk;
+    }
+
+    return $chunks;
+}
 
 it('is callable', function () {
     expect(new FledgeHandler)->toBeCallable();
@@ -371,3 +450,237 @@ it('invokeStats does nothing without on_stats option', function () {
 
     expect(true)->toBeTrue();
 });
+
+it('streams a large request body in bounded chunks instead of copying it whole', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $payload = random_bytes(3_000_000);
+    $body = new CountingRequestBody(Utils::streamFor($payload));
+
+    // Guzzle's PrepareBodyMiddleware stamps the Content-Length before the handler runs.
+    $psr7Request = new Request('PUT', 'https://example.com/upload', [
+        'Content-Type' => 'application/octet-stream',
+        'Content-Length' => '3000000',
+    ], $body);
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, []);
+    $content = $asyncRequest->getBody();
+
+    // Building the request copies nothing.
+    expect($body->wholeCopies)->toBe(0)
+        ->and($body->reads)->toBe(0)
+        ->and($content)->toBeInstanceOf(StreamedContent::class)
+        ->and($content->getContentLength())->toBe(3_000_000)
+        ->and($content->getContentType())->toBe('application/octet-stream');
+
+    $chunks = drainAsyncRequestBody($content);
+
+    // curl's upload buffer is 64 KiB: the largest string held is one chunk.
+    expect($body->wholeCopies)->toBe(0)
+        ->and($body->largestRead)->toBe(Psr7ReadableStream::CHUNK_SIZE)
+        ->and(max(array_map('strlen', $chunks)))->toBeLessThanOrEqual(65536)
+        ->and(count($chunks))->toBe((int) ceil(3_000_000 / 65536))
+        ->and(implode('', $chunks) === $payload)->toBeTrue();
+});
+
+it('streams an unknown-size chunked request body without copying it whole', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $parts = [str_repeat('a', 100_000), str_repeat('b', 150_000), str_repeat('c', 50_000)];
+    $source = $parts;
+    $body = new CountingRequestBody(new PumpStream(function () use (&$source) {
+        return array_shift($source) ?? false;
+    }));
+
+    $psr7Request = new Request('POST', 'https://example.com/upload', [
+        'Transfer-Encoding' => 'chunked',
+    ], $body);
+
+    $asyncRequest = $method->invoke($handler, $psr7Request, []);
+    $content = $asyncRequest->getBody();
+
+    expect($body->wholeCopies)->toBe(0)
+        ->and($content)->toBeInstanceOf(StreamedContent::class)
+        ->and($content->getContentLength())->toBeNull();
+
+    $chunks = drainAsyncRequestBody($content);
+
+    expect($body->wholeCopies)->toBe(0)
+        ->and($body->largestRead)->toBeLessThanOrEqual(65536)
+        ->and(implode('', $chunks))->toBe(implode('', $parts));
+});
+
+it('keeps bodies below curl\'s 1 MB string threshold buffered', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $payload = str_repeat('x', 999_999);
+
+    $asyncRequest = $method->invoke($handler, new Request('POST', 'https://example.com', [
+        'Content-Length' => '999999',
+    ], $payload), []);
+
+    expect($asyncRequest->getBody())->toBeInstanceOf(BufferedContent::class)
+        ->and($asyncRequest->getBody()->getContentLength())->toBe(999_999);
+});
+
+it('streams bodies from curl\'s 1 MB threshold upward', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $asyncRequest = $method->invoke($handler, new Request('POST', 'https://example.com', [
+        'Content-Length' => '1000000',
+    ], str_repeat('x', 1_000_000)), []);
+
+    expect($asyncRequest->getBody())->toBeInstanceOf(StreamedContent::class)
+        ->and($asyncRequest->getBody()->getContentLength())->toBe(1_000_000);
+});
+
+it('rewinds a seekable body before streaming it', function () {
+    $handler = new FledgeHandler;
+    $method = new ReflectionMethod($handler, 'createAsyncRequest');
+
+    $payload = random_bytes(1_500_000);
+    $stream = Utils::streamFor($payload);
+    $stream->seek(0, SEEK_END);
+
+    $asyncRequest = $method->invoke($handler, new Request('POST', 'https://example.com', [
+        'Content-Length' => '1500000',
+    ], $stream), []);
+
+    expect(implode('', drainAsyncRequestBody($asyncRequest->getBody())) === $payload)->toBeTrue();
+});
+
+it('sends large request bodies byte-identical over the wire', function (string $kind) {
+    $received = new ArrayObject;
+
+    [$server, $port] = startLoopbackServer(null, function (ServerRequest $request) use ($received): ServerResponse {
+        $request->getBody()->increaseSizeLimit(8_000_000);
+        $body = $request->getBody()->buffer();
+
+        $received[] = [
+            'path' => $request->getUri()->getPath(),
+            'sha1' => sha1($body),
+            'length' => strlen($body),
+            'content-length' => $request->getHeader('content-length'),
+            'transfer-encoding' => $request->getHeader('transfer-encoding'),
+        ];
+
+        return $request->getUri()->getPath() === '/307'
+            ? new ServerResponse(307, ['location' => '/target'])
+            : new ServerResponse(200, [], 'ok');
+    });
+
+    $payload = random_bytes(2_500_000);
+
+    $body = match ($kind) {
+        'string' => $payload,
+        'resource' => (function () use ($payload) {
+            $handle = fopen('php://temp', 'w+b');
+            fwrite($handle, $payload);
+            rewind($handle);
+
+            return $handle;
+        })(),
+        'pump' => (function () use ($payload) {
+            $offset = 0;
+
+            return new PumpStream(function (int $length) use ($payload, &$offset) {
+                if ($offset >= strlen($payload)) {
+                    return false;
+                }
+
+                $chunk = substr($payload, $offset, 100_000);
+                $offset += strlen($chunk);
+
+                return $chunk;
+            });
+        })(),
+    };
+
+    // The pump stream has no size: Guzzle sends it chunked. 307 replays need a seekable body.
+    $path = $kind === 'pump' ? '/plain' : '/307';
+
+    try {
+        $response = makeGuzzleClient()->post("http://127.0.0.1:{$port}{$path}", ['body' => $body]);
+
+        $entries = $received->getArrayCopy();
+        $last = end($entries);
+
+        expect($response->getStatusCode())->toBe(200)
+            ->and($entries)->toHaveCount($kind === 'pump' ? 1 : 2)
+            ->and(array_column($entries, 'sha1'))->each->toBe(sha1($payload))
+            ->and($last['length'])->toBe(2_500_000)
+            ->and($last['content-length'])->toBe($kind === 'pump' ? null : '2500000')
+            ->and($last['transfer-encoding'])->toBe($kind === 'pump' ? 'chunked' : null);
+    } finally {
+        $server->stop();
+    }
+})->with(['string', 'resource', 'pump']);
+
+it('closes the connection when the request body fails midway', function (string $failure) {
+    $received = new ArrayObject;
+
+    [$server, $port] = startLoopbackServer(null, function (ServerRequest $request) use ($received): ServerResponse {
+        $request->getBody()->increaseSizeLimit(8_000_000);
+        $remote = $request->getClient()->getRemoteAddress()->toString();
+
+        try {
+            $request->getBody()->buffer();
+            $received[] = ['path' => $request->getUri()->getPath(), 'remote' => $remote, 'body' => 'complete'];
+        } catch (\Throwable) {
+            $received[] = ['path' => $request->getUri()->getPath(), 'remote' => $remote, 'body' => 'eof'];
+        }
+
+        return new ServerResponse(200, [], 'ok');
+    });
+
+    [$body, $headers] = match ($failure) {
+        // Unknown size, so Guzzle sends it chunked; the second pump throws.
+        'body stream throws' => [(function () {
+            $pumps = 0;
+
+            return new PumpStream(function () use (&$pumps) {
+                if (++$pumps > 1) {
+                    throw new \RuntimeException('body source failed');
+                }
+
+                return str_repeat('a', 200_000);
+            });
+        })(), []],
+        'content-length larger than the body' => [str_repeat('b', 1_200_000), ['Content-Length' => '1300000']],
+    };
+
+    // One connection per host: a leaked busy connection blocks the next request.
+    $client = makeGuzzleClient(['timeout' => 3], new FledgeHandler(new \Fledge\Fiber\Http\AsyncClientFactory(1)));
+
+    try {
+        // Guzzle's default timeout of 0: nothing but the fix ends the half-written request.
+        expect(fn () => $client->post("http://127.0.0.1:{$port}/upload", ['body' => $body, 'headers' => $headers, 'timeout' => 0]))
+            ->toThrow(\GuzzleHttp\Exception\RequestException::class);
+
+        // The server must see the half-written request end, not wait for more bytes.
+        $deadline = microtime(true) + 3;
+
+        while (count($received) === 0 && microtime(true) < $deadline) {
+            \Fledge\Async\delay(0.02);
+        }
+
+        $entries = $received->getArrayCopy();
+
+        expect($entries)->toHaveCount(1)
+            ->and($entries[0]['body'])->toBe('eof');
+
+        $response = $client->get("http://127.0.0.1:{$port}/next");
+        $entries = $received->getArrayCopy();
+
+        expect($response->getStatusCode())->toBe(200)
+            ->and((string) $response->getBody())->toBe('ok')
+            ->and($entries)->toHaveCount(2)
+            ->and($entries[1]['remote'])->not->toBe($entries[0]['remote']);
+    } finally {
+        $server->stop();
+    }
+})->with(['body stream throws', 'content-length larger than the body']);

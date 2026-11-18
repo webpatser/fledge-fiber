@@ -8,6 +8,7 @@ use Fledge\Async\Http\Client\HttpClient;
 use Fledge\Async\Http\Client\Interceptor\FollowRedirects;
 use Fledge\Async\Http\Client\Request as AsyncRequest;
 use Fledge\Async\Http\Client\Response as AsyncResponse;
+use Fledge\Async\Http\Client\StreamedContent;
 use Fledge\Async\Http\Client\TimeoutException as ClientTimeoutException;
 use Fledge\Async\Stream\Payload;
 use Fledge\Async\TimeoutCancellation;
@@ -47,6 +48,12 @@ class FledgeHandler
      * when Guzzle sets none. A positive timeout still caps it, as curl does.
      */
     public const NO_CONNECT_TIMEOUT = 300.0;
+
+    /**
+     * Request bodies of at least this many bytes are streamed, matching the
+     * size below which Guzzle's CurlFactory sends the body as one string.
+     */
+    public const STREAM_BODY_THRESHOLD = 1000000;
 
     protected ?HttpClient $client;
 
@@ -189,13 +196,7 @@ class FledgeHandler
             $asyncRequest->setHeader($name, $values);
         }
 
-        // Copy body
-        $body = (string) $request->getBody();
-
-        if ($body !== '') {
-            $contentType = $request->getHeaderLine('Content-Type') ?: null;
-            $asyncRequest->setBody(BufferedContent::fromString($body, $contentType));
-        }
+        $this->copyBody($request, $asyncRequest);
 
         // Map timeouts with Guzzle semantics: an absent or zero value waits
         // indefinitely instead of inheriting the async client's 10 s defaults.
@@ -251,6 +252,39 @@ class FledgeHandler
         }
 
         return $asyncRequest;
+    }
+
+    /**
+     * Copy the PSR-7 body onto the async request the way Guzzle's curl
+     * handler sends it: a body known to be under 1 MB is sent as one string,
+     * a larger one or a chunked body of unknown size is streamed in 64 KiB
+     * reads (CURLOPT_READFUNCTION) instead of being copied whole into memory.
+     * The size comes from the Content-Length header, as in curl, falling back
+     * to the stream size. A body of unknown size without a Transfer-Encoding
+     * header stays buffered so it keeps its Content-Length framing.
+     */
+    protected function copyBody(RequestInterface $request, AsyncRequest $asyncRequest): void
+    {
+        $body = $request->getBody();
+        $contentType = $request->getHeaderLine('Content-Type') ?: null;
+        $contentLength = $request->getHeaderLine('Content-Length');
+        $size = is_numeric($contentLength) ? (int) $contentLength : $body->getSize();
+
+        $stream = $size === null
+            ? $request->hasHeader('Transfer-Encoding')
+            : $size >= self::STREAM_BODY_THRESHOLD;
+
+        if ($stream) {
+            $asyncRequest->setBody(StreamedContent::fromStream(new Psr7ReadableStream($body), $size, $contentType));
+
+            return;
+        }
+
+        $body = (string) $body;
+
+        if ($body !== '') {
+            $asyncRequest->setBody(BufferedContent::fromString($body, $contentType));
+        }
     }
 
     /**

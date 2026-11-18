@@ -236,16 +236,31 @@ final class Http1Connection implements Connection
 
         $responseDeferred = new DeferredFuture();
 
+        // Shared between the writing fiber and the body reading fiber.
+        $writeFailed = false;
+        $bodyDone = false;
+
         EventLoop::queue(function () use (
             $responseDeferred,
             $request,
             $stream,
             $protocolVersion,
             $combinedCancellation,
+            &$writeFailed,
+            &$bodyDone,
         ): void {
             try {
                 $this->writeRequest($request, $stream, $protocolVersion, $combinedCancellation);
             } catch (\Throwable $exception) {
+                // A partially written request leaves the socket in an unknown state; never reuse it.
+                // If the server already answered early, let the body reader deliver the response
+                // and close the connection afterwards instead of keeping it alive.
+                if (!$responseDeferred->isComplete() || $bodyDone) {
+                    $this->close();
+                } else {
+                    $writeFailed = true;
+                }
+
                 if (!$responseDeferred->isComplete()) {
                     $responseDeferred->error($exception);
                 }
@@ -259,9 +274,18 @@ final class Http1Connection implements Connection
             $cancellation,
             $combinedCancellation,
             $cancellationId,
+            &$writeFailed,
+            &$bodyDone,
         ): void {
             try {
-                $response = $this->readResponse($request, $cancellation, $combinedCancellation, $stream);
+                $response = $this->readResponse(
+                    $request,
+                    $cancellation,
+                    $combinedCancellation,
+                    $stream,
+                    $writeFailed,
+                    $bodyDone,
+                );
                 if (!$responseDeferred->isComplete()) {
                     $responseDeferred->complete($response);
                 }
@@ -295,6 +319,8 @@ final class Http1Connection implements Connection
         Cancellation $originalCancellation,
         Cancellation $readingCancellation,
         Stream $stream,
+        bool &$writeFailed,
+        bool &$bodyDone,
     ): Response {
         $bodyEmitter = new Queue();
         $trailersDeferred = new DeferredFuture;
@@ -406,6 +432,8 @@ final class Http1Connection implements Connection
                     $bodyCancellation,
                     $stream,
                     &$trailers,
+                    &$writeFailed,
+                    &$bodyDone,
                 ) {
                     $closeId = $bodyCancellation->subscribe($this->close(...));
 
@@ -455,7 +483,8 @@ final class Http1Connection implements Connection
                         $this->explicitTimeout = $explicitTimeout ?: $this->explicitTimeout;
                         $this->priorTimeout = $priorTimeout ?? $this->priorTimeout;
 
-                        if ($requestTimeout > 0 && $parser->getState() !== Http1Parser::BODY_IDENTITY_EOF) {
+                        // A failed request write makes the connection unusable even after a complete response.
+                        if (!$writeFailed && $requestTimeout > 0 && $parser->getState() !== Http1Parser::BODY_IDENTITY_EOF) {
                             $connectionRef = \WeakReference::create($this);
                             $this->timeoutWatcher = EventLoop::delay(
                                 $requestTimeout,
@@ -487,6 +516,7 @@ final class Http1Connection implements Connection
 
                         $bodyEmitter->error($e);
                     } finally {
+                        $bodyDone = true;
                         $bodyCancellation->unsubscribe($closeId);
                     }
                 });
