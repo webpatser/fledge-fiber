@@ -3,6 +3,7 @@
 use Fledge\Async\Redis\Cluster\ClusteringRedisLink;
 use Fledge\Async\Redis\Cluster\SlotHasher;
 use Fledge\Async\Redis\Connection\RedisLink;
+use Fledge\Async\Redis\Connection\RedisTimeoutException;
 use Fledge\Async\Redis\Protocol\RedisError;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
@@ -171,6 +172,23 @@ it('pins a node for the duration of MULTI/EXEC', function () {
 
     expect($exec)->toBeArray()
         ->and(count($stubs['127.0.0.1:17000']->log))->toBe(5);
+});
+
+it('leaves the transaction when the lazily sent MULTI throws', function () {
+    [$link, $stubs] = clusterLinkWithStubs(['127.0.0.1:17000']);
+
+    $stubs['127.0.0.1:17000']->responses = [
+        new RedisValue([[0, 16383, ['127.0.0.1', 17000, 'node-1']]]), // bootstrap CLUSTER SLOTS
+        fn () => throw new RedisTimeoutException('no response to MULTI'), // MULTI
+        new RedisValue('value'),                                       // GET
+    ];
+
+    expect($link->execute('MULTI', [])->unwrap())->toBe('OK')
+        ->and(fn () => $link->execute('SET', ['{tag}.k', 'v']))->toThrow(RedisTimeoutException::class);
+
+    // No fresh MULTI is opened around an unrelated command.
+    expect($link->execute('GET', ['{tag}.k'])->unwrap())->toBe('value')
+        ->and(array_column(array_slice($stubs['127.0.0.1:17000']->log, 1), 0))->toBe(['MULTI', 'GET']);
 });
 
 it('accepts RedisConfig seeds and a config-returning endpoint factory', function () {

@@ -184,7 +184,19 @@ final class ClusteringRedisLink implements RedisLink
         }
 
         if ($this->pendingMulti) {
-            $multiResponse = $this->dispatch($this->pinnedNode, 'MULTI', []);
+            try {
+                $multiResponse = $this->dispatch($this->pinnedNode, 'MULTI', []);
+            } catch (\Throwable $exception) {
+                // MULTI got no reply (read timeout, lost connection): the node
+                // link dropped the socket, so no transaction is open there.
+                // Leave transaction state like for an error reply, so later
+                // commands do not silently open a fresh MULTI.
+                $this->inTransaction = false;
+                $this->pendingMulti = false;
+                $this->pinnedNode = null;
+
+                throw $exception;
+            }
 
             if ($multiResponse instanceof RedisError) {
                 $this->inTransaction = false;

@@ -30,6 +30,23 @@ final class ReconnectingRedisLink implements RedisLink
     private ?RedisConnection $connection = null;
 
     /**
+     * The MULTI entry of the transaction open in send order (MULTI queued,
+     * its EXEC or DISCARD not yet), tracked at enqueue time so pipelined
+     * commands are covered before MULTI's own reply arrives. Reset on EXEC,
+     * DISCARD or RESET (the server leaves MULTI state on each, whatever the
+     * reply), when MULTI itself gets no OK reply (error reply, read timeout,
+     * lost connection) and on a reconnect after the MULTI reached the lost
+     * connection.
+     */
+    private ?PendingRedisCommand $openMulti = null;
+
+    /**
+     * Set when a reconnect dropped an open transaction while none of its
+     * commands was pending; the next command fails in its place.
+     */
+    private bool $transactionLost = false;
+
+    /**
      * @param ?float $readTimeout Maximum seconds to wait for a single command
      *     response (phpredis read_timeout); null waits forever.
      * @param ?int $maxReconnectAttempts Bound on consecutive failed reconnect
@@ -59,6 +76,8 @@ final class ReconnectingRedisLink implements RedisLink
 
         $parameters = \array_values(\array_map(\strval(...), $parameters));
 
+        $pending = null;
+
         try {
             $pending = $this->enqueue($command, $parameters);
 
@@ -72,6 +91,18 @@ final class ReconnectingRedisLink implements RedisLink
         } finally {
             if (\strcasecmp($command, 'quit') === 0) {
                 $this->connection?->close();
+            }
+
+            // A MULTI that was rejected, timed out or failed without a reply
+            // leaves no transaction open on the server (a timeout or a lost
+            // connection takes the socket with it), so later commands must
+            // not be tied to it. Commands already pipelined after it keep
+            // their ->multi and fail on the reconnect.
+            if ($pending !== null
+                && $this->openMulti === $pending
+                && !(isset($response) && $response instanceof RedisValue && $response->unwrap() === 'OK')
+            ) {
+                $this->openMulti = null;
             }
         }
 
@@ -117,7 +148,7 @@ final class ReconnectingRedisLink implements RedisLink
         ));
 
         if (!$pending->deferred->isComplete()) {
-            $pending->deferred->error($exception);
+            self::fail($pending, $exception);
         }
 
         $this->connection?->close();
@@ -131,6 +162,19 @@ final class ReconnectingRedisLink implements RedisLink
     private function enqueue(string $command, array $parameters): PendingRedisCommand
     {
         $pending = new PendingRedisCommand(new DeferredFuture(), $command, $parameters);
+
+        // A reconnect dropped a transaction nobody was waiting on (the socket
+        // went away after MULTI was answered): this command was meant for it,
+        // so fail it instead of running it outside the transaction. The
+        // caller learns the transaction is gone and the link starts clean.
+        if ($this->transactionLost) {
+            $this->transactionLost = false;
+            $pending->deferred->error(self::transactionLostException($pending));
+
+            return $pending;
+        }
+
+        $this->trackTransaction($pending);
         $this->queue->push($pending);
 
         $this->connection?->reference();
@@ -147,6 +191,31 @@ final class ReconnectingRedisLink implements RedisLink
         return $pending;
     }
 
+    /**
+     * Tie a command to the transaction open in send order: MULTI opens one,
+     * EXEC, DISCARD and RESET close it, everything in between belongs to it.
+     * A nested MULTI (a Redis error) keeps the open transaction.
+     */
+    private function trackTransaction(PendingRedisCommand $pending): void
+    {
+        $name = \strtolower($pending->command);
+
+        if ($this->openMulti !== null) {
+            $pending->multi = $this->openMulti;
+
+            if ($name === 'exec' || $name === 'discard' || $name === 'reset') {
+                $this->openMulti = null;
+            }
+
+            return;
+        }
+
+        if ($name === 'multi') {
+            $pending->multi = $pending;
+            $this->openMulti = $pending;
+        }
+    }
+
     private function run(): void
     {
         $connector = $this->connector;
@@ -156,11 +225,15 @@ final class ReconnectingRedisLink implements RedisLink
         $running = &$this->running;
         $connection = &$this->connection;
         $database = &$this->database;
+        $openMulti = &$this->openMulti;
+        $transactionLost = &$this->transactionLost;
 
         EventLoop::queue(static function () use (
             &$connection,
             &$running,
             &$database,
+            &$openMulti,
+            &$transactionLost,
             $queue,
             $connector,
             $backoff,
@@ -217,7 +290,7 @@ final class ReconnectingRedisLink implements RedisLink
                     $connection->unreference();
 
                     try {
-                        self::settleInFlightAndResend($queue, $connection);
+                        self::settleInFlightAndResend($queue, $connection, $openMulti, $transactionLost);
 
                         while ($response = $connection->receive()) {
                             $failures = 0;
@@ -288,12 +361,32 @@ final class ReconnectingRedisLink implements RedisLink
      * retryable and failed with a RedisInFlightCommandException otherwise,
      * and never-sent commands are simply sent.
      *
+     * A transaction whose MULTI reached a lost connection is gone server
+     * side: its commands, sent or not, retryable or not, fail with a
+     * RedisInFlightCommandException instead of running outside the
+     * transaction on the new connection, and the link leaves MULTI state.
+     * When none of an open lost transaction's commands is pending, the next
+     * command enqueued fails in their place ($transactionLost).
+     *
      * @param \SplQueue<PendingRedisCommand> $queue
      *
      * @throws RedisException when sending on the new connection fails.
      */
-    private static function settleInFlightAndResend(\SplQueue $queue, RedisConnection $connection): void
-    {
+    private static function settleInFlightAndResend(
+        \SplQueue $queue,
+        RedisConnection $connection,
+        ?PendingRedisCommand &$openMulti,
+        bool &$transactionLost,
+    ): void {
+        // Nothing has been sent on the new connection yet, so a sent MULTI
+        // was sent on a lost one.
+        // A MULTI that failed unsent (read timeout) opened nothing either.
+        $lost = self::transactionGone($openMulti) ? $openMulti : null;
+
+        if ($lost !== null) {
+            $openMulti = null;
+        }
+
         $retained = [];
 
         while (!$queue->isEmpty()) {
@@ -305,7 +398,7 @@ final class ReconnectingRedisLink implements RedisLink
             }
 
             if ($pending->sent && !RetryableCommands::isRetryable($pending->command, $pending->parameters)) {
-                $pending->deferred->error(new RedisInFlightCommandException(\sprintf(
+                self::fail($pending, new RedisInFlightCommandException(\sprintf(
                     'Redis connection lost while %s was in flight: the command may have executed on the server; not resent',
                     \strtoupper($pending->command),
                 )));
@@ -313,7 +406,17 @@ final class ReconnectingRedisLink implements RedisLink
                 continue;
             }
 
+            if (self::transactionGone($pending->multi)) {
+                self::fail($pending, self::transactionLostException($pending));
+
+                continue;
+            }
+
             $retained[] = $pending;
+        }
+
+        if ($lost !== null && !$lost->transactionFailed) {
+            $transactionLost = true;
         }
 
         foreach ($retained as $pending) {
@@ -325,6 +428,38 @@ final class ReconnectingRedisLink implements RedisLink
             $connection->send($pending->command, ...$pending->parameters);
             $pending->sent = true;
         }
+    }
+
+    /**
+     * Whether the transaction a command belongs to can no longer run: its
+     * MULTI was sent on a connection that is now lost, or failed unsent.
+     * Only called while no command has been sent on the new connection.
+     */
+    private static function transactionGone(?PendingRedisCommand $multi): bool
+    {
+        return $multi !== null && ($multi->sent || $multi->deferred->isComplete());
+    }
+
+    /**
+     * Fail a command and, inside a transaction, record that its caller has
+     * been told the transaction failed.
+     */
+    private static function fail(PendingRedisCommand $pending, RedisException $exception): void
+    {
+        $pending->deferred->error($exception);
+
+        if ($pending->multi !== null) {
+            $pending->multi->transactionFailed = true;
+        }
+    }
+
+    private static function transactionLostException(PendingRedisCommand $pending): RedisInFlightCommandException
+    {
+        return new RedisInFlightCommandException(\sprintf(
+            'Redis connection lost inside MULTI before %s was %s: the server discarded the transaction; not resent',
+            \strtoupper($pending->command),
+            $pending->sent ? 'answered' : 'sent',
+        ));
     }
 
     /**
@@ -358,7 +493,7 @@ final class ReconnectingRedisLink implements RedisLink
             $pending = $queue->shift();
 
             if (!$pending->deferred->isComplete()) {
-                $pending->deferred->error($exception);
+                self::fail($pending, $exception);
             }
         }
     }

@@ -10,6 +10,7 @@ use Fledge\Async\Redis\Connection\RedisConnector;
 use Fledge\Async\Redis\Connection\RedisInFlightCommandException;
 use Fledge\Async\Redis\Connection\RedisTimeoutException;
 use Fledge\Async\Redis\Connection\RetryableCommands;
+use Fledge\Async\Redis\Protocol\RedisError;
 use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
 use Fledge\Async\Redis\RedisException;
@@ -209,6 +210,291 @@ it('resends an in-flight DEL after a lost connection', function () {
 
     expect($del->await()->unwrap())->toBe(1)
         ->and($conn2->sent)->toBe([['DEL', 'key']]);
+});
+
+it('does not resend a retryable command that was in flight inside MULTI', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK')]);
+    $conn2 = new ScriptedRetryConnection();
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect($link->execute('MULTI', [])->unwrap())->toBe('OK');
+
+    $set = async(fn () => $link->execute('SET', ['key', 'value']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['SET', 'key', 'value']]);
+
+    $conn1->close();
+
+    try {
+        $set->await();
+        $this->fail('Expected RedisInFlightCommandException.');
+    } catch (RedisInFlightCommandException $e) {
+        expect($e->getMessage())->toContain('inside MULTI')
+            ->and($e->getMessage())->toContain('not resent');
+    }
+
+    delay(0.05);
+
+    expect($conn2->sent)->toBe([]);
+});
+
+it('fails pipelined MULTI and queued commands sent before any reply', function () {
+    $conn1 = new ScriptedRetryConnection();
+    $conn2 = new ScriptedRetryConnection();
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    $multi = async(fn () => $link->execute('MULTI', []));
+    $get = async(fn () => $link->execute('GET', ['key']));
+    $exec = async(fn () => $link->execute('EXEC', []));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['GET', 'key'], ['EXEC']]);
+
+    $conn1->close();
+
+    expect(fn () => $multi->await())->toThrow(RedisInFlightCommandException::class)
+        ->and(fn () => $get->await())->toThrow(RedisInFlightCommandException::class)
+        ->and(fn () => $exec->await())->toThrow(RedisInFlightCommandException::class);
+
+    delay(0.05);
+
+    expect($conn2->sent)->toBe([]);
+});
+
+it('fails a command queued after the connection carrying an open MULTI was lost', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK'), new RedisException('went away')]);
+    $conn2 = new ScriptedRetryConnection();
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect($link->execute('MULTI', [])->unwrap())->toBe('OK');
+
+    // conn1 is gone with nothing pending: the next command reconnects.
+    delay(0.05);
+
+    expect(fn () => $link->execute('SET', ['key', 'value']))->toThrow(RedisInFlightCommandException::class);
+
+    delay(0.05);
+
+    expect($conn2->sent)->toBe([]);
+});
+
+it('still resends a retryable in-flight command outside a transaction', function () {
+    $conn1 = new ScriptedRetryConnection();
+    $conn2 = new ScriptedRetryConnection([new RedisValue('OK')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    $set = async(fn () => $link->execute('SET', ['key', 'value']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['SET', 'key', 'value']]);
+
+    $conn1->close();
+
+    expect($set->await()->unwrap())->toBe('OK')
+        ->and($conn2->sent)->toBe([['SET', 'key', 'value']]);
+});
+
+it('resends retryable commands again once EXEC closed the transaction', function () {
+    $conn1 = new ScriptedRetryConnection([
+        new RedisValue('OK'),
+        new RedisValue('QUEUED'),
+        new RedisValue([1]),
+    ]);
+    $conn2 = new ScriptedRetryConnection([new RedisValue(1)]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    // Pipelined: the scripted replies are served as soon as they are read,
+    // so all three commands must be on the wire first.
+    $multi = async(fn () => $link->execute('MULTI', []));
+    $incr = async(fn () => $link->execute('INCR', ['counter']));
+    $exec = async(fn () => $link->execute('EXEC', []));
+
+    expect($multi->await()->unwrap())->toBe('OK')
+        ->and($incr->await()->unwrap())->toBe('QUEUED')
+        ->and($exec->await()->unwrap())->toBe([1]);
+
+    $del = async(fn () => $link->execute('DEL', ['key']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['INCR', 'counter'], ['EXEC'], ['DEL', 'key']]);
+
+    $conn1->close();
+
+    expect($del->await()->unwrap())->toBe(1)
+        ->and($conn2->sent)->toBe([['DEL', 'key']]);
+});
+
+it('starts clean after a reconnect that dropped an open transaction', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK')]);
+    $conn2 = new ScriptedRetryConnection();
+    $conn3 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2, $conn3]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect($link->execute('MULTI', [])->unwrap())->toBe('OK');
+
+    $inside = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    $conn1->close();
+
+    expect(fn () => $inside->await())->toThrow(RedisInFlightCommandException::class);
+
+    delay(0.05);
+
+    // No MULTI on conn2: a retryable command is resent as outside any transaction.
+    $outside = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    expect($conn2->sent)->toBe([['GET', 'key']]);
+
+    $conn2->close();
+
+    expect($outside->await()->unwrap())->toBe('value')
+        ->and($conn3->sent)->toBe([['GET', 'key']]);
+});
+
+it('does not tie later commands to a MULTI that hit the read timeout', function () {
+    $conn1 = new ScriptedRetryConnection();
+    $conn2 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        readTimeout: 0.05,
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect(fn () => $link->execute('MULTI', []))->toThrow(RedisTimeoutException::class);
+
+    expect($link->execute('GET', ['key'])->unwrap())->toBe('value')
+        ->and($conn2->sent)->toBe([['GET', 'key']]);
+});
+
+it('resends a retryable command normally after MULTI was rejected', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisError('ERR MULTI calls can not be nested')]);
+    $conn2 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect($link->execute('MULTI', []))->toBeInstanceOf(RedisError::class);
+
+    $get = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['GET', 'key']]);
+
+    $conn1->close();
+
+    expect($get->await()->unwrap())->toBe('value')
+        ->and($conn2->sent)->toBe([['GET', 'key']]);
+});
+
+it('resends a retryable command once DISCARD closed the transaction', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK'), new RedisValue('OK')]);
+    $conn2 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    $multi = async(fn () => $link->execute('MULTI', []));
+    $discard = async(fn () => $link->execute('DISCARD', []));
+
+    expect($multi->await()->unwrap())->toBe('OK')
+        ->and($discard->await()->unwrap())->toBe('OK');
+
+    $get = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['DISCARD'], ['GET', 'key']]);
+
+    $conn1->close();
+
+    expect($get->await()->unwrap())->toBe('value')
+        ->and($conn2->sent)->toBe([['GET', 'key']]);
+});
+
+it('resends a retryable command once RESET closed the transaction', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK'), new RedisValue('RESET')]);
+    $conn2 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    $multi = async(fn () => $link->execute('MULTI', []));
+    $reset = async(fn () => $link->execute('reset', []));
+
+    expect($multi->await()->unwrap())->toBe('OK')
+        ->and($reset->await()->unwrap())->toBe('RESET');
+
+    $get = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['MULTI'], ['reset'], ['GET', 'key']]);
+
+    $conn1->close();
+
+    expect($get->await()->unwrap())->toBe('value')
+        ->and($conn2->sent)->toBe([['GET', 'key']]);
+});
+
+it('fails only the first command after a dropped transaction', function () {
+    $conn1 = new ScriptedRetryConnection([new RedisValue('OK'), new RedisException('went away')]);
+    $conn2 = new ScriptedRetryConnection();
+    $conn3 = new ScriptedRetryConnection([new RedisValue('value')]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2, $conn3]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    expect($link->execute('MULTI', [])->unwrap())->toBe('OK');
+
+    // conn1 is gone with nothing pending: the reconnect drops the transaction.
+    delay(0.05);
+
+    expect(fn () => $link->execute('SET', ['key', 'value']))->toThrow(RedisInFlightCommandException::class);
+
+    // The rule fired once: the next command is sent, not failed.
+    $get = async(fn () => $link->execute('GET', ['key']));
+
+    delay(0.05);
+    expect($conn2->sent)->toBe([['GET', 'key']]);
+
+    $conn2->close();
+
+    expect($get->await()->unwrap())->toBe('value')
+        ->and($conn3->sent)->toBe([['GET', 'key']]);
 });
 
 it('closes the connection and throws a timeout exception when the read timeout fires', function () {

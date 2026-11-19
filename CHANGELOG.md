@@ -1,10 +1,16 @@
 # Changelog
 
+## v13.43.0.2 - 2026-11-19
+
+### Fixed
+- Redis: `ReconnectingRedisLink` now tracks an open `MULTI` in send order, so pipelined commands are covered before `MULTI` is answered. When the connection drops, the commands of a transaction whose `MULTI` reached the lost connection are no longer resent or sent on the new connection, retryable or not: they fail with `RedisInFlightCommandException`, so `FledgeRedisConnection` aborts the transaction instead of applying one command outside it and failing the later `EXEC`. `MULTI`, `EXEC` and `DISCARD` are never resent. If the connection drops while no command of the open transaction is pending, the next command fails in its place, exactly once, with `RedisInFlightCommandException`. The link leaves transaction state on `EXEC`, `DISCARD` or `RESET` (whatever their reply), on a `MULTI` that is rejected, hits the read timeout or fails without a reply, and on the reconnect that lost the transaction. Commands outside a transaction are resent as before. `WATCH` is not covered: a `WATCH` lost with the connection is not restored, so an `EXEC` on the new connection runs unguarded.
+- Redis cluster: when the `MULTI` that `ClusteringRedisLink` sends lazily before the first command of a transaction throws (read timeout, lost connection), the link leaves transaction state as it already did for an error reply, instead of opening a fresh `MULTI` around the next command.
+
 ## v13.43.0.1 - 2026-11-19
 
 ### Changed
 - Redis: `DEL` is now a safely retryable command, as in Laravel v13.43.0. `FledgeRedisConnection` gives it the free retry on a transient connection error, and `ReconnectingRedisLink` resends a `DEL` that was in flight when the connection dropped instead of failing it with `RedisInFlightCommandException`. A resent `DEL` can report 0 for a key the first attempt already removed. Laravel v13.43.0's new `Connection closed` lost-connection message is already covered by the existing `Connection` marker in `TRANSIENT_ERROR_MARKERS`.
-- Redis, known limit: `ReconnectingRedisLink` does not track an open `MULTI`, so a `DEL` (like `SET` and the other retryable commands) that is in flight inside a transaction when the connection drops is resent outside the transaction on the new connection. Transactions that must be atomic across reconnects should not rely on the retry.
+- Redis, known limit: `ReconnectingRedisLink` does not track an open `MULTI`, so a `DEL` (like `SET` and the other retryable commands) that is in flight inside a transaction when the connection drops is resent outside the transaction on the new connection. Transactions that must be atomic across reconnects should not rely on the retry (fixed in v13.43.0.2).
 
 ## v13.42.0.3 - 2026-11-18
 
