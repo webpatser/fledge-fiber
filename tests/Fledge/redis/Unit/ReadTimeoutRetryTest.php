@@ -191,6 +191,26 @@ it('resends retryable and fails non-retryable commands from the same queue', fun
         ->and($conn2->sent)->toBe([['GET', 'key']]);
 });
 
+it('resends an in-flight DEL after a lost connection', function () {
+    $conn1 = new ScriptedRetryConnection();
+    $conn2 = new ScriptedRetryConnection([new RedisValue(1)]);
+
+    $link = new ReconnectingRedisLink(
+        new ScriptedRetryConnector([$conn1, $conn2]),
+        backoff: new BackoffStrategy('constant', 0.01),
+    );
+
+    $del = async(fn () => $link->execute('DEL', ['key']));
+
+    delay(0.05);
+    expect($conn1->sent)->toBe([['DEL', 'key']]);
+
+    $conn1->close();
+
+    expect($del->await()->unwrap())->toBe(1)
+        ->and($conn2->sent)->toBe([['DEL', 'key']]);
+});
+
 it('closes the connection and throws a timeout exception when the read timeout fires', function () {
     $conn1 = new ScriptedRetryConnection();
     $conn2 = new ScriptedRetryConnection();
@@ -246,4 +266,10 @@ it('classifies retryable commands like the upstream whitelist', function () {
         ->and(RetryableCommands::isRetryable('lpush', ['list', 'x']))->toBeFalse()
         ->and(RetryableCommands::isRetryable('set', ['key', 'value']))->toBeTrue()
         ->and(RetryableCommands::isRetryable('set', ['key', 'value', 'EX', 10]))->toBeFalse();
+});
+
+it('treats DEL as retryable like upstream v13.43.0', function () {
+    expect(RetryableCommands::isRetryable('DEL', ['key']))->toBeTrue()
+        ->and(RetryableCommands::isRetryable('del', ['a', 'b']))->toBeTrue()
+        ->and(RetryableCommands::isRetryable('unlink', ['key']))->toBeFalse();
 });

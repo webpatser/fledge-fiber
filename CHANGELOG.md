@@ -1,5 +1,11 @@
 # Changelog
 
+## v13.43.0.1 - 2026-11-19
+
+### Changed
+- Redis: `DEL` is now a safely retryable command, as in Laravel v13.43.0. `FledgeRedisConnection` gives it the free retry on a transient connection error, and `ReconnectingRedisLink` resends a `DEL` that was in flight when the connection dropped instead of failing it with `RedisInFlightCommandException`. A resent `DEL` can report 0 for a key the first attempt already removed. Laravel v13.43.0's new `Connection closed` lost-connection message is already covered by the existing `Connection` marker in `TRANSIENT_ERROR_MARKERS`.
+- Redis, known limit: `ReconnectingRedisLink` does not track an open `MULTI`, so a `DEL` (like `SET` and the other retryable commands) that is in flight inside a transaction when the connection drops is resent outside the transaction on the new connection. Transactions that must be atomic across reconnects should not rely on the retry.
+
 ## v13.42.0.3 - 2026-11-18
 
 ### Changed

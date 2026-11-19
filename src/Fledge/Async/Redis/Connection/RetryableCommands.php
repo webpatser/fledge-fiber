@@ -6,6 +6,10 @@ namespace Fledge\Async\Redis\Connection;
  * The commands that may be safely retried or resent after a reconnect,
  * ported from Illuminate\Redis\Connections\PhpRedisConnection: read-only or
  * idempotent commands, plus SET without expiration or flags.
+ *
+ * DEL is idempotent in effect (the key is gone either way), so resending it
+ * after a lost connection is safe; only its reply may differ, a resent DEL
+ * reports 0 for a key the first attempt already removed.
  */
 final class RetryableCommands
 {
@@ -13,6 +17,7 @@ final class RetryableCommands
         'bitcount',
         'bitpos',
         'dbsize',
+        'del',
         'dump',
         'exists',
         'geodist',
