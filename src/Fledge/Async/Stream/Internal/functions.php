@@ -122,15 +122,17 @@ function setupTls($socket, array $options, ?Cancellation $cancellation): void
             $suspension->throw($e);
         });
 
-        $callbackId = EventLoop::onReadable($socket, static function () use (
-            $suspension,
-            $cancellation,
-            $cancellationId,
-        ): void {
+        $callback = static function () use ($suspension, $cancellation, $cancellationId): void {
             $cancellation->unsubscribe($cancellationId);
 
             $suspension->resume();
-        });
+        };
+
+        // OpenSSL reports which direction the pending handshake step is blocked on. Waiting for readable while it
+        // needs to flush (e.g. a large certificate chain into a full send buffer) stalls until the peer gives up.
+        $callbackId = \stream_socket_get_crypto_status($socket) === \STREAM_CRYPTO_STATUS_WANT_WRITE
+            ? EventLoop::onWritable($socket, $callback)
+            : EventLoop::onReadable($socket, $callback);
 
         try {
             $suspension->suspend();
