@@ -54,4 +54,18 @@ return [
 
     'fiberio_hooks' => env('FLEDGE_FIBERIO_HOOKS', 'all'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Event Loop Driver
+    |--------------------------------------------------------------------------
+    |
+    | Which Revolt driver a worker runs on: `poll` (PHP 8.6 Io\Poll), `select`
+    | (stream_select, the rollback value), `revolt` (Revolt's own factory) or
+    | `auto` (the Fledge default). Not applied here: a long-running worker
+    | passes it to Fledge\Async\EventLoop\LoopDriver::install() after fork.
+    |
+    */
+
+    'event_loop' => env('FLEDGE_EVENT_LOOP', 'auto'),
+
 ];
