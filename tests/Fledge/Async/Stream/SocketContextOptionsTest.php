@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Fledge\Async\Redis\Connection\SocketRedisConnection;
+use Fledge\Async\Redis\Connection\SocketRedisConnector;
 use Fledge\Async\Stream\BindContext;
 use Fledge\Async\Stream\ConnectContext;
 use Fledge\Async\Stream\DnsSocketConnector;
@@ -96,6 +98,14 @@ describe('ConnectContext socket options', function () {
             ->and(fn () => (new ConnectContext())->withReceiveBufferSize(0))->toThrow(ValueError::class)
             ->and(fn () => (new ConnectContext())->withSendBufferSize(0))->toThrow(ValueError::class);
     });
+
+    it('rejects buffer sizes the socket option cannot hold at the with call', function () {
+        expect((new ConnectContext())->withReceiveBufferSize(2147483647)->getReceiveBufferSize())->toBe(2147483647)
+            ->and(fn () => (new ConnectContext())->withReceiveBufferSize(2147483648))
+            ->toThrow(ValueError::class, 'must be between 1 and 2147483647')
+            ->and(fn () => (new ConnectContext())->withSendBufferSize(\PHP_INT_MAX))
+            ->toThrow(ValueError::class, 'must be between 1 and 2147483647');
+    });
 });
 
 describe('BindContext socket options', function () {
@@ -127,7 +137,10 @@ describe('BindContext socket options', function () {
             ->and($on->hasKeepAlive())->toBeTrue()
             ->and($on->withoutKeepAlive()->hasKeepAlive())->toBeFalse()
             ->and(fn () => $base->withKeepAlive(0))->toThrow(ValueError::class)
-            ->and(fn () => $base->withSendBufferSize(0))->toThrow(ValueError::class);
+            ->and(fn () => $base->withSendBufferSize(0))->toThrow(ValueError::class)
+            ->and(fn () => $base->withSendBufferSize(2147483648))->toThrow(ValueError::class, 'between 1 and 2147483647')
+            ->and(fn () => $base->withReceiveBufferSize(\PHP_INT_MAX))->toThrow(ValueError::class, 'between 1 and 2147483647')
+            ->and($base->withSendBufferSize(2147483647)->getSendBufferSize())->toBe(2147483647);
     });
 });
 
@@ -169,6 +182,25 @@ describe('live sockets', function () {
 
         $socket->close();
     });
+
+    it('keeps the caller keep-alive tuning when the Redis connector enables tcp_keepalive', function (bool $tuned) {
+        [$server, $address] = listenWith(new BindContext());
+        $context = $tuned ? (new ConnectContext())->withKeepAlive(77, 11, 5) : new ConnectContext();
+
+        $connection = (new SocketRedisConnector("tcp://{$address}", $context, tcpKeepalive: true))->connect();
+        $socket = (new ReflectionProperty(SocketRedisConnection::class, 'socket'))->getValue($connection);
+        $resource = $socket->getResource();
+
+        expect(readSocketOption($resource, \SOL_SOCKET, \SO_KEEPALIVE))->not->toBe(0);
+
+        if ($tuned) {
+            expect(readSocketOption($resource, \SOL_TCP, socketOptionKeepIdle()))->toBe(77)
+                ->and(readSocketOption($resource, \SOL_TCP, \TCP_KEEPINTVL))->toBe(11)
+                ->and(readSocketOption($resource, \SOL_TCP, \TCP_KEEPCNT))->toBe(5);
+        }
+
+        $connection->close();
+    })->with(['caller tuning' => [true], 'plain context' => [false]]);
 
     it('applies buffer sizes to a client connect', function () {
         [$server, $address] = listenWith(new BindContext());

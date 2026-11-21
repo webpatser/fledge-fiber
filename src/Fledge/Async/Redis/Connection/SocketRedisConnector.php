@@ -47,8 +47,11 @@ final readonly class SocketRedisConnector implements RedisConnector
             // retries a refused connect with 2 s and 4 s of backoff. Reconnect
             // retries belong to ReconnectingRedisLink and its own backoff.
             $socketConnector = $this->socketConnector ?? new Stream\DnsSocketConnector();
-            // SO_KEEPALIVE (the phpredis tcp_keepalive option) is a socket context option, set at connect
-            $connectContext = $this->tcpKeepalive ? $this->connectContext->withKeepAlive() : $this->connectContext;
+            // SO_KEEPALIVE (the phpredis tcp_keepalive option) is a socket context option, set at connect.
+            // A context that already enables keep-alive keeps its own idle/interval/count tuning.
+            $connectContext = $this->tcpKeepalive && !$this->connectContext->hasKeepAlive()
+                ? $this->connectContext->withKeepAlive()
+                : $this->connectContext;
             $socket = $socketConnector->connect($this->uri, $connectContext, $cancellation);
             if ($connectContext->getTlsContext()) {
                 $socket->setupTls($cancellation);

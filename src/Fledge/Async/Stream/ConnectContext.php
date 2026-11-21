@@ -144,8 +144,8 @@ final class ConnectContext
 
     public function withReceiveBufferSize(int $bytes): self
     {
-        if ($bytes < 1) {
-            throw new \ValueError("Invalid receive buffer size ({$bytes}), must be greater than 0");
+        if ($bytes < 1 || $bytes > 2147483647) {
+            throw new \ValueError("Invalid receive buffer size ({$bytes}), must be between 1 and 2147483647");
         }
 
         return clone($this, ['receiveBufferSize' => $bytes]);
@@ -163,8 +163,8 @@ final class ConnectContext
 
     public function withSendBufferSize(int $bytes): self
     {
-        if ($bytes < 1) {
-            throw new \ValueError("Invalid send buffer size ({$bytes}), must be greater than 0");
+        if ($bytes < 1 || $bytes > 2147483647) {
+            throw new \ValueError("Invalid send buffer size ({$bytes}), must be between 1 and 2147483647");
         }
 
         return clone($this, ['sendBufferSize' => $bytes]);
