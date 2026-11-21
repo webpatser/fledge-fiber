@@ -10,14 +10,15 @@ env:
 
 jobs:
   tests:
-    # Second leg runs the whole suite with the Io\Poll event loop driver forced
-    # (Epoll on this runner). The driver tests themselves run on both legs.
+    # One leg per event loop driver (webpatser/fledge-loop): poll (Io\Poll, epoll
+    # on this runner), select (stream_select), and unset, where the variable is
+    # not set at all so the default selection (auto) is exercised.
     name: tests (event loop ${{ matrix.event_loop }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        event_loop: [poll, select]
+        event_loop: [unset, poll, select]
     # The suite finishes in well under a minute locally. Without a cap, a test
     # that blocks on a service (the database integration suite has done this
     # twice) holds the runner for GitHub's full six hour default before failing.
@@ -100,6 +101,8 @@ jobs:
           extensions: mbstring, pdo, pdo_mysql, pdo_pgsql, sockets, pcntl, posix, ffi
           tools: pie
           coverage: none
+          # The loop asserts its invariants (a stream closed while watched throws at the next tick).
+          ini-values: zend.assertions=1, assert.exception=1
 
       - name: Install resp3 extension via PIE (prebuilt binary)
         run: |
@@ -141,9 +144,11 @@ jobs:
           PROBE_STRICT=1 timeout --verbose 60 php tests/probe-h2.php || echo "B EXIT: $?"
 
       - name: Run tests
-        run: vendor/bin/pest --no-coverage
+        run: |
+          if [ "$EVENT_LOOP" != unset ]; then export FLEDGE_EVENT_LOOP="$EVENT_LOOP"; fi
+          vendor/bin/pest --no-coverage
         env:
-          FLEDGE_EVENT_LOOP: ${{ matrix.event_loop }}
+          EVENT_LOOP: ${{ matrix.event_loop }}
           FLEDGE_TEST_MYSQL_HOST: 127.0.0.1
           FLEDGE_TEST_MYSQL_PORT: 13306
           FLEDGE_TEST_MYSQL_USER: fledge
