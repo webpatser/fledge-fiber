@@ -10,6 +10,10 @@ Provides fiber-based database (MySQL, MariaDB, PostgreSQL), Redis, HTTP, WebSock
 - [webpatser/fledge-loop](https://github.com/webpatser/fledge-loop) ^0.1 (the event loop, `Fledge\Loop`)
 - fledge-framework v13.42.0.1 and later require fledge-fiber 13.42.0.1 or later (earlier v13 frameworks work with any fiber v13 release)
 
+## PHP version policy
+
+This package supports only the latest stable PHP release. When a new PHP version is released, the next release of this package requires it and support for the previous PHP version ends. Currently: PHP 8.6.
+
 ## Installation
 
 ```bash
@@ -271,7 +275,7 @@ Where the Fledge drivers deliberately or unavoidably behave differently from Lar
     - When another context replaces the pool mid-request (for example the Octane `DisconnectFromDatabases` listener under a fiber server), a fiber with a pinned connection continues on a fresh session without an error. Do not rely on session-level guards such as `SET SESSION TRANSACTION READ ONLY`, `SET ROLE`, `sql_safe_updates` or a tenant variable surviving that.
     - A statement classified as session-changing holds its connection for the rest of the request or job, including slow external awaits, so size `pool_size` for the number of fibers that change their session at once.
     - Long-lived main-context workers keep one pinned connection, and any held `GET_LOCK`, until disconnect.
-- **An abandoned transaction is rolled back by the server.** When a callback ends with a transaction open on the native pool, its lease is discarded (the connection is dropped, so the server rolls the transaction back) and the transaction's after-commit callbacks are dropped. On the amphp MySQL driver a pin with an open transaction is closed when its scope ends. Stock PDO would keep the transaction open until the request ends.
+- **An abandoned transaction is rolled back by the server.** When a callback ends with a transaction open on the native pool, its lease is discarded (the connection is dropped, so the server rolls the transaction back) and the transaction's after-commit callbacks are dropped. On the `fledge-mysql` driver a pin with an open transaction is closed when its scope ends. Stock PDO would keep the transaction open until the request ends.
 - **MySQL text-protocol results return BIT as raw bytes.** Unprepared statements (the text protocol) give a BIT column as the raw byte string; prepared statements give an integer. An unsigned BIGINT of 2^63 and above is a decimal string in prepared results (as mysqlnd returns it).
 - **Postgres resets a pooled connection only when its session may have changed.** The pool runs `DISCARD ALL` on checkout of a new connection or one that ran a statement the classifier cannot prove clean (`SET`, `LISTEN`, `PREPARE`, temporary tables, advisory locks, user functions, an abandoned or failed transaction); a clean connection is reused as it is. `INSERT`, `UPDATE`, `DELETE` and `MERGE` count as dirty because of triggers, so a transaction with DML costs a `DISCARD ALL` on the next checkout. A failed `notify()` leaves its connection to be reset (a lost connection is closed). Function names with non-ASCII characters are never treated as built-ins. A function or rule behind a view or a trigger is invisible to the text check.
 - **A fiber with a pinned native session fails once when its pool is replaced.** When another fiber or context disconnects or reconnects the connection while a fiber holds a pin with changed session state (variables, locks, temporary tables), that fiber's next statement throws `LostConnectionException` once and then runs on a fresh session. Stock Laravel reconnects silently and drops the session state. Clean leases move to the new pool without a word. A dirty pin whose pool was closed by another context keeps its connection open until the pinned fiber's (or the main context's) next statement, `disconnect()`, or the end of the fiber.
@@ -370,3 +374,7 @@ Follows Fledge versioning: `v13.x.y.z` where the first three digits match the La
 ## License
 
 Apache-2.0. Portions are derived from [amphp](https://github.com/amphp) (MIT); see `LICENSE` for the original notice.
+
+## Origins
+
+Fledge's async layer started as a port of [amphp](https://amphp.org) and its event loop as a port of [Revolt](https://revolt.run), both MIT licensed. Those projects showed how far fibers can take PHP, and Fledge builds on that work. Fledge has since gone its own way: PHP 8.6 only, shaped around Laravel, and maintained independently, so it does not track either project. The original copyright notices are kept in LICENSE, and [ORIGINS.md](ORIGINS.md) records what came from where.

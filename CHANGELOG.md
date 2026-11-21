@@ -13,6 +13,7 @@
 - Closing a stream while one of its loop callbacks is still enabled is now an error when assertions are active (`zend.assertions=1`) or `FLEDGE_DEBUG` is set: the loop throws an `\Error` naming the stream's callbacks at the next tick. Cancel the callbacks first; see "Closing streams" in the fledge-loop README. In production the loop does not throw.
 - WebSocket server: `Rfc6455ClientFactory` no longer imports each accepted stream into ext-sockets to set `TCP_NODELAY` (which never applied to TLS streams). Set it on the listener with `BindContext::withTcpNoDelay()`; accepted sockets inherit it, plain and TLS alike.
 - The `php86` Docker image (the Linux epoll test run) now has `pgsql` and `pdo_pgsql`, and CI loads `pgsql` explicitly, so the ext-pgsql connect and close paths run on epoll too.
+- Docs: ORIGINS.md records where the async layer came from; README states the project's independence and the PHP version policy
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
 ### Removed
