@@ -53,8 +53,18 @@ use Time\Duration;
  * Signals: pcntl_signal() and pcntl_signal_dispatch(), as in StreamSelectDriver. A signal arriving during the
  * backend wait interrupts it; the interrupted wait counts as zero events and the signal is dispatched next tick.
  *
- * Fork: kqueue and epoll descriptors do not survive fork(). Never create this driver in a parent process and use it
- * in a forked child; create it inside the process that runs the loop.
+ * Fork: the driver belongs to the process that created it. A forked child inherits the epoll descriptor on Linux
+ * (shared with the parent: registering, modifying or removing a watcher in the child changes the parent's
+ * registrations, and the parent then receives events whose data refers to the child's memory) and loses the kqueue
+ * descriptor on macOS and BSD (its number becomes free and is reused by the child's next descriptor). The driver
+ * therefore records getmypid() at construction and refuses to touch the kernel object from any other process: the
+ * sync of watcher changes and a wait that returned events or failed throw a LogicException naming
+ * {@see \Fledge\Async\EventLoop\LoopDriver::afterFork()}, which is what a forked child calls first to discard the
+ * inherited driver and start a fresh loop. A zero-result wait in a child is harmless (level-triggered, nothing is
+ * consumed) and is not checked, so the check costs one getmypid() per tick that has events (about 3 ns on macOS,
+ * about 125 ns in a Linux container, where getpid() is a real syscall), never on idle or timer-only ticks.
+ * Destroying the driver in a process that did not create it issues no kernel operation and leaves the signal
+ * dispositions alone.
  */
 final class PollDriver extends AbstractDriver
 {
@@ -65,7 +75,20 @@ final class PollDriver extends AbstractDriver
 
     private const int WRITE = 2;
 
-    private readonly Context $context;
+    /** Null once {@see self::releaseAfterFork()} has dropped it. */
+    private ?Context $context = null;
+
+    /** Process that created the driver and owns the kernel object behind the Context. */
+    private readonly int $pid;
+
+    /**
+     * Contexts of drivers destroyed in a forked child without {@see self::releaseAfterFork()}. On kqueue the number
+     * of the (not inherited) descriptor may already belong to another descriptor of the child, so these are never
+     * closed before the process exits.
+     *
+     * @var list<Context>
+     */
+    private static array $orphanedContexts = [];
 
     /** @var array<int, resource> */
     private array $streams = [];
@@ -117,7 +140,20 @@ final class PollDriver extends AbstractDriver
     {
         parent::__construct();
 
+        $this->pid = \getmypid();
         $this->context = new Context($backend);
+
+        // A forked child that exits without LoopDriver::afterFork() would otherwise close the inherited streams at
+        // shutdown while the inherited Context is still alive (it lives in Revolt's static driver, which PHP frees
+        // after the resources), and on epoll each such close deletes the parent's registration.
+        $driver = \WeakReference::create($this);
+        \register_shutdown_function(static function () use ($driver): void {
+            $instance = $driver->get();
+
+            if ($instance !== null && \getmypid() !== $instance->pid) {
+                $instance->releaseAfterFork();
+            }
+        });
         $this->signalQueue = new \SplQueue();
         $this->timerQueue = new TimerQueue();
         $this->zero = Duration::fromSeconds(0);
@@ -139,11 +175,61 @@ final class PollDriver extends AbstractDriver
 
     public function __destruct()
     {
+        if (\getmypid() !== $this->pid) {
+            // Inherited through fork(): the signal handlers belonged to the parent's loop (LoopDriver::afterFork()
+            // resets them in the child), and the kernel object is not ours to touch.
+            if ($this->context?->getBackend() === Backend::Kqueue) {
+                self::$orphanedContexts[] = $this->context;
+            }
+
+            return;
+        }
+
         foreach ($this->signalCallbacks as $signalCallbacks) {
             foreach ($signalCallbacks as $signalCallback) {
                 $this->deactivate($signalCallback);
             }
         }
+    }
+
+    /**
+     * Drops the Context and every watcher without a kernel operation (no remove, no modify), so the driver can no
+     * longer reach the descriptor. For {@see \Fledge\Async\EventLoop\LoopDriver::afterFork()} only, which calls it
+     * in a forked child before anything else in the child may close an inherited stream: while the inherited Context
+     * is alive, closing a stream it watches deletes the parent's epoll registration.
+     *
+     * In the creating process the Context is simply released (the descriptor closes with it). In another process:
+     * on epoll and poll(2) it is released too (closing the child's copy of the epoll descriptor leaves the parent's
+     * registrations intact); on kqueue, which a child does not inherit, it is parked until the process exits instead,
+     * because closing its descriptor number could close an unrelated descriptor the child has opened since.
+     *
+     * Afterwards every method that would use the Context throws a LogicException.
+     *
+     * @internal
+     *
+     * @return \WeakReference<Context>|null The released Context, to verify that nothing else keeps it alive; null when
+     *     there was none or it was parked.
+     */
+    public function releaseAfterFork(): ?\WeakReference
+    {
+        $context = $this->context;
+
+        if ($context === null) {
+            return null;
+        }
+
+        $this->context = null;
+        $this->watchers = [];
+        $this->watcherInterest = [];
+        $this->dirty = [];
+
+        if (\getmypid() !== $this->pid && $context->getBackend() === Backend::Kqueue) {
+            self::$orphanedContexts[] = $context;
+
+            return null;
+        }
+
+        return \WeakReference::create($context);
     }
 
     public static function isSupported(): bool
@@ -165,7 +251,7 @@ final class PollDriver extends AbstractDriver
     }
 
     /**
-     * @return Context
+     * @return Context|null Null once the driver was released by LoopDriver::afterFork().
      */
     #[\Override]
     public function getHandle(): mixed
@@ -313,6 +399,8 @@ final class PollDriver extends AbstractDriver
      */
     private function sync(): void
     {
+        $context = $this->ownContext();
+
         foreach ($this->dirty as $streamId => $_) {
             $interest = (isset($this->readCallbacks[$streamId]) ? self::READ : 0)
                 | (isset($this->writeCallbacks[$streamId]) ? self::WRITE : 0);
@@ -363,7 +451,7 @@ final class PollDriver extends AbstractDriver
             \set_error_handler(static fn (): bool => true);
 
             try {
-                $this->watchers[$streamId] = $this->context->add(
+                $this->watchers[$streamId] = $context->add(
                     new \StreamPollHandle($stream),
                     self::events($interest),
                     $streamId,
@@ -487,14 +575,19 @@ final class PollDriver extends AbstractDriver
             $timeout = self::FALLBACK_INTERVAL;
         }
 
+        $context = $this->context ?? throw $this->unusable();
+
         try {
-            $ready = $this->context->wait(match (true) {
+            $ready = $context->wait(match (true) {
                 $timeout < 0 => null,
                 $timeout === 0.0 => $this->zero,
                 default => Duration::fromNanoseconds((int) \ceil($timeout * 1_000_000_000)),
             });
         } catch (FailedPollWaitException $exception) {
             if ($exception->getCode() !== FailedPollWaitException::ERROR_INTERRUPTED) {
+                // On kqueue a forked child's wait fails (the descriptor was not inherited): say why.
+                $this->ownContext();
+
                 throw $exception;
             }
 
@@ -502,6 +595,9 @@ final class PollDriver extends AbstractDriver
         }
 
         if ($ready) {
+            // Events in a forked child may belong to the parent's watchers (shared epoll): never dispatch them.
+            $this->ownContext();
+
             // Readers first, then writers, matching the order StreamSelectDriver enqueues callbacks in.
             $writable = [];
 
@@ -593,10 +689,14 @@ final class PollDriver extends AbstractDriver
             \restore_error_handler();
         }
 
-        if ($this->streamSelectIgnoreResult || !$result) {
+        if ($this->streamSelectIgnoreResult || $result === 0) {
             $this->streamSelectIgnoreResult = false;
 
             return;
+        }
+
+        if (!$result) {
+            throw new \Exception('Unknown error during stream_select'); // As StreamSelectDriver.
         }
 
         foreach ($read as $stream) {
@@ -641,6 +741,38 @@ final class PollDriver extends AbstractDriver
         $expiration -= $this->now();
 
         return $expiration > 0 ? $expiration : 0.0;
+    }
+
+    /**
+     * The Context, provided this process created the driver and it was not released.
+     *
+     * @throws \LogicException In a forked child, or after LoopDriver::afterFork() released the driver.
+     */
+    private function ownContext(): Context
+    {
+        if (\getmypid() !== $this->pid) {
+            $this->releaseAfterFork(); // Never again touch the descriptor from this process.
+        }
+
+        return $this->context ?? throw $this->unusable();
+    }
+
+    private function unusable(): \LogicException
+    {
+        if (\getmypid() !== $this->pid) {
+            return new \LogicException(\sprintf(
+                'This PollDriver was created in process %d and is used in forked process %d, where its Io\\Poll '
+                .'descriptor is shared with or lost from the parent. Call Fledge\\Async\\EventLoop\\LoopDriver::afterFork() '
+                .'in the child right after pcntl_fork() to start a fresh event loop.',
+                $this->pid,
+                \getmypid(),
+            ));
+        }
+
+        return new \LogicException(
+            'This PollDriver was released by Fledge\\Async\\EventLoop\\LoopDriver::afterFork() and can no longer be used; '
+            .'use the driver afterFork() installed (Revolt\\EventLoop::getDriver()).',
+        );
     }
 
     private function handleSignal(int $signal): void

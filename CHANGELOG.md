@@ -4,7 +4,8 @@
 
 ### Added
 - `Fledge\Async\EventLoop\Driver\PollDriver`: a Revolt event loop driver on PHP 8.6 `Io\Poll` (epoll on Linux, kqueue on macOS/BSD), not bound by the 1024 descriptor limit of `stream_select`. Streams the backend rejects fall back to a `stream_select` set.
-- `Fledge\Async\EventLoop\LoopDriver` selects and installs the event loop driver per worker via `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`, `revolt`). `auto` uses the poll driver where available and Revolt's own choice otherwise; `select` is the rollback. `install()` refuses to swap a running or non-empty loop and must be called in the worker after fork.
+- `Fledge\Async\EventLoop\LoopDriver` selects and installs the event loop driver per worker via `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`, `revolt`). `auto` uses the poll driver where available and Revolt's own choice otherwise; `select` is the rollback. `install()` refuses to swap a running or non-empty loop; a forked child calls `afterFork()` instead.
+- `LoopDriver::afterFork()`: for a child right after `pcntl_fork()`. It discards the inherited driver even when Revolt reports it running (the parent awaited from `{main}`) or non-empty, without any kernel operation on the parent's epoll registrations, and installs a fresh driver chosen like `install()`. The child starts with an empty loop; loop signal handlers of the parent are reset to the default disposition. `install()` refusals now point to `afterFork()`, naming the parent process when the driver was inherited.
 - Benchmark `bench/eventloop/idle_connections.php` with results: on a Linux container with 10 idle connections, 276k round trips/s on epoll versus 189k on select.
 
 ### Changed
@@ -14,6 +15,11 @@
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
 ### Fixed
+- `PollDriver` fork guard: the driver records the process that created it, and in a forked child the sync of watcher changes and any wait that returns events or fails throw an exception naming `LoopDriver::afterFork()` instead of using the epoll descriptor shared with the parent (which made the parent segfault on the child's events and let the child delete the parent's registrations). A child that exits without touching the loop no longer drops the parent's watchers at shutdown.
+- `PollDriver`: a `stream_select()` failure on the fallback set without a warning now throws like `StreamSelectDriver` instead of being ignored.
+- Redis `tcp_keepalive` keeps a connect context's own keep-alive idle, interval and count instead of resetting them to the OS defaults.
+- `ConnectContext` and `BindContext` reject buffer sizes above 2147483647 with a `ValueError` at `withReceiveBufferSize()` and `withSendBufferSize()` instead of failing at connect or bind.
+- CI runs the suite on the `poll` and `select` drivers (it ran `poll` twice since `auto` became `poll`).
 - TLS handshakes now wait for writable when `stream_socket_get_crypto_status()` reports WANT_WRITE, so a handshake blocked on flushing (large certificate chain, full send buffer) no longer stalls until the peer times out.
 - `RevoltWaiter`'s loop-fiber stream wait uses a poll(2) `Io\Poll\Context` instead of `stream_select()`, so sockets numbered at or above 1024 are waited on correctly instead of reporting an immediate timeout.
 - `Http2Driver` keeps discarding an exception raised while completing a stream that is already closed; the PHP 8.6 "return in finally" fix does not change that.

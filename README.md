@@ -248,7 +248,24 @@ Long-running workers pick their Revolt driver with `FLEDGE_EVENT_LOOP`:
 - `select`: Revolt's `stream_select` driver. This is the rollback value.
 - `revolt`: whatever Revolt's `DriverFactory` creates (honours `REVOLT_DRIVER`).
 
-Call `Fledge\Async\EventLoop\LoopDriver::install()` in the worker after it has forked, before the loop starts: kqueue and epoll descriptors do not survive `fork()`, and `install()` refuses to swap a running or non-empty loop.
+Which call to use:
+
+- `Fledge\Async\EventLoop\LoopDriver::install()`: a process's own first setup, before its loop has run anything. It refuses to swap a running or non-empty loop.
+- `Fledge\Async\EventLoop\LoopDriver::afterFork()`: in a child, as the first call after `pcntl_fork()` returned 0, from `{main}` (not inside a fiber or loop callback), whenever the parent had already used the event loop (a queue master forking workers, a forking server). It discards the inherited driver even when Revolt still reports it running or non-empty, installs a fresh one chosen like `install()` and returns it.
+
+```php
+$pid = pcntl_fork();
+
+if ($pid === 0) {
+    LoopDriver::afterFork();          // first, before opening or closing any descriptor
+    EventLoop::onSignal(SIGTERM, ...); // the parent's loop signal handlers are gone
+    // create servers, pools and timers for the child here
+}
+```
+
+The child starts with an empty loop. Every timer, stream watcher and loop signal handler of the parent is gone, and so is anything built on them in the parent (servers, timeout queues, connection pools): create those again in the child. Signal handlers the parent registered through the loop are reset to the default disposition in the child; dispositions set directly with `pcntl_signal()`, `SIG_IGN` included, are inherited from the OS untouched. Fibers that were suspended in the parent are unwound in the child during `afterFork()` (PHP would otherwise unwind them at the child's exit), so their `finally` blocks and destructors run there: closing an inherited socket is harmless to the parent, but writing to one reaches the parent's peer.
+
+The reason: the parent's epoll descriptor is shared with a forked child on Linux (a watcher the child adds, changes or removes alters the parent's registrations, and the parent crashes on the child's events), and kqueue descriptors are not inherited at all on macOS and BSD. The poll driver therefore refuses to touch its descriptor from any process other than the one that created it and throws an exception naming `afterFork()`; a child that exits without using the loop leaves the parent's registrations intact.
 
 The default was decided by a benchmark gate, see `bench/eventloop/README.md`.
 

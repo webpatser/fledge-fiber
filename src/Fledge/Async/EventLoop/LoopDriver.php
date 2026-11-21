@@ -25,16 +25,28 @@ use Revolt\EventLoop\UnsupportedFeatureException;
  * - `auto`: the Fledge default: `poll` when {@see PollDriver::isSupported()}, otherwise `revolt`. Never throws
  *   for lack of a backend; see {@see self::auto()}.
  *
- * Fork rule: kqueue and epoll descriptors do not survive `fork()`. Call {@see self::install()} in the worker
- * process after it has forked, never in a master process that forks workers afterwards. For the same reason
- * {@see self::install()} always creates a fresh driver, even when the active one is already of the requested kind:
- * an inherited driver may hold a descriptor that belongs to the parent.
+ * Which entry point:
+ *
+ * - {@see self::install()}: a process's own first setup, before its loop has run anything. It is strict: it
+ *   refuses while the active loop is running or has callbacks registered, and always creates a fresh driver.
+ * - {@see self::afterFork()}: the first call in a child right after `pcntl_fork()` returned 0, when the parent had
+ *   already used the loop (a queue master that forks workers, a server that forks). It discards the inherited driver
+ *   whatever its state and installs a fresh one. The child starts with an EMPTY loop: every timer, stream watcher,
+ *   deferred callback and loop signal handler of the parent is gone, and so is anything that depends on them
+ *   (servers, timeout queues, pools created in the parent). Create those again in the child.
+ *
+ * Why the child cannot keep the parent's driver: an epoll descriptor is shared with the parent after `fork()`
+ * (changes in the child alter the parent's registrations; the parent segfaults on the child's events), and a kqueue
+ * descriptor is not inherited at all. {@see PollDriver} refuses to be used in a process that did not create it.
  */
 final class LoopDriver
 {
     public const string ENV = 'FLEDGE_EVENT_LOOP';
 
     private const array NAMES = ['auto', 'poll', 'select', 'revolt'];
+
+    /** @var \WeakMap<Driver, int>|null Process that installed each driver through this class. */
+    private static ?\WeakMap $installedBy = null;
 
     /**
      * The normalised effective driver name: `poll`, `select` or `revolt`, with `auto` already resolved (to `poll`
@@ -97,7 +109,8 @@ final class LoopDriver
      * Creates a driver and makes it the active loop driver.
      *
      * Refuses while the active loop is running, or while it has any callback registered (enabled or disabled,
-     * referenced or not), since swapping would silently drop that work. Nothing is changed when it refuses.
+     * referenced or not), since swapping would silently drop that work. Nothing is changed when it refuses. In a
+     * child forked from a process that used the loop, call {@see self::afterFork()} instead; the refusal says so.
      *
      * @throws \LogicException When the active loop is running or has callbacks registered.
      * @throws \InvalidArgumentException When the name is not one of the accepted values.
@@ -110,8 +123,9 @@ final class LoopDriver
 
         if ($current->isRunning()) {
             throw new \LogicException(\sprintf(
-                'Cannot install the "%s" event loop driver while the event loop is running; install it before the loop starts.',
+                'Cannot install the "%s" event loop driver while the event loop is running; install it before the loop starts.%s',
                 $resolved,
+                self::forkHint($current),
             ));
         }
 
@@ -119,17 +133,119 @@ final class LoopDriver
 
         if ($registered > 0) {
             throw new \LogicException(\sprintf(
-                'Cannot install the "%s" event loop driver: the active %s driver still has %d callback(s) registered.',
+                'Cannot install the "%s" event loop driver: the active %s driver still has %d callback(s) registered.%s',
                 $resolved,
                 $current::class,
                 $registered,
+                self::forkHint($current),
             ));
         }
 
         $driver = self::create($resolved);
         EventLoop::setDriver($driver);
+        self::remember($driver);
 
         return $driver;
+    }
+
+    /**
+     * Discards the driver inherited through `fork()` and installs a fresh one, chosen like {@see self::install()}.
+     *
+     * Call it in the child as the first thing after `pcntl_fork()` returned 0, from {main} (not inside a fiber or an
+     * event loop callback), and before the child opens or closes any descriptor. It works whatever state Revolt
+     * reports for the inherited driver (running because the parent awaited from {main}, or with callbacks
+     * registered), for every driver kind on either side.
+     *
+     * What it does, in this order:
+     *
+     * 1. A {@see PollDriver} releases its `Io\Poll\Context` without any kernel operation. On Linux that closes the
+     *    child's copy of the epoll descriptor, leaving the parent's registrations intact; only then is it safe for
+     *    the child to close inherited streams (while the inherited Context lives, closing a stream it watches deletes
+     *    the parent's registration). On macOS and BSD the kqueue descriptor was never inherited and its number may
+     *    already be reused, so the Context is parked until exit instead of being closed.
+     * 2. Every callback of an inherited {@see PollDriver} or {@see StreamSelectDriver} is cancelled. Signal handlers
+     *    the parent registered through the loop are reset to `SIG_DFL` in the child, so a signal no longer lands in
+     *    the dead loop; register the child's own with `EventLoop::onSignal()` afterwards. Dispositions set directly
+     *    with `pcntl_signal()` (including `SIG_IGN`) are inherited by the OS and left untouched. Other drivers (ev, uv,
+     *    event) are dropped as they are and rely on their extension's own fork handling.
+     * 3. The new driver replaces Revolt's private static `EventLoop::$driver` (the one piece of global state: the
+     *    loop fiber, the callback fiber and the suspensions all live inside the driver object). Revolt's own
+     *    `setDriver()` refuses while the inherited driver counts as running, so the property is set by reflection,
+     *    after which `EventLoop::setDriver()` performs its usual swap with a placeholder driver installed while it
+     *    garbage-collects the old driver.
+     *
+     * The inherited loop fiber is never resumed in the child. Fibers that were suspended in the parent are destroyed
+     * when the old driver is collected, which in PHP means they unwind: their `finally` blocks and destructors run in
+     * the child during this call, against the placeholder driver (cancelling a callback is a no-op there). Closing
+     * an inherited socket at that point is safe for the parent, but anything that writes to an inherited connection
+     * would reach the parent's peer, so fork from a point where no fiber owns a connection mid-exchange.
+     *
+     * @throws \LogicException When called inside a fiber or event loop callback; or, after the new driver was
+     *     installed, when something still references the released epoll Context (for example a value obtained from
+     *     `getHandle()`), because closing an inherited stream would then still delete the parent's registration.
+     * @throws \InvalidArgumentException When the name is not one of the accepted values (nothing is changed).
+     * @throws UnsupportedFeatureException When `poll` is requested but no `Io\Poll` backend is available.
+     */
+    public static function afterFork(?string $name = null): Driver
+    {
+        if (\Fiber::getCurrent() !== null) {
+            throw new \LogicException(
+                'LoopDriver::afterFork() must be called from {main}, not inside a fiber or an event loop callback; '
+                .'call it in the child right after pcntl_fork() returned 0.',
+            );
+        }
+
+        $driver = self::create($name); // Throws before anything is discarded.
+        $property = new \ReflectionProperty(EventLoop::class, 'driver');
+        $inherited = $property->isInitialized() ? $property->getValue() : null;
+        $released = null;
+
+        if ($inherited instanceof PollDriver) {
+            $released = $inherited->releaseAfterFork();
+        }
+
+        if ($inherited instanceof PollDriver || $inherited instanceof StreamSelectDriver) {
+            foreach ($inherited->getIdentifiers() as $callbackId) {
+                $inherited->cancel($callbackId);
+            }
+        }
+
+        unset($inherited);
+
+        $property->setValue(null, $driver);
+        EventLoop::setDriver($driver);
+        self::remember($driver);
+
+        if ($released?->get() !== null) {
+            throw new \LogicException(
+                'LoopDriver::afterFork() installed a fresh driver, but the inherited Io\\Poll\\Context is still referenced '
+                .'(for example through PollDriver::getHandle()), so the epoll descriptor shared with the parent stays open '
+                .'in this process; drop that reference before closing any inherited stream.',
+            );
+        }
+
+        return $driver;
+    }
+
+    private static function remember(Driver $driver): void
+    {
+        self::$installedBy ??= new \WeakMap();
+        self::$installedBy[$driver] = \getmypid();
+    }
+
+    private static function forkHint(Driver $current): string
+    {
+        $pid = self::$installedBy[$current] ?? null;
+
+        if ($pid !== null && $pid !== \getmypid()) {
+            return \sprintf(
+                ' The active driver was installed in process %d and inherited through fork(): call %s::afterFork() in the child instead.',
+                $pid,
+                self::class,
+            );
+        }
+
+        return \sprintf(' In a child forked from a process that used the event loop, call %s::afterFork() instead.', self::class);
     }
 
     private static function fromEnvironment(): string
