@@ -104,11 +104,11 @@ sockets, PHP 8.6.0 ZTS aarch64. The load inside the VM stayed below 1.
 
 | Driver | N | rt/s median (min-max) | p50 us | p99 us | idle CPU-s | us/tick |
 |---|---:|---|---:|---:|---:|---:|
-| select | 10 | 188749 (186159-189017) | 31.4 | 75.5 | 0.008 | 84 |
-| poll (epoll) | 10 | 276304 (275998-276760) | 28.4 | 34.8 | 0.011 | 118 |
+| select | 10 | 280296 (277970-281191) | 27.9 | 34.8 | 0.014 | 143 |
+| poll (epoll) | 10 | 281502 (281459-283162) | 27.8 | 33.9 | 0.010 | 108 |
 | poll (poll) | 10 | 263474 (262076-264080) | 29.9 | 36.3 | 0.014 | 150 |
-| select | 400 | 54043 (52238-54874) | 121.3 | 293.2 | 0.058 | 592 |
-| poll (epoll) | 400 | 230563 (230433-231523) | 34.2 | 41.1 | 0.023 | 243 |
+| select | 400 | 72310 (72308-72490) | 110.5 | 132.5 | 0.109 | 1137 |
+| poll (epoll) | 400 | 232564 (231686-232654) | 34.2 | 40.5 | 0.022 | 232 |
 | poll (poll) | 400 | 80684 (78598-81038) | 98.1 | 115.5 | 0.110 | 1144 |
 | select | 1000 | n/a (FD_SETSIZE) | | | | |
 | poll (epoll) | 1000 | 177967 (170619-178386) | 44.4 | 52.8 | 0.037 | 387 |
@@ -117,8 +117,16 @@ sockets, PHP 8.6.0 ZTS aarch64. The load inside the VM stayed below 1.
 | poll (epoll) | 10000 | 37089 (36578-37267) | 215.2 | 252.9 | 0.316 | 3351 |
 | poll (poll) | 10000 | 1236 (1226-1238) | 6274.2 | 10158.8 | 2.297 | 26904 |
 
-Default-driver gate (Linux, N = 10): poll (epoll) 276304 rt/s against select 188749 rt/s, poll is 46% faster. Both
-spreads are below 2%, far smaller than the difference.
+The select and poll (epoll) rows at N = 10 and N = 400 were re-measured on 2026-11-21 after the fork guard (a
+getmypid() check before every wait) was added, on a quiet machine (VM load 0.42); the other rows are from the first
+run. Poll (epoll) moved within 2% (N = 10: 276304 to 281502; N = 400: 230563 to 232564), so the guard costs nothing
+measurable here. Select, whose code did not change, measured much higher than in the first run (N = 10: 188749 to
+280296; N = 400: 54043 to 72310), so the first run's select figures were depressed by host load.
+
+Default-driver gate (Linux): the first run had poll (epoll) 46% ahead of select at N = 10 (276304 against 188749
+rt/s). The re-measurement shows the two even at N = 10 (281502 against 280296, spreads 0.6% and 1.1%) and poll
+(epoll) 3.2 times as fast at N = 400 (232564 against 72310), where the gate decision still holds: poll never loses
+and wins clearly once descriptors are watched.
 
 ### Closed-stream scan
 

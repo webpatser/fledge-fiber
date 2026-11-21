@@ -62,6 +62,8 @@ final class LoopDriver
     /** @var \WeakMap<Driver, int>|null Process that installed each driver through this class. */
     private static ?\WeakMap $installedBy = null;
 
+    private static bool $warnedIdFallback = false;
+
     /**
      * The normalised effective driver name: `poll`, `select` or `revolt`, with `auto` already resolved (to `poll`
      * when {@see PollDriver::isSupported()}, else `revolt`).
@@ -183,8 +185,10 @@ final class LoopDriver
      *    with `pcntl_signal()` (including `SIG_IGN`) are inherited by the OS and left untouched. Other drivers (ev, uv,
      *    event) are dropped as they are and rely on their extension's own fork handling.
      * 3. The new driver continues the inherited driver's callback id sequence (Revolt's private
-     *    `AbstractDriver::$nextId`, carried by reflection; ev, uv, event and select drivers all extend AbstractDriver,
-     *    and a TracingDriver is unwrapped on either side), so a parent-created id held by a parent-built object is
+     *    `AbstractDriver::$nextId`, carried by reflection right after the install in step 4 and before this method
+     *    returns; ev, uv, event and select drivers all extend AbstractDriver, and a TracingDriver is unwrapped on
+     *    either side; if the reflection fails, the ids are reserved through the public API with one E_USER_WARNING,
+     *    see continueCallbackIds()), so a parent-created id held by a parent-built object is
      *    unknown in the child instead of naming one of the child's callbacks. Revolt treats an unknown id as a no-op
      *    in `cancel()`, `disable()` and `unreference()`, and throws `InvalidCallbackError` from `enable()`,
      *    `reference()`, `isEnabled()`, `isReferenced()` and `getType()`.
@@ -232,12 +236,16 @@ final class LoopDriver
             }
         }
 
-        self::continueCallbackIds($inherited, $driver);
+        $nextCallbackId = self::nextCallbackId($inherited);
         unset($inherited);
 
         $property->setValue(null, $driver);
         EventLoop::setDriver($driver);
         self::remember($driver);
+
+        // After the install, so a failure here cannot leave the child without a driver, and before this method
+        // returns, so no child code has registered a callback on the new driver yet. Never throws.
+        self::continueCallbackIds($driver, $nextCallbackId);
 
         if ($released?->get() !== null) {
             throw new \LogicException(
@@ -251,19 +259,113 @@ final class LoopDriver
     }
 
     /**
-     * Starts the new driver's callback ids where the inherited driver stopped, so stale parent ids cannot collide.
+     * The id the inherited driver would hand out next, or null when it is unknown. Reads Revolt's private
+     * `AbstractDriver::$nextId`; if that fails (a future Revolt release renamed or retyped it), asks the driver
+     * itself by registering and cancelling one deferred callback, which touches no kernel object. Never throws.
      */
-    private static function continueCallbackIds(?Driver $inherited, Driver $driver): void
+    private static function nextCallbackId(?Driver $inherited): ?string
     {
-        $from = $inherited === null ? null : self::abstractDriver($inherited);
-        $to = self::abstractDriver($driver);
+        if ($inherited === null) {
+            return null;
+        }
 
-        if ($from === null || $to === null) {
+        try {
+            $from = self::abstractDriver($inherited);
+            $nextId = $from === null ? null : (new \ReflectionProperty(AbstractDriver::class, 'nextId'))->getValue($from);
+
+            if (\is_string($nextId)) {
+                return $nextId;
+            }
+        } catch (\Throwable) {
+            // Fall through to the public API.
+        }
+
+        try {
+            $callbackId = $inherited->defer(static function (): void {});
+            $inherited->cancel($callbackId);
+
+            return $callbackId;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Starts the new driver's callback ids at or after the inherited driver's next id, so a stale parent id is
+     * unknown in the child instead of naming one of the child's callbacks. Never throws.
+     *
+     * Normally it writes Revolt's private `AbstractDriver::$nextId`. If that reflection fails, it falls back to
+     * {@see self::reserveCallbackIds()} (public API only, one deferred callback registered and cancelled per id the
+     * parent used, so linear in the parent's id count) and raises one E_USER_WARNING per process naming the
+     * revolt/event-loop version, because the fallback can be slow for a long-lived parent and the reflection should
+     * be fixed. Ids are never silently reused.
+     */
+    private static function continueCallbackIds(Driver $driver, ?string $nextCallbackId): void
+    {
+        if ($nextCallbackId === null) {
             return;
         }
 
-        $nextId = new \ReflectionProperty(AbstractDriver::class, 'nextId');
-        $nextId->setValue($to, $nextId->getValue($from));
+        try {
+            $to = self::abstractDriver($driver);
+
+            if ($to === null) {
+                return; // Not Revolt's id scheme; nothing to align.
+            }
+
+            (new \ReflectionProperty(AbstractDriver::class, 'nextId'))->setValue($to, $nextCallbackId);
+
+            return;
+        } catch (\Throwable $exception) {
+            $failure = $exception;
+        }
+
+        $reserved = self::reserveCallbackIds($driver, $nextCallbackId);
+
+        if (!self::$warnedIdFallback) {
+            self::$warnedIdFallback = true;
+            \trigger_error(\sprintf(
+                'LoopDriver::afterFork() could not carry the callback id counter into the new driver by reflection '
+                .'(revolt/event-loop %s: %s); it reserved the parent\'s ids by registering and cancelling %d '
+                .'callback(s) instead. Update Fledge for this Revolt version.',
+                self::revoltVersion(),
+                $failure->getMessage(),
+                $reserved,
+            ), \E_USER_WARNING);
+        }
+    }
+
+    /**
+     * Advances a fresh driver's ids past $nextCallbackId through the public API: registers and cancels deferred
+     * callbacks until the driver hands out that id. Returns how many it registered. Stops early (without reaching the
+     * id) only if the driver's ids grow longer than the target, which Revolt's sequence never does before reaching it.
+     */
+    private static function reserveCallbackIds(Driver $driver, string $nextCallbackId): int
+    {
+        $count = 0;
+
+        try {
+            do {
+                $callbackId = $driver->defer(static function (): void {});
+                $driver->cancel($callbackId);
+                $count++;
+            } while ($callbackId !== $nextCallbackId && \strlen($callbackId) <= \strlen($nextCallbackId));
+        } catch (\Throwable) {
+            // Best effort; the warning tells the operator.
+        }
+
+        return $count;
+    }
+
+    private static function revoltVersion(): string
+    {
+        try {
+            return \class_exists(\Composer\InstalledVersions::class)
+                ? (string) \Composer\InstalledVersions::getPrettyVersion('revolt/event-loop')
+                : 'unknown version';
+        } catch (\Throwable) {
+            return 'unknown version';
+        }
     }
 
     private static function abstractDriver(Driver $driver): ?AbstractDriver

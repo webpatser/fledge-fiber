@@ -449,3 +449,22 @@ it('refuses an idle wait on the inherited PollDriver while the parent adds ready
             ->and($round['child']['message'])->toContain('LoopDriver::afterFork()');
     }
 })->skip($requiresFork, 'needs pcntl and posix');
+
+it('reserves parent callback ids through the public API when the counter cannot be copied', function (string $kind) {
+    // The reflection fallback of afterFork(): exercised directly, since the installed Revolt always has $nextId.
+    $parent = LoopDriver::create('poll');
+    for ($i = 0; $i < 1000; $i++) {
+        $parent->cancel($parent->defer(static fn () => null));
+    }
+    $parentNext = $parent->defer(static fn () => null);
+    $parent->cancel($parentNext);
+
+    $child = LoopDriver::create($kind);
+    $reserved = (new ReflectionMethod(LoopDriver::class, 'reserveCallbackIds'))->invoke(null, $child, $parentNext);
+    $childNext = $child->defer(static fn () => null);
+    $child->cancel($childNext);
+
+    expect($reserved)->toBe(1001)
+        ->and(strlen($childNext) > strlen($parentNext) || ($childNext > $parentNext && strlen($childNext) === strlen($parentNext)))
+        ->toBeTrue();
+})->with(['poll', 'select']);
