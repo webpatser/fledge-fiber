@@ -337,3 +337,23 @@ it('forwards the low-value frame settings from the factory to the HTTP/1 driver 
         ->and((new ReflectionProperty($driver, 'lowValueFrameLimit'))->getValue($driver))->toBe(42)
         ->and((new ReflectionProperty($driver, 'lowValueFrameWindow'))->getValue($driver))->toBe(7);
 })->group('Http2');
+
+it('rethrows an exception from completing the body while the stream is still open', function () {
+    $peer = startH2Driver();
+
+    try {
+        $peer->openStream(1);
+        $peer->sendFrame(Http2Parser::PING, 0, 0, '12345678');
+        $peer->waitFor(fn (array $f) => $f['type'] === Http2Parser::PING && ($f['flags'] & Http2Parser::ACK) !== 0);
+
+        $driver = $peer->driver;
+        $deferred = new Fledge\Async\DeferredFuture;
+        $deferred->complete([]);
+        (new ReflectionProperty($driver, 'trailerDeferreds'))->setValue($driver, [1 => $deferred]);
+        (new ReflectionProperty($driver, 'bodyQueues'))->setValue($driver, [1 => new Fledge\Async\Queue]);
+
+        expect(fn () => $driver->handleStreamEnd(1))->toThrow(Error::class);
+    } finally {
+        $peer->close();
+    }
+})->group('Http2');

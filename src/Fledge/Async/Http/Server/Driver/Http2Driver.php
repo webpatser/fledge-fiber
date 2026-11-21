@@ -1354,9 +1354,14 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
 
             $queue->complete();
             $deferred->complete([]);
+        } catch (\Throwable $exception) {
+            // Stream may have closed after resolving body emitter or trailers deferred: discard the exception.
+            // This keeps the semantics of the former `return` in `finally` (deprecated in PHP 8.6); do not simplify.
+            if (isset($this->streams[$streamId])) {
+                throw $exception;
+            }
         } finally {
-            // Stream may have closed after resolving body emitter or trailers deferred.
-            // Close stream only if also locally closed and there is no buffer remaining to write.
+            // Close stream only if still open, locally closed and there is no buffer remaining to write.
             if (isset($this->streams[$streamId]) && $stream->state & Http2Stream::LOCAL_CLOSED && $stream->buffer === "") {
                 $this->releaseStream($streamId);
             }
