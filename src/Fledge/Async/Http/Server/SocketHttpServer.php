@@ -73,7 +73,10 @@ final class SocketHttpServer implements HttpServer
         ?HttpDriverFactory $httpDriverFactory = null,
         ?ExceptionHandler $exceptionHandler = null,
     ): self {
-        $serverSocketFactory = new ConnectionLimitingServerSocketFactory(new LocalSemaphore($connectionLimit));
+        $serverSocketFactory = new ConnectionLimitingServerSocketFactory(
+            new LocalSemaphore($connectionLimit),
+            new ResourceServerSocketFactory(logger: $logger),
+        );
 
         $logger->notice(\sprintf("Total client connections are limited to %d.", $connectionLimit));
 
@@ -152,7 +155,7 @@ final class SocketHttpServer implements HttpServer
 
         return new self(
             $logger,
-            new ResourceServerSocketFactory(),
+            new ResourceServerSocketFactory(logger: $logger),
             new SocketClientFactory($logger),
             $middleware,
             $allowedMethods,

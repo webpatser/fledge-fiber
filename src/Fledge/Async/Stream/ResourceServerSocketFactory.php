@@ -4,6 +4,7 @@ namespace Fledge\Async\Stream;
 
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
+use Psr\Log\LoggerInterface as PsrLogger;
 
 final class ResourceServerSocketFactory implements ServerSocketFactory
 {
@@ -12,9 +13,12 @@ final class ResourceServerSocketFactory implements ServerSocketFactory
 
     /**
      * @param positive-int|null $chunkSize
+     * @param PsrLogger|null $logger Passed to each {@see ResourceServerSocket} for its accept back-off warnings.
      */
-    public function __construct(private readonly ?int $chunkSize = null)
-    {
+    public function __construct(
+        private readonly ?int $chunkSize = null,
+        private readonly ?PsrLogger $logger = null,
+    ) {
     }
 
     /**
@@ -58,6 +62,11 @@ final class ResourceServerSocketFactory implements ServerSocketFactory
             ), $errno);
         }
 
-        return new ResourceServerSocket($server, $bindContext, $this->chunkSize ?? ResourceSocket::DEFAULT_CHUNK_SIZE);
+        return new ResourceServerSocket(
+            $server,
+            $bindContext,
+            $this->chunkSize ?? ResourceSocket::DEFAULT_CHUNK_SIZE,
+            $this->logger,
+        );
     }
 }
