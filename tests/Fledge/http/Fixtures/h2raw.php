@@ -20,12 +20,15 @@ use Fledge\Async\TimeoutCancellation;
 use Psr\Log\NullLogger;
 
 use function Fledge\Async\async;
+use function Fledge\Async\Http\Server\Driver\createClientId;
 use function Fledge\Async\Stream\createSocketPair;
 
 if (! class_exists('H2RawPeer')) {
     final class H2RawPeer
     {
         private string $buffer = '';
+
+        private ?\Throwable $serverError = null;
 
         public function __construct(
             public readonly Http2Driver $driver,
@@ -34,7 +37,18 @@ if (! class_exists('H2RawPeer')) {
 
         public function send(string $bytes): void
         {
-            $this->socket->write($bytes);
+            try {
+                $this->socket->write($bytes);
+            } catch (\Throwable $exception) {
+                throw $this->serverError ?? $exception;
+            }
+        }
+
+        /** A failed server side closes the socket, so a blocked write or read ends instead of hanging. */
+        public function serverFailed(\Throwable $exception): void
+        {
+            $this->serverError = $exception;
+            $this->socket->close();
         }
 
         public function sendFrame(int $type, int $flags, int $stream, string $payload = ''): void
@@ -125,6 +139,10 @@ if (! class_exists('H2RawPeer')) {
         public function close(): void
         {
             $this->socket->close();
+
+            if ($this->serverError !== null) {
+                throw $this->serverError;
+            }
         }
     }
 }
@@ -147,10 +165,8 @@ if (! function_exists('startH2Driver')) {
             ...$driverArgs,
         );
 
-        static $nextClientId = 0;
-
         // The driver's timeout queue is keyed by client id, so every connection needs its own.
-        $client = new class(++$nextClientId) implements Client
+        $client = new class(createClientId()) implements Client
         {
             public function __construct(private readonly int $id) {}
 
@@ -184,9 +200,11 @@ if (! function_exists('startH2Driver')) {
             public function onClose(\Closure $onClose): void {}
         };
 
-        async(fn () => $driver->handleClient($client, $serverSide, $serverSide))->ignore();
-
         $peer = new H2RawPeer($driver, $peerSide);
+
+        async(fn () => $driver->handleClient($client, $serverSide, $serverSide))
+            ->catch($peer->serverFailed(...))
+            ->ignore();
         $peer->send(Http2Parser::PREFACE);
         $peer->sendFrame(Http2Parser::SETTINGS, 0, 0);
 
