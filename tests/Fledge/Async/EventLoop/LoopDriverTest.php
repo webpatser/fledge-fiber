@@ -27,6 +27,8 @@ afterEach(function () {
 });
 
 $revoltClass = (new DriverFactory())->create()::class;
+$autoName = PollDriver::isSupported() ? 'poll' : 'revolt';
+$autoClass = PollDriver::isSupported() ? PollDriver::class : $revoltClass;
 
 dataset('names', [
     'poll' => ['poll', 'poll', PollDriver::class],
@@ -35,9 +37,9 @@ dataset('names', [
     'Select tab' => ["\tSelect ", 'select', StreamSelectDriver::class],
     'revolt' => ['revolt', 'revolt', $revoltClass],
     'ReVoLt' => [' ReVoLt', 'revolt', $revoltClass],
-    'auto' => ['auto', 'revolt', $revoltClass],
-    'AUTO padded' => [' AUTO ', 'revolt', $revoltClass],
-    'empty means auto' => ['  ', 'revolt', $revoltClass],
+    'auto' => ['auto', $autoName, $autoClass],
+    'AUTO padded' => [' AUTO ', $autoName, $autoClass],
+    'empty means auto' => ['  ', $autoName, $autoClass],
 ]);
 
 it('resolves and creates every accepted value', function (string $name, string $resolved, string $class) {
@@ -63,6 +65,12 @@ it('rejects an unknown name from the environment', function () {
 
     LoopDriver::resolve();
 })->throws(InvalidArgumentException::class, 'libuv');
+
+it('resolves auto to poll where the backend exists, and resolve and create agree', function () {
+    expect(PollDriver::isSupported())->toBeTrue()
+        ->and(LoopDriver::resolve('auto'))->toBe('poll')
+        ->and(LoopDriver::create('auto'))->toBeInstanceOf(PollDriver::class);
+});
 
 it('defaults to auto when the environment variable is unset', function () {
     expect(LoopDriver::resolve())->toBe(LoopDriver::resolve('auto'));

@@ -22,7 +22,8 @@ use Revolt\EventLoop\UnsupportedFeatureException;
  * - `select`: Revolt's {@see StreamSelectDriver}, always, even when ext-uv, ext-ev or ext-event is loaded.
  *   This is the rollback value.
  * - `revolt`: whatever Revolt's own {@see DriverFactory} creates (honours `REVOLT_DRIVER`).
- * - `auto`: the Fledge default, see {@see self::AUTO}.
+ * - `auto`: the Fledge default: `poll` when {@see PollDriver::isSupported()}, otherwise `revolt`. Never throws
+ *   for lack of a backend; see {@see self::auto()}.
  *
  * Fork rule: kqueue and epoll descriptors do not survive `fork()`. Call {@see self::install()} in the worker
  * process after it has forked, never in a master process that forks workers afterwards. For the same reason
@@ -33,16 +34,11 @@ final class LoopDriver
 {
     public const string ENV = 'FLEDGE_EVENT_LOOP';
 
-    /**
-     * What `auto` resolves to. The default is decided by the poll versus select benchmark gate; flip this one
-     * value to `poll` once that gate passes.
-     */
-    private const string AUTO = 'revolt';
-
     private const array NAMES = ['auto', 'poll', 'select', 'revolt'];
 
     /**
-     * The normalised effective driver name: `poll`, `select` or `revolt`, with `auto` already resolved.
+     * The normalised effective driver name: `poll`, `select` or `revolt`, with `auto` already resolved (to `poll`
+     * when {@see PollDriver::isSupported()}, else `revolt`).
      *
      * @throws \InvalidArgumentException When the name is not one of the accepted values.
      */
@@ -64,7 +60,17 @@ final class LoopDriver
             ));
         }
 
-        return $normalised === 'auto' ? self::AUTO : $normalised;
+        return $normalised === 'auto' ? self::auto() : $normalised;
+    }
+
+    /**
+     * What `auto` resolves to, the single place the default is decided. The poll driver won the benchmark gate
+     * on 2026-11-21 (see bench/eventloop/README.md), so `auto` is `poll` where `Io\Poll` has a backend and
+     * Revolt's own factory choice otherwise.
+     */
+    private static function auto(): string
+    {
+        return PollDriver::isSupported() ? 'poll' : 'revolt';
     }
 
     /**

@@ -239,6 +239,19 @@ With `allow_redirects.referer` enabled, Guzzle 7 sends the full previous URL (pa
 2. To drop the global Guzzle handler as well, call `Factory::globalHandler(null)`.
 3. Native database driver: change `driver` back to `fledge-mariadb`/`fledge-mysql`, or switch single fiberio hooks off with `FLEDGE_FIBERIO_HOOKS` (for example `FLEDGE_FIBERIO_HOOKS=none`), then `config:cache` and restart workers.
 
+## Event loop driver
+
+Long-running workers pick their Revolt driver with `FLEDGE_EVENT_LOOP`:
+
+- `auto` (default): the poll driver on PHP 8.6 (`Io\Poll`: epoll on Linux, kqueue on macOS/BSD), Revolt's own choice where no backend exists.
+- `poll`: always the poll driver; throws if no backend is available.
+- `select`: Revolt's `stream_select` driver. This is the rollback value.
+- `revolt`: whatever Revolt's `DriverFactory` creates (honours `REVOLT_DRIVER`).
+
+Call `Fledge\Async\EventLoop\LoopDriver::install()` in the worker after it has forked, before the loop starts: kqueue and epoll descriptors do not survive `fork()`, and `install()` refuses to swap a running or non-empty loop.
+
+The default was decided by a benchmark gate, see `bench/eventloop/README.md`.
+
 ## Differences from stock Laravel
 
 Where the Fledge drivers deliberately or unavoidably behave differently from Laravel's stock drivers, as implemented.

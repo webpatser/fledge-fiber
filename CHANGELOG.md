@@ -2,6 +2,11 @@
 
 ## v13.43.0.3 - 2026-11-21
 
+### Added
+- `Fledge\Async\EventLoop\Driver\PollDriver`: a Revolt event loop driver on PHP 8.6 `Io\Poll` (epoll on Linux, kqueue on macOS/BSD), not bound by the 1024 descriptor limit of `stream_select`. Streams the backend rejects fall back to a `stream_select` set.
+- `Fledge\Async\EventLoop\LoopDriver` selects and installs the event loop driver per worker via `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`, `revolt`). `auto` uses the poll driver where available and Revolt's own choice otherwise; `select` is the rollback. `install()` refuses to swap a running or non-empty loop and must be called in the worker after fork.
+- Benchmark `bench/eventloop/idle_connections.php` with results: on a Linux container with 10 idle connections, 276k round trips/s on epoll versus 189k on select.
+
 ### Changed
 - PHP 8.6 is now required (`"php": "^8.6"`); PHP 8.5 is dropped. CI runs on 8.6 only.
 - Dev toolchain moves to Pest 5 (PHPUnit 13), which is needed to install on PHP 8.6.
@@ -9,6 +14,9 @@
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
 ### Fixed
+- TLS handshakes now wait for writable when `stream_socket_get_crypto_status()` reports WANT_WRITE, so a handshake blocked on flushing (large certificate chain, full send buffer) no longer stalls until the peer times out.
+- `RevoltWaiter`'s loop-fiber stream wait uses a poll(2) `Io\Poll\Context` instead of `stream_select()`, so sockets numbered at or above 1024 are waited on correctly instead of reporting an immediate timeout.
+- `Http2Driver` keeps discarding an exception raised while completing a stream that is already closed; the PHP 8.6 "return in finally" fix does not change that.
 - `Http2Driver` end-of-body handling no longer returns from a `finally` block (deprecated in PHP 8.6); the stream release check moved into one condition.
 - `Sync\Lock` and `ContextWorkerPool` use `SplObjectStorage::offsetSet()` and `offsetUnset()` instead of the `attach()` and `detach()` methods deprecated in PHP 8.5.
 

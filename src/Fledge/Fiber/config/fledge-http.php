@@ -61,7 +61,8 @@ return [
     |
     | Which Revolt driver a worker runs on: `poll` (PHP 8.6 Io\Poll), `select`
     | (stream_select, the rollback value), `revolt` (Revolt's own factory) or
-    | `auto` (the Fledge default). Not applied here: a long-running worker
+    | `auto` (the default: `poll` where Io\Poll has a
+    | backend, otherwise `revolt`). Not applied here: a long-running worker
     | passes it to Fledge\Async\EventLoop\LoopDriver::install() after fork.
     |
     */
