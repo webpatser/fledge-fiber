@@ -58,13 +58,19 @@ use Time\Duration;
  * registrations, and the parent then receives events whose data refers to the child's memory) and loses the kqueue
  * descriptor on macOS and BSD (its number becomes free and is reused by the child's next descriptor). The driver
  * therefore records getmypid() at construction and refuses to touch the kernel object from any other process: the
- * sync of watcher changes and a wait that returned events or failed throw a LogicException naming
+ * sync of watcher changes and every wait on the Context throw a LogicException naming
  * {@see \Fledge\Async\EventLoop\LoopDriver::afterFork()}, which is what a forked child calls first to discard the
- * inherited driver and start a fresh loop. A zero-result wait in a child is harmless (level-triggered, nothing is
- * consumed) and is not checked, so the check costs one getmypid() per tick that has events (about 3 ns on macOS,
- * about 125 ns in a Linux container, where getpid() is a real syscall), never on idle or timer-only ticks.
+ * inherited driver and start a fresh loop. The check is one getmypid() before each wait syscall (about 3 ns on
+ * macOS, about 125 ns in a Linux container, where getpid() is a real syscall); ticks without watchers, which sleep
+ * or select instead, do not pay it.
  * Destroying the driver in a process that did not create it issues no kernel operation and leaves the signal
  * dispositions alone.
+ *
+ * LoopDriver::afterFork() is the only full protection. Without it, a shutdown function releases the Context in a
+ * child before PHP closes the remaining streams, so a plain child exit leaves the parent's registrations intact; that
+ * hook is best effort: a shutdown function registered before this driver was created runs first, and if it closes a
+ * stream the parent watches, the still-alive inherited Context deletes the parent's registration. Fibers suspended in
+ * the parent unwind in the child either way; fork from a quiet point.
  */
 final class PollDriver extends AbstractDriver
 {
@@ -575,7 +581,9 @@ final class PollDriver extends AbstractDriver
             $timeout = self::FALLBACK_INTERVAL;
         }
 
-        $context = $this->context ?? throw $this->unusable();
+        // Every wait on the Context checks the process first: in a forked child the epoll descriptor is shared, and a
+        // wait there can return events the parent registered after the fork, whose data lives in the parent's memory.
+        $context = $this->ownContext();
 
         try {
             $ready = $context->wait(match (true) {
@@ -585,9 +593,6 @@ final class PollDriver extends AbstractDriver
             });
         } catch (FailedPollWaitException $exception) {
             if ($exception->getCode() !== FailedPollWaitException::ERROR_INTERRUPTED) {
-                // On kqueue a forked child's wait fails (the descriptor was not inherited): say why.
-                $this->ownContext();
-
                 throw $exception;
             }
 
@@ -595,9 +600,6 @@ final class PollDriver extends AbstractDriver
         }
 
         if ($ready) {
-            // Events in a forked child may belong to the parent's watchers (shared epoll): never dispatch them.
-            $this->ownContext();
-
             // Readers first, then writers, matching the order StreamSelectDriver enqueues callbacks in.
             $writable = [];
 

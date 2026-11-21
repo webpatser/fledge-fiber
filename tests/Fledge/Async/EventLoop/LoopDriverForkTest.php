@@ -333,3 +333,119 @@ it('lets afterFork() replace an idle driver in a process that never forked', fun
         'oldReleased' => true,
     ]);
 });
+
+it('keeps parent callback ids from naming the child callbacks after afterFork()', function (
+    string $parentDriver,
+    string $childDriver,
+) {
+    $result = loopDriverForkScenario(<<<'PHP'
+        use Fledge\Async\EventLoop\LoopDriver;
+        use Revolt\EventLoop;
+
+        LoopDriver::install($parentDriver);
+        $parentTimer = EventLoop::repeat(10, static fn () => null); // owned by some parent-built object
+        EventLoop::unreference($parentTimer);
+        Fledge\Async\delay(0.01);
+        [$report, $reportPeer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+
+        $pid = pcntl_fork();
+
+        if ($pid === 0) {
+            LoopDriver::afterFork($childDriver);
+            $fired = false;
+            $childTimer = EventLoop::delay(0.05, function () use (&$fired) {
+                $fired = true;
+            });
+            EventLoop::cancel($parentTimer); // what the parent-built object's close() or destructor does
+            $enable = null;
+            try {
+                EventLoop::enable($parentTimer);
+            } catch (Throwable $exception) {
+                $enable = $exception::class;
+            }
+            EventLoop::run();
+
+            fwrite($reportPeer, json_encode([
+                'distinct' => $childTimer !== $parentTimer,
+                'fired' => $fired,
+                'enable' => $enable,
+            ])."\n");
+            exit(0);
+        }
+
+        pcntl_waitpid($pid, $status);
+        echo fgets($report);
+        PHP, ['parentDriver' => $parentDriver, 'childDriver' => $childDriver]);
+
+    expect($result)->toBe([
+        'distinct' => true,
+        'fired' => true,
+        'enable' => Revolt\EventLoop\InvalidCallbackError::class,
+    ]);
+})->with([
+    'poll to poll' => ['poll', 'poll'],
+    'poll to select' => ['poll', 'select'],
+    'select to poll' => ['select', 'poll'],
+])->skip($requiresFork, 'needs pcntl and posix');
+
+it('refuses an idle wait on the inherited PollDriver while the parent adds ready watchers', function () {
+    // Without the pre-wait check the child segfaulted in about two of three forks on Linux (shared epoll, events
+    // whose data lives in the parent's memory), so the scenario runs five rounds.
+    $result = loopDriverForkScenario(<<<'PHP'
+        use Revolt\EventLoop;
+
+        Fledge\Async\EventLoop\LoopDriver::install('poll');
+        [$watched, $peer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        EventLoop::unreference(EventLoop::onReadable($watched, static fn () => null));
+        Fledge\Async\delay(0.01);
+        $rounds = [];
+        $pairs = [];
+        $parentGot = 0;
+
+        for ($round = 0; $round < 5; $round++) {
+            [$report, $reportPeer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+            $pid = pcntl_fork();
+
+            if ($pid === 0) {
+                // No afterFork() and nothing to sync: the delay goes straight to a wait on the inherited Context.
+                try {
+                    Fledge\Async\delay(0.3);
+                    $out = ['error' => null];
+                } catch (Throwable $exception) {
+                    $out = ['error' => $exception::class, 'message' => $exception->getMessage()];
+                }
+
+                fwrite($reportPeer, json_encode($out)."\n");
+                exit(0);
+            }
+
+            usleep(50_000);
+            for ($i = 0; $i < 20; $i++) {
+                $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+                $pairs[] = $pair;
+                $stream = $pair[0];
+                EventLoop::unreference(EventLoop::onReadable($stream, function () use ($stream, &$parentGot) {
+                    $parentGot += strlen(fread($stream, 10));
+                }));
+                fwrite($pair[1], 'x');
+            }
+            Fledge\Async\delay(0.4);
+            pcntl_waitpid($pid, $status);
+
+            $rounds[] = [
+                'childExit' => pcntl_wifexited($status) ? pcntl_wexitstatus($status) : -pcntl_wtermsig($status),
+                'child' => json_decode((string) fgets($report), true),
+            ];
+        }
+
+        echo json_encode(['rounds' => $rounds, 'parentGot' => $parentGot]);
+        PHP);
+
+    expect($result['parentGot'])->toBe(100);
+
+    foreach ($result['rounds'] as $round) {
+        expect($round['childExit'])->toBe(0)
+            ->and($round['child']['error'] ?? null)->toBe(LogicException::class)
+            ->and($round['child']['message'])->toContain('LoopDriver::afterFork()');
+    }
+})->skip($requiresFork, 'needs pcntl and posix');

@@ -8,7 +8,9 @@ use Fledge\Async\EventLoop\Driver\PollDriver;
 use Revolt\EventLoop;
 use Revolt\EventLoop\Driver;
 use Revolt\EventLoop\Driver\StreamSelectDriver;
+use Revolt\EventLoop\Driver\TracingDriver;
 use Revolt\EventLoop\DriverFactory;
+use Revolt\EventLoop\Internal\AbstractDriver;
 use Revolt\EventLoop\UnsupportedFeatureException;
 
 /**
@@ -33,7 +35,19 @@ use Revolt\EventLoop\UnsupportedFeatureException;
  *   already used the loop (a queue master that forks workers, a server that forks). It discards the inherited driver
  *   whatever its state and installs a fresh one. The child starts with an EMPTY loop: every timer, stream watcher,
  *   deferred callback and loop signal handler of the parent is gone, and so is anything that depends on them
- *   (servers, timeout queues, pools created in the parent). Create those again in the child.
+ *   (servers, timeout queues, pools created in the parent). Create those again in the child. Callback ids the
+ *   parent handed out are dead in the child: the fresh driver continues the parent's id sequence, so such an id is
+ *   unknown rather than an alias for one of the child's callbacks.
+ *
+ * `afterFork()` is the only full protection for a forked child. Without it the poll driver throws when the child
+ * syncs a watcher or waits on the inherited Context, and releases the Context in a shutdown function so that the
+ * child's exit does not delete the parent's registrations; that shutdown hook is best effort, because a shutdown
+ * function registered before the driver was created runs first and may close a stream the parent watches while the
+ * inherited Context is still alive.
+ *
+ * Fork from a quiet point, with no fiber suspended mid-command on a connection. Fibers suspended in the parent unwind
+ * in the child (during `afterFork()`, or at the child's exit without it), and their cleanup can write to the
+ * parent's peer: that is a property of forking with live fibers, not of `afterFork()`.
  *
  * Why the child cannot keep the parent's driver: an epoll descriptor is shared with the parent after `fork()`
  * (changes in the child alter the parent's registrations; the parent segfaults on the child's events), and a kqueue
@@ -168,7 +182,13 @@ final class LoopDriver
      *    the dead loop; register the child's own with `EventLoop::onSignal()` afterwards. Dispositions set directly
      *    with `pcntl_signal()` (including `SIG_IGN`) are inherited by the OS and left untouched. Other drivers (ev, uv,
      *    event) are dropped as they are and rely on their extension's own fork handling.
-     * 3. The new driver replaces Revolt's private static `EventLoop::$driver` (the one piece of global state: the
+     * 3. The new driver continues the inherited driver's callback id sequence (Revolt's private
+     *    `AbstractDriver::$nextId`, carried by reflection; ev, uv, event and select drivers all extend AbstractDriver,
+     *    and a TracingDriver is unwrapped on either side), so a parent-created id held by a parent-built object is
+     *    unknown in the child instead of naming one of the child's callbacks. Revolt treats an unknown id as a no-op
+     *    in `cancel()`, `disable()` and `unreference()`, and throws `InvalidCallbackError` from `enable()`,
+     *    `reference()`, `isEnabled()`, `isReferenced()` and `getType()`.
+     * 4. The new driver replaces Revolt's private static `EventLoop::$driver` (the one piece of global state: the
      *    loop fiber, the callback fiber and the suspensions all live inside the driver object). Revolt's own
      *    `setDriver()` refuses while the inherited driver counts as running, so the property is set by reflection,
      *    after which `EventLoop::setDriver()` performs its usual swap with a placeholder driver installed while it
@@ -178,7 +198,9 @@ final class LoopDriver
      * when the old driver is collected, which in PHP means they unwind: their `finally` blocks and destructors run in
      * the child during this call, against the placeholder driver (cancelling a callback is a no-op there). Closing
      * an inherited socket at that point is safe for the parent, but anything that writes to an inherited connection
-     * would reach the parent's peer, so fork from a point where no fiber owns a connection mid-exchange.
+     * would reach the parent's peer, so fork from a point where no fiber owns a connection mid-exchange. The same
+     * unwinding happens at the child's exit when afterFork() is not called: it is a property of forking with live
+     * fibers, not of this method.
      *
      * @throws \LogicException When called inside a fiber or event loop callback; or, after the new driver was
      *     installed, when something still references the released epoll Context (for example a value obtained from
@@ -210,6 +232,7 @@ final class LoopDriver
             }
         }
 
+        self::continueCallbackIds($inherited, $driver);
         unset($inherited);
 
         $property->setValue(null, $driver);
@@ -225,6 +248,31 @@ final class LoopDriver
         }
 
         return $driver;
+    }
+
+    /**
+     * Starts the new driver's callback ids where the inherited driver stopped, so stale parent ids cannot collide.
+     */
+    private static function continueCallbackIds(?Driver $inherited, Driver $driver): void
+    {
+        $from = $inherited === null ? null : self::abstractDriver($inherited);
+        $to = self::abstractDriver($driver);
+
+        if ($from === null || $to === null) {
+            return;
+        }
+
+        $nextId = new \ReflectionProperty(AbstractDriver::class, 'nextId');
+        $nextId->setValue($to, $nextId->getValue($from));
+    }
+
+    private static function abstractDriver(Driver $driver): ?AbstractDriver
+    {
+        while ($driver instanceof TracingDriver) {
+            $driver = (new \ReflectionProperty(TracingDriver::class, 'driver'))->getValue($driver);
+        }
+
+        return $driver instanceof AbstractDriver ? $driver : null;
     }
 
     private static function remember(Driver $driver): void
