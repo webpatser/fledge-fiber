@@ -15,7 +15,7 @@ use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
 use pq;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
 
@@ -42,7 +42,7 @@ final class PqHandle extends AbstractHandle
         $listeners = &$this->listeners;
         $onClose = new DeferredFuture();
 
-        $poll = EventLoop::onReadable($this->handle->socket, static function (string $watcher) use (
+        $poll = Loop::onReadable($this->handle->socket, static function (string $watcher) use (
             &$deferred,
             &$lastUsedAt,
             &$listeners,
@@ -61,7 +61,7 @@ final class PqHandle extends AbstractHandle
                 }
             } catch (SqlConnectionException $exception) {
                 $connection = null; // Marks connection as dead.
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
 
@@ -80,11 +80,11 @@ final class PqHandle extends AbstractHandle
             $deferred = null;
 
             if (empty($listeners)) {
-                EventLoop::unreference($watcher);
+                Loop::unreference($watcher);
             }
         });
 
-        $await = EventLoop::onWritable($this->handle->socket, static function (string $watcher) use (
+        $await = Loop::onWritable($this->handle->socket, static function (string $watcher) use (
             &$deferred,
             &$listeners,
             &$connection,
@@ -101,11 +101,11 @@ final class PqHandle extends AbstractHandle
                 self::shutdown($listeners, $deferred, $onClose, $exception);
             }
 
-            EventLoop::disable($watcher);
+            Loop::disable($watcher);
         });
 
-        EventLoop::unreference($poll);
-        EventLoop::disable($await);
+        Loop::unreference($poll);
+        Loop::disable($await);
 
         parent::__construct($config, $poll, $await, $onClose);
     }
@@ -155,9 +155,9 @@ final class PqHandle extends AbstractHandle
 
             $handle = $method(...$args);
 
-            EventLoop::reference($this->poll);
+            Loop::reference($this->poll);
             if (!$this->handle->flush()) {
-                EventLoop::enable($this->await);
+                Loop::enable($this->await);
             }
 
             $result = $this->pendingOperation->getFuture()->await();
@@ -283,9 +283,9 @@ final class PqHandle extends AbstractHandle
         $pending = $this->pendingOperation = new DeferredFuture;
 
         try {
-            EventLoop::reference($this->poll);
+            Loop::reference($this->poll);
             if (!$this->handle->flush()) {
-                EventLoop::enable($this->await);
+                Loop::enable($this->await);
             }
 
             return $pending->getFuture()->await();
@@ -315,9 +315,9 @@ final class PqHandle extends AbstractHandle
         } else {
             $this->pendingOperation = new DeferredFuture;
 
-            EventLoop::reference($this->poll);
+            Loop::reference($this->poll);
             if (!$this->handle->flush()) {
-                EventLoop::enable($this->await);
+                Loop::enable($this->await);
             }
 
             $result = $this->pendingOperation->getFuture()->await();
@@ -539,7 +539,7 @@ final class PqHandle extends AbstractHandle
             throw $exception;
         }
 
-        EventLoop::enable($this->poll);
+        Loop::enable($this->poll);
         return new PostgresConnectionListener($source->iterate(), $channel, $this->unlisten(...));
     }
 

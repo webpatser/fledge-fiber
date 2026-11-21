@@ -6,7 +6,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\Database\SqlResult;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -58,7 +58,7 @@ abstract class SqlPooledResult implements SqlResult, \IteratorAggregate
                 }
             } catch (\Throwable $exception) {
                 if (!$next) {
-                    EventLoop::queue($release);
+                    Loop::queue($release);
                 }
                 throw $exception;
             }
@@ -69,7 +69,7 @@ abstract class SqlPooledResult implements SqlResult, \IteratorAggregate
 
     public function __destruct()
     {
-        EventLoop::queue(self::dispose(...), $this->iterator);
+        Loop::queue(self::dispose(...), $this->iterator);
     }
 
     private static function dispose(\Iterator $iterator): void
@@ -135,7 +135,7 @@ abstract class SqlPooledResult implements SqlResult, \IteratorAggregate
             $result = $result->getNextResult();
 
             if ($result === null) {
-                EventLoop::queue($release);
+                Loop::queue($release);
                 return null;
             }
 

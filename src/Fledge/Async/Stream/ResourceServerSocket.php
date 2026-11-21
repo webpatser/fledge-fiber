@@ -8,8 +8,8 @@ use Fledge\Async\CancelledException;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 final class ResourceServerSocket implements ServerSocket, ResourceStream
 {
@@ -58,20 +58,20 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
         \stream_set_blocking($this->socket, false);
 
         $acceptor = &$this->acceptor;
-        $this->callbackId = EventLoop::onReadable($this->socket, static function () use (&$acceptor): void {
+        $this->callbackId = Loop::onReadable($this->socket, static function () use (&$acceptor): void {
             $acceptor?->resume(true);
             $acceptor = null;
         });
 
         $callbackId = $this->callbackId;
         $this->cancel = static function (CancelledException $exception) use (&$acceptor, $callbackId): void {
-            EventLoop::disable($callbackId);
+            Loop::disable($callbackId);
 
             $acceptor?->throw($exception);
             $acceptor = null;
         };
 
-        EventLoop::disable($this->callbackId);
+        Loop::disable($this->callbackId);
     }
 
     /**
@@ -88,7 +88,7 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
 
     private function free(): void
     {
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
 
         $this->socket = null;
 
@@ -117,14 +117,14 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
             return ResourceSocket::fromServerSocket($client, $this->chunkSize);
         }
 
-        EventLoop::enable($this->callbackId);
+        Loop::enable($this->callbackId);
 
         $id = $cancellation?->subscribe($this->cancel);
 
         try {
             // Error reporting suppressed since stream_socket_accept() emits E_WARNING on client accept failure.
             do {
-                $this->acceptor = EventLoop::getSuspension();
+                $this->acceptor = Loop::getSuspension();
                 if (!$this->acceptor->suspend()) {
                     return null;
                 }
@@ -133,7 +133,7 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
             /** @var resource $client Psalm 5.x seems to think $client is of type 'never' */
             return ResourceSocket::fromServerSocket($client, $this->chunkSize);
         } finally {
-            EventLoop::disable($this->callbackId);
+            Loop::disable($this->callbackId);
 
             /** @psalm-suppress PossiblyNullArgument $id is always defined if $cancellation is non-null */
             $cancellation?->unsubscribe($id);
@@ -182,7 +182,7 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
     /**
      * References the readability callback used for detecting new connection attempts in {@code accept()}.
      *
-     * @see EventLoop::reference()
+     * @see Loop::reference()
      */
     public function reference(): void
     {
@@ -190,13 +190,13 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
             return;
         }
 
-        EventLoop::reference($this->callbackId);
+        Loop::reference($this->callbackId);
     }
 
     /**
      * Unreferences the readability callback used for detecting new connection attempts in {@code accept()}.
      *
-     * @see EventLoop::unreference()
+     * @see Loop::unreference()
      */
     public function unreference(): void
     {
@@ -204,7 +204,7 @@ final class ResourceServerSocket implements ServerSocket, ResourceStream
             return;
         }
 
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
     }
 
     public function getAddress(): SocketAddress

@@ -19,7 +19,7 @@ use Fledge\Async\Http\Client\Response;
 use Fledge\Async\Http\HttpMessage;
 use Fledge\Async\Stream\InternetAddress;
 use Fledge\Async\Sync\LocalMutex;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\File\filesystem;
 use function Fledge\Async\File\openFile;
 use function Fledge\Async\now;
@@ -292,7 +292,7 @@ final class LogHttpArchive implements EventListener
     {
         $this->addTiming(HarAttributes::TIME_COMPLETE, $request);
 
-        EventLoop::queue(fn () => $this->writeLog($response));
+        Loop::queue(fn () => $this->writeLog($response));
     }
 
     /**

@@ -8,7 +8,7 @@ use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Stream\StreamException;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -71,30 +71,30 @@ final class LongParameterListFakeServer
         $this->listener = stream_socket_server('tcp://127.0.0.1:0');
         $this->port = (int) substr(strrchr(stream_socket_get_name($this->listener, false), ':'), 1);
 
-        $this->acceptWatcher = EventLoop::unreference(EventLoop::onReadable($this->listener, function (string $id): void {
-            EventLoop::cancel($id);
+        $this->acceptWatcher = Loop::unreference(Loop::onReadable($this->listener, function (string $id): void {
+            Loop::cancel($id);
             $this->client = stream_socket_accept($this->listener, 0);
             stream_set_blocking($this->client, false);
             fwrite($this->client, $this->packet($this->greeting()));
 
-            $this->readWatcher = EventLoop::unreference(EventLoop::onReadable($this->client, $this->read(...)));
+            $this->readWatcher = Loop::unreference(Loop::onReadable($this->client, $this->read(...)));
         }));
     }
 
     public function pauseReading(): void
     {
-        EventLoop::disable($this->readWatcher);
+        Loop::disable($this->readWatcher);
     }
 
     public function resumeReading(): void
     {
-        EventLoop::enable($this->readWatcher);
+        Loop::enable($this->readWatcher);
     }
 
     public function dropClient(): void
     {
         if ($this->readWatcher !== null) {
-            EventLoop::cancel($this->readWatcher);
+            Loop::cancel($this->readWatcher);
             $this->readWatcher = null;
         }
 
@@ -106,7 +106,7 @@ final class LongParameterListFakeServer
 
     public function stop(): void
     {
-        EventLoop::cancel($this->acceptWatcher);
+        Loop::cancel($this->acceptWatcher);
         $this->dropClient();
         fclose($this->listener);
     }
@@ -318,7 +318,7 @@ final class LongParameterListFakeServer
 function runLongParameterListScenario(Closure $scenario, ?Closure $afterFirstDefinition = null): void
 {
     $server = new LongParameterListFakeServer($afterFirstDefinition);
-    $suspension = EventLoop::getSuspension();
+    $suspension = Loop::getSuspension();
     $waiting = true;
 
     $settle = static function (?Throwable $outcome) use (&$waiting, $suspension): void {
@@ -328,7 +328,7 @@ function runLongParameterListScenario(Closure $scenario, ?Closure $afterFirstDef
         }
     };
 
-    EventLoop::queue(static function () use ($scenario, $server, $settle): void {
+    Loop::queue(static function () use ($scenario, $server, $settle): void {
         try {
             $connection = (new SocketMysqlConnector)->connect(
                 new MysqlConfig('127.0.0.1', $server->port, 'app', 'secret'),
@@ -343,7 +343,7 @@ function runLongParameterListScenario(Closure $scenario, ?Closure $afterFirstDef
         }
     });
 
-    $watchdog = EventLoop::unreference(EventLoop::delay(15, static function () use ($settle): void {
+    $watchdog = Loop::unreference(Loop::delay(15, static function () use ($settle): void {
         $settle(new RuntimeException('The scenario hung until the watchdog fired'));
     }));
 
@@ -355,7 +355,7 @@ function runLongParameterListScenario(Closure $scenario, ?Closure $afterFirstDef
         $failure = $exception;
     }
 
-    EventLoop::cancel($watchdog);
+    Loop::cancel($watchdog);
     $server->stop();
 
     if ($failure !== null) {
@@ -371,15 +371,15 @@ function runLongParameterListScenario(Closure $scenario, ?Closure $afterFirstDef
  */
 function longParameterListDrainAbandonedFibers(): void
 {
-    $errorHandler = EventLoop::getErrorHandler();
-    EventLoop::setErrorHandler(static function (): void {});
+    $errorHandler = Loop::getErrorHandler();
+    Loop::setErrorHandler(static function (): void {});
 
     try {
         delay(0.1);
         gc_collect_cycles();
         delay(0);
     } finally {
-        EventLoop::setErrorHandler($errorHandler);
+        Loop::setErrorHandler($errorHandler);
     }
 }
 
@@ -399,8 +399,8 @@ function longParameterListExecuteParamCount(string $payload): int
 function longParameterListReferencedWatchers(): int
 {
     return count(array_filter(
-        EventLoop::getIdentifiers(),
-        static fn (string $id): bool => EventLoop::isEnabled($id) && EventLoop::isReferenced($id),
+        Loop::getIdentifiers(),
+        static fn (string $id): bool => Loop::isEnabled($id) && Loop::isReferenced($id),
     ));
 }
 
@@ -414,12 +414,12 @@ function longParameterListReferencedWatchers(): int
 function assertLoopExitsAfterLongParameterListScenario(Closure $scenario): void
 {
     $server = new LongParameterListFakeServer;
-    $suspension = EventLoop::getSuspension();
+    $suspension = Loop::getSuspension();
     $connection = null;
     $finished = false;
     $outcome = null;
 
-    EventLoop::queue(static function () use ($scenario, $server, $suspension, &$connection, &$finished): void {
+    Loop::queue(static function () use ($scenario, $server, $suspension, &$connection, &$finished): void {
         try {
             $connection = (new SocketMysqlConnector)->connect(
                 new MysqlConfig('127.0.0.1', $server->port, 'app', 'secret'),
@@ -433,7 +433,7 @@ function assertLoopExitsAfterLongParameterListScenario(Closure $scenario): void
         }
     });
 
-    $watchdog = EventLoop::unreference(EventLoop::delay(5, static function () use ($suspension): void {
+    $watchdog = Loop::unreference(Loop::delay(5, static function () use ($suspension): void {
         $suspension->resume(new RuntimeException('The idle connection kept the loop running until the watchdog fired'));
     }));
 
@@ -443,7 +443,7 @@ function assertLoopExitsAfterLongParameterListScenario(Closure $scenario): void
         $outcome = $exception;
     }
 
-    EventLoop::cancel($watchdog);
+    Loop::cancel($watchdog);
 
     if ($outcome instanceof RuntimeException || ! $finished) {
         $server->stop();
@@ -493,7 +493,7 @@ it('sizes the execute from every parameter definition when they arrive after PRE
                 ->and(longParameterListExecuteParamCount($server->executes[0]))->toBe(3);
         },
         static function (LongParameterListFakeServer $server, Closure $sendRemainingDefinitions): void {
-            EventLoop::unreference(EventLoop::delay(0.05, $sendRemainingDefinitions));
+            Loop::unreference(Loop::delay(0.05, $sendRemainingDefinitions));
         },
     );
 });
@@ -507,7 +507,7 @@ it('fails the execute with a connection error when the connection dies during th
                 ->and($server->executes)->toBeEmpty();
         },
         static function (LongParameterListFakeServer $server): void {
-            EventLoop::unreference(EventLoop::delay(0.05, $server->dropClient(...)));
+            Loop::unreference(Loop::delay(0.05, $server->dropClient(...)));
         },
     );
 });
@@ -681,7 +681,7 @@ it('reports the server error when ERR and FIN arrive during a blocked write', fu
         expect($blocked->isComplete())->toBeFalse();
 
         $server->reply(LONG_PARAMETER_LIST_PACKET_TOO_LARGE);
-        EventLoop::unreference(EventLoop::delay(0.02, $server->dropClient(...)));
+        Loop::unreference(Loop::delay(0.02, $server->dropClient(...)));
 
         expect(static fn () => $blocked->await())->toThrow(SqlQueryError::class, '1153')
             ->and(longParameterListReferencedWatchers())->toBe($idleWatchers);
@@ -913,7 +913,7 @@ it('keeps the two packets of a long bind together when execute follows during th
             ]);
         },
         static function (LongParameterListFakeServer $server, Closure $sendRemainingDefinitions): void {
-            EventLoop::unreference(EventLoop::delay(0.05, $sendRemainingDefinitions));
+            Loop::unreference(Loop::delay(0.05, $sendRemainingDefinitions));
         },
     );
 });

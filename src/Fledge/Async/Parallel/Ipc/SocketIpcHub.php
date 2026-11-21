@@ -12,7 +12,7 @@ use Fledge\Async\Stream;
 use Fledge\Async\Stream\ResourceSocket;
 use Fledge\Async\Stream\SocketAddressType;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class SocketIpcHub implements IpcHub
 {
@@ -162,7 +162,7 @@ final class SocketIpcHub implements IpcHub
         }
 
         if (!$this->queued) {
-            EventLoop::queue($this->accept);
+            Loop::queue($this->accept);
             $this->queued = true;
         }
 

@@ -2,7 +2,7 @@
 
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Pdo\FledgePdo;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Prepared statements with thousands of placeholders against real MySQL and
@@ -33,7 +33,7 @@ function longListSkipUnless(string $flavor, object $test): void
  */
 function longListInQuery(FledgePdo $pdo, int|string $needle, array $list): int
 {
-    $watchdog = EventLoop::delay(30, static fn () => $pdo->close());
+    $watchdog = Loop::delay(30, static fn () => $pdo->close());
 
     try {
         $placeholders = implode(', ', array_fill(0, count($list), '?'));
@@ -45,7 +45,7 @@ function longListInQuery(FledgePdo $pdo, int|string $needle, array $list): int
 
         return (int) $rows[0]['found'];
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
         $pdo->close();
     }
 }

@@ -6,7 +6,7 @@ use Fledge\Async\DeferredFuture;
 use Fledge\Async\Future as AsyncFuture;
 use parallel\Events;
 use parallel\Future as ParallelFuture;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 final class ParallelHub
@@ -26,7 +26,7 @@ final class ParallelHub
         $this->events->setBlocking(false);
 
         $deferredFutures = &$this->deferredFutures;
-        $this->watcher = EventLoop::repeat(self::EXIT_CHECK_FREQUENCY, static function () use (
+        $this->watcher = Loop::repeat(self::EXIT_CHECK_FREQUENCY, static function () use (
             &$deferredFutures,
             $events,
         ): void {
@@ -38,8 +38,8 @@ final class ParallelHub
                 $deferredFuture->complete();
             }
         });
-        EventLoop::disable($this->watcher);
-        EventLoop::unreference($this->watcher);
+        Loop::disable($this->watcher);
+        Loop::unreference($this->watcher);
     }
 
     public function add(int $id, ParallelFuture $future): AsyncFuture
@@ -47,7 +47,7 @@ final class ParallelHub
         $this->deferredFutures[$id] = $deferred = new DeferredFuture();
         $this->events->addFuture((string) $id, $future);
 
-        EventLoop::enable($this->watcher);
+        Loop::enable($this->watcher);
 
         return $deferred->getFuture();
     }
@@ -67,7 +67,7 @@ final class ParallelHub
         $this->events->remove((string) $id);
 
         if (empty($this->deferredFutures)) {
-            EventLoop::disable($this->watcher);
+            Loop::disable($this->watcher);
         }
     }
 }

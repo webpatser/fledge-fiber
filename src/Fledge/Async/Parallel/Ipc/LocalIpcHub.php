@@ -7,7 +7,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Stream;
 use Fledge\Async\Stream\ResourceSocket;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use const Fledge\Async\Process\IS_WINDOWS;
 
 final class LocalIpcHub implements IpcHub
@@ -43,7 +43,7 @@ final class LocalIpcHub implements IpcHub
 
     public function __destruct()
     {
-        EventLoop::queue($this->delegate->close(...));
+        Loop::queue($this->delegate->close(...));
         $this->unlink();
     }
 

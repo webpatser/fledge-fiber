@@ -6,7 +6,7 @@ use Fledge\Async\Stream\WritableResourceStream;
 use Fledge\Async\Process\Internal\ProcessHandle;
 use Fledge\Async\Process\Internal\ProcessStatus;
 use Fledge\Async\Process\ProcessException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 final class PosixHandle extends ProcessHandle
@@ -35,10 +35,10 @@ final class PosixHandle extends ProcessHandle
         $status = &$this->status;
         $deferred = $this->joinDeferred;
         $stdin = \WeakReference::create($stdin);
-        $this->extraDataPipeCallbackId = EventLoop::unreference(EventLoop::onReadable(
+        $this->extraDataPipeCallbackId = Loop::unreference(Loop::onReadable(
             $extraDataPipe,
             static function (string $callbackId, $stream) use (&$status, $deferred, $stdin, $shellPid): void {
-                EventLoop::disable($callbackId);
+                Loop::disable($callbackId);
 
                 $status = ProcessStatus::Ended;
 
@@ -63,14 +63,14 @@ final class PosixHandle extends ProcessHandle
     public function reference(): void
     {
         if ($this->extraDataPipeCallbackId !== null) {
-            EventLoop::reference($this->extraDataPipeCallbackId);
+            Loop::reference($this->extraDataPipeCallbackId);
         }
     }
 
     public function unreference(): void
     {
         if ($this->extraDataPipeCallbackId !== null) {
-            EventLoop::unreference($this->extraDataPipeCallbackId);
+            Loop::unreference($this->extraDataPipeCallbackId);
         }
     }
 
@@ -80,7 +80,7 @@ final class PosixHandle extends ProcessHandle
             return;
         }
 
-        EventLoop::unreference(EventLoop::defer(static fn () => self::asyncWaitPid($pid)));
+        Loop::unreference(Loop::defer(static fn () => self::asyncWaitPid($pid)));
     }
 
     private static function hasChildExited(int $pid): bool
@@ -91,7 +91,7 @@ final class PosixHandle extends ProcessHandle
     public function __destruct()
     {
         if ($this->extraDataPipeCallbackId !== null) {
-            EventLoop::cancel($this->extraDataPipeCallbackId);
+            Loop::cancel($this->extraDataPipeCallbackId);
             $this->extraDataPipeCallbackId = null;
         }
 

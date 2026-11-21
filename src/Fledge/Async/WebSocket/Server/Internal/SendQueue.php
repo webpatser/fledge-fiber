@@ -9,8 +9,8 @@ use Fledge\Async\Future;
 use Fledge\Async\WebSocket\WebsocketClient;
 use Fledge\Async\WebSocket\WebsocketCloseCode;
 use Fledge\Async\WebSocket\WebsocketClosedException;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /** @internal */
 final class SendQueue
@@ -50,10 +50,10 @@ final class SendQueue
         $suspension = &$this->suspension;
         $queuedBytes = &$this->queuedBytes;
         $inFlight = &$this->inFlight;
-        EventLoop::queue(static function () use ($writeQueue, $client, &$suspension, &$queuedBytes, &$inFlight): void {
+        Loop::queue(static function () use ($writeQueue, $client, &$suspension, &$queuedBytes, &$inFlight): void {
             while (!$client->isClosed()) {
                 if ($writeQueue->isEmpty()) {
-                    $suspension = EventLoop::getSuspension();
+                    $suspension = Loop::getSuspension();
                     if (!$suspension->suspend()) {
                         break;
                     }
@@ -195,7 +195,7 @@ final class SendQueue
         $this->queuedBytes = 0;
 
         // close() waits for the closing handshake, so it must not block the sending fiber.
-        EventLoop::queue($this->client->close(...), WebsocketCloseCode::POLICY_VIOLATION, self::OVERFLOW_REASON);
+        Loop::queue($this->client->close(...), WebsocketCloseCode::POLICY_VIOLATION, self::OVERFLOW_REASON);
 
         return Future::error($exception)->ignore();
     }

@@ -7,7 +7,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template TResult of SqlResult
@@ -81,7 +81,7 @@ abstract class SqlPooledStatement implements SqlStatement
     private function dispose(): void
     {
         if ($this->release) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             $this->release = null;
         }
     }

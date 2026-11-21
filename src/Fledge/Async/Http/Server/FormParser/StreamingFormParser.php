@@ -14,7 +14,7 @@ use Fledge\Async\Http\Server\Request;
 use Fledge\Async\DisposedException;
 use Fledge\Async\Pipeline;
 use Fledge\Async\Queue;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class StreamingFormParser
 {
@@ -54,7 +54,7 @@ final class StreamingFormParser
             $body->increaseSizeLimit($bodySizeLimit);
         }
 
-        EventLoop::queue(function () use ($boundary, $source, $body): void {
+        Loop::queue(function () use ($boundary, $source, $body): void {
             try {
                 $boundary === ''
                     ? $this->incrementalFieldParse($source, $body)

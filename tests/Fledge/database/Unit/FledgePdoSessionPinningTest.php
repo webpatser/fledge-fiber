@@ -865,7 +865,7 @@ final class SessionResetInjectingProxy
         $this->listener = stream_socket_server('tcp://127.0.0.1:0');
         $this->port = (int) substr(strrchr(stream_socket_get_name($this->listener, false), ':'), 1);
 
-        $this->acceptWatcher = Revolt\EventLoop::unreference(Revolt\EventLoop::onReadable($this->listener, function (): void {
+        $this->acceptWatcher = Fledge\Loop::unreference(Fledge\Loop::onReadable($this->listener, function (): void {
             $client = @stream_socket_accept($this->listener, 0);
 
             if ($client !== false) {
@@ -876,7 +876,7 @@ final class SessionResetInjectingProxy
 
     public function stop(): void
     {
-        Revolt\EventLoop::cancel($this->acceptWatcher);
+        Fledge\Loop::cancel($this->acceptWatcher);
 
         foreach ($this->closers as $close) {
             $close();
@@ -901,7 +901,7 @@ final class SessionResetInjectingProxy
 
         $close = function () use (&$watchers, $client, $server): void {
             foreach ($watchers as $watcher) {
-                Revolt\EventLoop::cancel($watcher);
+                Fledge\Loop::cancel($watcher);
             }
 
             $watchers = [];
@@ -914,7 +914,7 @@ final class SessionResetInjectingProxy
         };
         $this->closers[] = $close;
 
-        $watchers[] = Revolt\EventLoop::unreference(Revolt\EventLoop::onReadable($server, function () use ($server, $client, $close): void {
+        $watchers[] = Fledge\Loop::unreference(Fledge\Loop::onReadable($server, function () use ($server, $client, $close): void {
             $data = fread($server, 65536);
 
             if ($data === '' || $data === false) {
@@ -926,7 +926,7 @@ final class SessionResetInjectingProxy
             fwrite($client, $data);
         }));
 
-        $watchers[] = Revolt\EventLoop::unreference(Revolt\EventLoop::onReadable($client, function () use ($server, $client, $close, &$buffer, &$armed): void {
+        $watchers[] = Fledge\Loop::unreference(Fledge\Loop::onReadable($client, function () use ($server, $client, $close, &$buffer, &$armed): void {
             $data = fread($client, 65536);
 
             if ($data === '' || $data === false) {

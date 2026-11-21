@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use Fledge\Async\FiberContext;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -62,7 +62,7 @@ beforeEach(function () {
         }
     };
 
-    $this->previousErrorHandler = EventLoop::getErrorHandler();
+    $this->previousErrorHandler = Loop::getErrorHandler();
 });
 
 afterEach(function () {
@@ -70,7 +70,7 @@ afterEach(function () {
         FiberContext::forget($name);
     }
 
-    EventLoop::setErrorHandler($this->previousErrorHandler);
+    Loop::setErrorHandler($this->previousErrorHandler);
 });
 
 it('captures nothing when no hook is registered', function () {
@@ -183,7 +183,7 @@ it('skips a hook forgotten between capture and restore', function () {
 
 it('does not break async when a hook throws', function (string $stage) {
     $reported = [];
-    EventLoop::setErrorHandler(function (Throwable $exception) use (&$reported): void {
+    Loop::setErrorHandler(function (Throwable $exception) use (&$reported): void {
         $reported[] = $exception->getMessage();
     });
 
@@ -208,7 +208,7 @@ it('does not break async when a hook throws', function (string $stage) {
 })->with(['capture', 'restore', 'cleanup']);
 
 it('swallows a throwing hook when no error handler is set', function () {
-    EventLoop::setErrorHandler(null);
+    Loop::setErrorHandler(null);
 
     FiberContext::register(
         'boom',

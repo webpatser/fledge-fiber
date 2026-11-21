@@ -278,7 +278,7 @@ if (! function_exists('nativeDriverReset')) {
 }
 
 // Select the process-wide event loop driver for the suite (CI matrix leg FLEDGE_EVENT_LOOP=poll|select).
-// Runs once per process via composer's autoload-dev files, before any test touches Revolt\EventLoop.
+// Runs once per process via composer's autoload-dev files, before any test touches Fledge\Loop.
 if (is_string($fledgeEventLoop = getenv('FLEDGE_EVENT_LOOP')) && trim($fledgeEventLoop) !== '') {
     \Fledge\Async\EventLoop\LoopDriver::install();
 }

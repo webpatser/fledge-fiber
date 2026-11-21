@@ -2,7 +2,7 @@
 
 namespace Fledge\Async\File\Internal;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 final class Cache
@@ -51,9 +51,9 @@ final class Cache
             }
         };
 
-        $this->ttlWatcherId = EventLoop::repeat($gcInterval, $sharedState->collectGarbage(...));
+        $this->ttlWatcherId = Loop::repeat($gcInterval, $sharedState->collectGarbage(...));
 
-        EventLoop::unreference($this->ttlWatcherId);
+        Loop::unreference($this->ttlWatcherId);
     }
 
     public function __destruct()
@@ -61,7 +61,7 @@ final class Cache
         $this->sharedState->cache = [];
         $this->sharedState->cacheTimeouts = [];
 
-        EventLoop::cancel($this->ttlWatcherId);
+        Loop::cancel($this->ttlWatcherId);
     }
 
     public function get(string $key): ?array

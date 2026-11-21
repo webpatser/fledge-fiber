@@ -13,7 +13,7 @@ use Fledge\Async\Internal\ConcurrentClosureIterator;
 use Fledge\Async\Pipeline;
 use Fledge\Async\Queue;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -72,7 +72,7 @@ it('consumes a value when cancellation occurs in the same tick as delivery', fun
         : null);
 
     // Cancellation callbacks are queued in the same tick the first value is delivered.
-    EventLoop::queue(static fn () => $deferredCancellation->cancel());
+    Loop::queue(static fn () => $deferredCancellation->cancel());
 
     expect($future->await())->toBe(0);
 
@@ -152,7 +152,7 @@ it('keeps ordering with an ordered concurrent pipeline over an async source', fu
 
     $queue = new Queue();
 
-    EventLoop::queue(function () use ($queue): void {
+    Loop::queue(function () use ($queue): void {
         foreach (array_chunk(range(0, 99), 10) as $chunk) {
             array_map($queue->pushAsync(...), $chunk);
             delay(0.1);

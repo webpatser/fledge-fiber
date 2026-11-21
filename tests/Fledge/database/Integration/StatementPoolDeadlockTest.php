@@ -3,7 +3,7 @@
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Connectors\FledgePostgresConnector;
 use Fledge\Fiber\Database\Pdo\FledgePdo;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Regression tests for the pool_size => 1 statement deadlock: a pooled prepared
@@ -14,12 +14,12 @@ use Revolt\EventLoop;
  */
 function withDeadlockWatchdog(FledgePdo $pdo, Closure $test): void
 {
-    $watchdog = EventLoop::delay(10, static fn () => $pdo->close());
+    $watchdog = Loop::delay(10, static fn () => $pdo->close());
 
     try {
         $test($pdo);
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
         $pdo->close();
     }
 }
@@ -107,7 +107,7 @@ function withNativeDeadlockWatchdog(string $flavor, Closure $test): void
 {
     $connection = nativeDriverConnection($flavor, ['pool_size' => 1]);
     $pool = $connection->getRawPdo();
-    $watchdog = EventLoop::delay(10, static fn () => $pool->close());
+    $watchdog = Loop::delay(10, static fn () => $pool->close());
 
     try {
         $test($connection->getPdo());
@@ -118,7 +118,7 @@ function withNativeDeadlockWatchdog(string $flavor, Closure $test): void
         expect($pool->getLeasedCount())->toBe(0)
             ->and($pool)->toHaveCount(1);
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
         $connection->disconnect();
         nativeDriverReset();
     }

@@ -14,7 +14,7 @@ use Fledge\Async\Database\Postgres\PostgresStatement;
 use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -86,7 +86,7 @@ final class PgSqlHandle extends AbstractHandle
         $lostMessage = &$this->lostMessage;
         $onClose = new DeferredFuture();
 
-        $poll = EventLoop::onReadable($socket, static function (string $watcher) use (
+        $poll = Loop::onReadable($socket, static function (string $watcher) use (
             &$deferred,
             &$lastUsedAt,
             &$listeners,
@@ -95,7 +95,7 @@ final class PgSqlHandle extends AbstractHandle
             $onClose,
         ): void {
             if (!$connection) {
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
                 return;
             }
 
@@ -144,12 +144,12 @@ final class PgSqlHandle extends AbstractHandle
                 // leaves libpq with a closed socket. Selecting on it makes stream_select() fail
                 // for every other connection on the loop, so stop watching it right away.
                 if (\pg_connection_status($connection) === \PGSQL_CONNECTION_BAD) {
-                    EventLoop::disable($watcher);
+                    Loop::disable($watcher);
                     return;
                 }
 
                 if (empty($listeners)) {
-                    EventLoop::unreference($watcher);
+                    Loop::unreference($watcher);
                 }
             } catch (SqlConnectionException $exception) {
                 // Keep what libpq read before the socket closed (a FATAL such as 57P01 from
@@ -162,7 +162,7 @@ final class PgSqlHandle extends AbstractHandle
                     $exception = new SqlConnectionException($lostMessage, 0, $exception);
                 }
                 $connection = null; // Marks connection as dead.
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
             } finally {
@@ -170,14 +170,14 @@ final class PgSqlHandle extends AbstractHandle
             }
         });
 
-        $await = EventLoop::onWritable($socket, static function (string $watcher) use (
+        $await = Loop::onWritable($socket, static function (string $watcher) use (
             &$deferred,
             &$listeners,
             &$connection,
             $onClose,
         ): void {
             if (!$connection) {
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
                 return;
             }
 
@@ -189,14 +189,14 @@ final class PgSqlHandle extends AbstractHandle
                     return; // Not finished sending data, listen again.
                 }
 
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
 
                 if ($flush === false) {
                     throw new SqlConnectionException(\pg_last_error($connection));
                 }
             } catch (SqlConnectionException $exception) {
                 $connection = null; // Marks connection as dead.
-                EventLoop::disable($watcher);
+                Loop::disable($watcher);
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
             } finally {
@@ -204,8 +204,8 @@ final class PgSqlHandle extends AbstractHandle
             }
         });
 
-        EventLoop::unreference($poll);
-        EventLoop::disable($await);
+        Loop::unreference($poll);
+        Loop::disable($await);
 
         parent::__construct($config, $poll, $await, $onClose);
     }
@@ -234,12 +234,12 @@ final class PgSqlHandle extends AbstractHandle
         $this->pendingOperation = $queryDeferred = new DeferredFuture();
         $typesDeferred = new DeferredFuture();
 
-        EventLoop::reference($this->poll);
+        Loop::reference($this->poll);
         if ($result === 0) {
-            EventLoop::enable($this->await);
+            Loop::enable($this->await);
         }
 
-        EventLoop::queue(function () use ($queryDeferred, $typesDeferred): void {
+        Loop::queue(function () use ($queryDeferred, $typesDeferred): void {
             try {
                 $result = $queryDeferred->getFuture()->await();
                 if (\pg_result_status($result) !== \PGSQL_TUPLES_OK) {
@@ -319,7 +319,7 @@ final class PgSqlHandle extends AbstractHandle
                 return;
             }
 
-            EventLoop::unreference(EventLoop::onReadable($this->socket, static function (string $watcher) use ($handle): void {
+            Loop::unreference(Loop::onReadable($this->socket, static function (string $watcher) use ($handle): void {
                 \set_error_handler(static fn (): bool => true);
 
                 try {
@@ -330,7 +330,7 @@ final class PgSqlHandle extends AbstractHandle
                     \restore_error_handler();
                 }
 
-                EventLoop::cancel($watcher); // Drops the last reference: nothing left to wait for.
+                Loop::cancel($watcher); // Drops the last reference: nothing left to wait for.
             }));
         } catch (\Throwable) {
             // close() never fails; at worst the link is freed the way it was before.
@@ -426,9 +426,9 @@ final class PgSqlHandle extends AbstractHandle
 
         $this->pendingOperation = new DeferredFuture;
 
-        EventLoop::reference($this->poll);
+        Loop::reference($this->poll);
         if ($result === 0) {
-            EventLoop::enable($this->await);
+            Loop::enable($this->await);
         }
 
         return $this->pendingOperation->getFuture()->await();
@@ -581,7 +581,7 @@ final class PgSqlHandle extends AbstractHandle
         $this->pendingOperation = $pending = new DeferredFuture;
 
         try {
-            EventLoop::reference($this->poll);
+            Loop::reference($this->poll);
 
             return $pending->getFuture()->await() ?: null;
         } finally {
@@ -780,7 +780,7 @@ final class PgSqlHandle extends AbstractHandle
             throw $exception;
         }
 
-        EventLoop::enable($this->poll);
+        Loop::enable($this->poll);
         return new PostgresConnectionListener($source->iterate(), $channel, $this->unlisten(...));
     }
 

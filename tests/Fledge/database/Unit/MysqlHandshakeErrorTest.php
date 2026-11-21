@@ -4,7 +4,7 @@ use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Fiber\Database\Pdo\FledgePdoException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Connect to a throwaway local server that answers with a MySQL ERR packet instead of the
@@ -18,8 +18,8 @@ function connectToErrPacketServer(int $errno, string $message): SqlConnectionExc
     $payload = "\xff".pack('v', $errno).$message;
     $packet = substr(pack('V', strlen($payload)), 0, 3)."\x00".$payload;
 
-    $watcher = EventLoop::onReadable($server, static function (string $id, $server) use ($packet): void {
-        EventLoop::cancel($id);
+    $watcher = Loop::onReadable($server, static function (string $id, $server) use ($packet): void {
+        Loop::cancel($id);
         $client = stream_socket_accept($server, 0);
         fwrite($client, $packet);
         fclose($client);
@@ -30,7 +30,7 @@ function connectToErrPacketServer(int $errno, string $message): SqlConnectionExc
     } catch (SqlConnectionException $e) {
         return $e;
     } finally {
-        EventLoop::cancel($watcher);
+        Loop::cancel($watcher);
         fclose($server);
     }
 

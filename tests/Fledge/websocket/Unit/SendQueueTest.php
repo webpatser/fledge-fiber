@@ -8,7 +8,7 @@ use Fledge\Async\WebSocket\Rfc6455Client;
 use Fledge\Async\WebSocket\Server\WebsocketClientGateway;
 use Fledge\Async\WebSocket\WebsocketCloseCode;
 use Fledge\Async\WebSocket\WebsocketClosedException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
 use function Fledge\Async\Stream\createSocketPair;
@@ -206,9 +206,9 @@ it('raises no unhandled future errors when a write fails with dropped send futur
     $gateway = new WebsocketClientGateway();
     $gateway->addClient($client);
 
-    $previousHandler = EventLoop::getErrorHandler();
+    $previousHandler = Loop::getErrorHandler();
     $errors = [];
-    EventLoop::setErrorHandler(static function (\Throwable $error) use (&$errors): void {
+    Loop::setErrorHandler(static function (\Throwable $error) use (&$errors): void {
         $errors[] = $error;
     });
 
@@ -224,7 +224,7 @@ it('raises no unhandled future errors when a write fails with dropped send futur
         \gc_collect_cycles();
         delay(0.01);
     } finally {
-        EventLoop::setErrorHandler($previousHandler);
+        Loop::setErrorHandler($previousHandler);
     }
 
     expect($client->isClosed())->toBeTrue()

@@ -5,7 +5,7 @@ namespace Fledge\Async\Stream;
 use Fledge\Async\Cancellation;
 use Fledge\Async\CancelledException;
 use League\Uri\UriString;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Listen for client connections on the specified server address.
@@ -76,7 +76,7 @@ function socketConnector(?SocketConnector $connector = null): SocketConnector
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($connector) {
         return $map[$driver] = $connector;

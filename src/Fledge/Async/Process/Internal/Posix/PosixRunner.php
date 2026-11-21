@@ -14,7 +14,7 @@ use Fledge\Async\Process\Internal\ProcessRunner;
 use Fledge\Async\Process\Internal\ProcessStatus;
 use Fledge\Async\Process\Internal\ProcessStreams;
 use Fledge\Async\Process\ProcessException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @internal
@@ -82,19 +82,19 @@ final class PosixRunner implements ProcessRunner
 
         \stream_set_blocking($extraDataPipe, false);
 
-        $suspension = EventLoop::getSuspension();
+        $suspension = Loop::getSuspension();
 
-        $callbackId = EventLoop::onReadable(
+        $callbackId = Loop::onReadable(
             $extraDataPipe,
             static function (string $callbackId) use ($suspension): void {
-                EventLoop::cancel($callbackId);
+                Loop::cancel($callbackId);
                 $suspension->resume();
             },
         );
 
         $cancellationId = $cancellation->subscribe(
             static function (CancelledException $e) use ($suspension, $callbackId): void {
-                EventLoop::cancel($callbackId);
+                Loop::cancel($callbackId);
                 $suspension->throw($e);
             },
         );

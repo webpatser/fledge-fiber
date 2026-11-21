@@ -11,7 +11,7 @@ use Fledge\Async\Redis\Protocol\RedisResponse;
 use Fledge\Async\Redis\Protocol\RedisValue;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class ReconnectingRedisLink implements RedisLink
 {
@@ -228,7 +228,7 @@ final class ReconnectingRedisLink implements RedisLink
         $openMulti = &$this->openMulti;
         $transactionLost = &$this->transactionLost;
 
-        EventLoop::queue(static function () use (
+        Loop::queue(static function () use (
             &$connection,
             &$running,
             &$database,

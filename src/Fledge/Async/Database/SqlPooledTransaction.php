@@ -8,7 +8,7 @@ use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template TResult of SqlResult
@@ -85,7 +85,7 @@ abstract class SqlPooledTransaction implements SqlTransaction
             $result = $this->transaction->query($sql);
             return $this->createResult($result, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }
@@ -98,7 +98,7 @@ abstract class SqlPooledTransaction implements SqlTransaction
             $statement = $this->transaction->prepare($sql);
             return $this->createStatement($statement, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }
@@ -111,7 +111,7 @@ abstract class SqlPooledTransaction implements SqlTransaction
             $result = $this->transaction->execute($sql, $params);
             return $this->createResult($result, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }
@@ -124,7 +124,7 @@ abstract class SqlPooledTransaction implements SqlTransaction
             $transaction = $this->transaction->beginTransaction();
             return $this->createTransaction($transaction, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }

@@ -4,8 +4,8 @@ namespace Fledge\Async\Sync;
 
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 final class LocalSemaphore implements Semaphore
 {
@@ -37,7 +37,7 @@ final class LocalSemaphore implements Semaphore
             return $this->createLock();
         }
 
-        $this->waiting->enqueue($suspension = EventLoop::getSuspension());
+        $this->waiting->enqueue($suspension = Loop::getSuspension());
 
         return $suspension->suspend();
     }

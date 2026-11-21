@@ -5,8 +5,8 @@ namespace Fledge\Async\Stream;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /**
  * Output stream abstraction for PHP's stream resources.
@@ -72,7 +72,7 @@ final class WritableResourceStream implements WritableStream, ResourceStream
         $writable = &$this->writable;
         $resource = &$this->resource;
 
-        $this->callbackId = EventLoop::disable(EventLoop::onWritable(
+        $this->callbackId = Loop::disable(Loop::onWritable(
             $this->resource,
             static function ($callbackId) use (
                 $writes,
@@ -170,9 +170,9 @@ final class WritableResourceStream implements WritableStream, ResourceStream
 
                     if ($writes->isEmpty()) {
                         if ($writable) {
-                            EventLoop::disable($callbackId);
+                            Loop::disable($callbackId);
                         } else {
-                            EventLoop::cancel($callbackId);
+                            Loop::cancel($callbackId);
 
                             if (!$onClose->isComplete()) {
                                 $onClose->complete();
@@ -245,8 +245,8 @@ final class WritableResourceStream implements WritableStream, ResourceStream
             }
         }
 
-        EventLoop::enable($this->callbackId);
-        $this->writes->push([$bytes, $suspension = EventLoop::getSuspension()]);
+        Loop::enable($this->callbackId);
+        $this->writes->push([$bytes, $suspension = Loop::getSuspension()]);
 
         if ($closure = $suspension->suspend()) {
             $closure();
@@ -329,7 +329,7 @@ final class WritableResourceStream implements WritableStream, ResourceStream
     /**
      * References the writable watcher, so the loop keeps running in case there's a pending write.
      *
-     * @see EventLoop::reference()
+     * @see Loop::reference()
      */
     public function reference(): void
     {
@@ -337,13 +337,13 @@ final class WritableResourceStream implements WritableStream, ResourceStream
             return;
         }
 
-        EventLoop::reference($this->callbackId);
+        Loop::reference($this->callbackId);
     }
 
     /**
      * Unreferences the writable watcher, so the loop doesn't keep running even if there are pending writes.
      *
-     * @see EventLoop::unreference()
+     * @see Loop::unreference()
      */
     public function unreference(): void
     {
@@ -351,7 +351,7 @@ final class WritableResourceStream implements WritableStream, ResourceStream
             return;
         }
 
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
     }
 
     /**
@@ -375,7 +375,7 @@ final class WritableResourceStream implements WritableStream, ResourceStream
             } while (!$this->writes->isEmpty());
         }
 
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
 
         if (!$this->onClose->isComplete()) {
             $this->onClose->complete();

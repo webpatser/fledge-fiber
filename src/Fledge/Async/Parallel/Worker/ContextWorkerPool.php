@@ -10,7 +10,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\Parallel\Context\StatusError;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -289,7 +289,7 @@ final class ContextWorkerPool implements LimitedWorkerPool
             }
 
             // Worker crashed while idle; trigger error and remove it from the pool.
-            EventLoop::queue(static function () use ($worker): void {
+            Loop::queue(static function () use ($worker): void {
                 try {
                     $worker->shutdown();
                     \trigger_error('Worker in pool exited unexpectedly', \E_USER_WARNING);

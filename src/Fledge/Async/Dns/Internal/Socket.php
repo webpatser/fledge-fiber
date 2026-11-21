@@ -16,7 +16,7 @@ use LibDNS\Messages\Message;
 use LibDNS\Messages\MessageFactory;
 use LibDNS\Messages\MessageTypes;
 use LibDNS\Records\Question;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\now;
 use function Fledge\Async\weakClosure;
 
@@ -50,7 +50,7 @@ abstract class Socket
 
     private bool $receiving = false;
 
-    /** @var \SplQueue<EventLoop\Suspension> Queued requests if the number of concurrent requests is too large. */
+    /** @var \SplQueue<Loop\Suspension> Queued requests if the number of concurrent requests is too large. */
     private readonly \SplQueue $queue;
 
     /**
@@ -94,7 +94,7 @@ abstract class Socket
 
     private function fetch(): void
     {
-        EventLoop::queue(function (): void {
+        Loop::queue(function (): void {
             try {
                 try {
                     $message = $this->receive();
@@ -149,7 +149,7 @@ abstract class Socket
         $this->lastActivity = now();
 
         if ($this->pending->count() > self::MAX_CONCURRENT_REQUESTS) {
-            $suspension = EventLoop::getSuspension();
+            $suspension = Loop::getSuspension();
             $this->queue->enqueue($suspension);
             $suspension->suspend();
         }
@@ -179,7 +179,7 @@ abstract class Socket
             ) {
                 $this->deferred = $deferred;
 
-                $this->callbackId = EventLoop::unreference(EventLoop::delay(
+                $this->callbackId = Loop::unreference(Loop::delay(
                     $timeout,
                     weakClosure(function () use ($id, $pending, $timeout, &$invalidPacketsReceived): void {
                         if ($invalidPacketsReceived > 0) {
@@ -201,7 +201,7 @@ abstract class Socket
 
             public function __destruct()
             {
-                EventLoop::cancel($this->callbackId);
+                Loop::cancel($this->callbackId);
             }
         };
 

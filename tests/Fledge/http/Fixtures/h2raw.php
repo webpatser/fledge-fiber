@@ -154,7 +154,7 @@ if (! function_exists('startH2Driver')) {
      */
     function startH2Driver(array $driverArgs = [], ?\Closure $handler = null): H2RawPeer
     {
-        \Revolt\EventLoop::setErrorHandler(null);
+        \Fledge\Loop::setErrorHandler(null);
 
         [$serverSide, $peerSide] = createSocketPair();
 

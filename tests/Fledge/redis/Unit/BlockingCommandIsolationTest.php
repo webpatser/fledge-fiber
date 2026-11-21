@@ -10,7 +10,7 @@ use Fledge\Async\Redis\Protocol\RedisValue;
 use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Fiber\Redis\FledgeRedisConnection;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -167,7 +167,7 @@ it('runs blpop on its own connection so other fibers are not queued behind it', 
     });
 
     // Hang guard only: without it the old code would wait forever.
-    EventLoop::delay(0.5, function () use ($shared, $dedicated): void {
+    Loop::delay(0.5, function () use ($shared, $dedicated): void {
         $shared->release();
         $dedicated->release();
     });
@@ -352,20 +352,20 @@ it('fails a blocking call in flight on disconnect and never reuses its connectio
     delay(0);
 
     // Hang guard only: without the fix the pop would wait forever.
-    $watchdog = EventLoop::delay(0.5, fn () => $dedicated[0]->release());
+    $watchdog = Loop::delay(0.5, fn () => $dedicated[0]->release());
 
     $connection->disconnect();
 
     try {
         expect(fn () => $pop->await())->toThrow(RedisInFlightCommandException::class, 'connection lost');
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
     }
 
     expect($dedicated[0]->log)->toBe(['BLPOP q 0', 'CLOSE']);
 
     $dedicatedBefore = count($dedicated);
-    EventLoop::delay(0.01, fn () => $dedicated[count($dedicated) - 1]->release());
+    Loop::delay(0.01, fn () => $dedicated[count($dedicated) - 1]->release());
     $connection->blpop('q', 0);
 
     expect(count($dedicated))->toBe($dedicatedBefore + 1);

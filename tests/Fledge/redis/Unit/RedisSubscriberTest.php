@@ -78,12 +78,12 @@ final class SubscriberScriptedConnection implements RedisConnection
         $this->waiter = new DeferredFuture();
 
         // A real connection holds a stream watcher while blocked.
-        $keepAlive = Revolt\EventLoop::repeat(0.01, static fn () => null);
+        $keepAlive = Fledge\Loop::repeat(0.01, static fn () => null);
 
         try {
             return $this->waiter->getFuture()->await();
         } finally {
-            Revolt\EventLoop::cancel($keepAlive);
+            Fledge\Loop::cancel($keepAlive);
         }
     }
 

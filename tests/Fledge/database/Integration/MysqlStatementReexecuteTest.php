@@ -7,7 +7,7 @@ use Fledge\Async\Stream\DnsSocketConnector;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Connections\FledgeMariaDbConnection;
 use Fledge\Fiber\Database\Pdo\FledgePdo;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Re-executing one prepared statement against real MySQL and MariaDB, with the outcomes of real
@@ -211,7 +211,7 @@ foreach (['mysql', 'mariadb'] as $flavor) {
             reexecuteSkipUnless($flavor, $this);
 
             reexecuteOnPdo($flavor, $mode, function (FledgePdo $pdo) {
-                $watchdog = EventLoop::unreference(EventLoop::delay(5, static fn () => $pdo->close()));
+                $watchdog = Loop::unreference(Loop::delay(5, static fn () => $pdo->close()));
 
                 try {
                     $statement = $pdo->prepare('SELECT ? AS a FROM (SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4) t');
@@ -222,7 +222,7 @@ foreach (['mysql', 'mariadb'] as $flavor) {
                     $statement->execute([REEXECUTE_U2]);
                     expect($statement->fetchAll(PDO::FETCH_NUM))->toBe(array_fill(0, 4, [REEXECUTE_U2]));
                 } finally {
-                    EventLoop::cancel($watchdog);
+                    Loop::cancel($watchdog);
                 }
             });
         });

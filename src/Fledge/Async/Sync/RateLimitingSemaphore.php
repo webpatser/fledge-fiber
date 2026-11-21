@@ -4,7 +4,7 @@ namespace Fledge\Async\Sync;
 
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * When a locked is released from this semaphore, it does not become available to be acquired again until
@@ -41,13 +41,13 @@ final class RateLimitingSemaphore implements Semaphore
         ++$this->waitingCount;
 
         if (!$this->timers->isEmpty()) {
-            EventLoop::reference($this->timers->bottom());
+            Loop::reference($this->timers->bottom());
         }
 
         $lock = $this->semaphore->acquire();
 
         if (!--$this->waitingCount && !$this->timers->isEmpty()) {
-            EventLoop::unreference($this->timers->bottom());
+            Loop::unreference($this->timers->bottom());
         }
 
         return new Lock(fn () => $this->release($lock));
@@ -55,14 +55,14 @@ final class RateLimitingSemaphore implements Semaphore
 
     private function release(Lock $lock): void
     {
-        $timer = EventLoop::delay(
+        $timer = Loop::delay(
             $this->lockPeriod,
             function () use ($lock): void {
                 \assert(!$this->timers->isEmpty());
 
                 $this->timers->shift();
                 if ($this->waitingCount && !$this->timers->isEmpty()) {
-                    EventLoop::reference($this->timers->bottom());
+                    Loop::reference($this->timers->bottom());
                 }
 
                 $lock->release();
@@ -70,7 +70,7 @@ final class RateLimitingSemaphore implements Semaphore
         );
 
         if (!$this->waitingCount || !$this->timers->isEmpty()) {
-            EventLoop::unreference($timer);
+            Loop::unreference($timer);
         }
 
         $this->timers->push($timer);

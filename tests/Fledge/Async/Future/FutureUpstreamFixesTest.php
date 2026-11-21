@@ -8,7 +8,7 @@ use Fledge\Async\DeferredCancellation;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\Future;
 use Fledge\Async\Interval;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -81,7 +81,7 @@ it('forbids serializing an interval', function () {
 it('still runs earlier queued callbacks when the main context awaits a completed future', function () {
     $ran = 0;
     $future = Future::complete('value');
-    EventLoop::queue(static function () use (&$ran): void {
+    Loop::queue(static function () use (&$ran): void {
         $ran++;
     });
 
@@ -96,7 +96,7 @@ it('still suspends on a pending future and resumes waiters in subscription order
     $future = $deferred->getFuture();
 
     $first = async(static function () use ($future, &$order, &$ran): void {
-        EventLoop::queue(static function () use (&$ran): void {
+        Loop::queue(static function () use (&$ran): void {
             $ran++;
         });
         $order[] = 'first:'.$future->await().':'.$ran;
@@ -105,7 +105,7 @@ it('still suspends on a pending future and resumes waiters in subscription order
         $order[] = 'second:'.$future->await();
     });
 
-    EventLoop::queue(static fn () => $deferred->complete('v'));
+    Loop::queue(static fn () => $deferred->complete('v'));
 
     $first->await();
     $second->await();
@@ -119,8 +119,8 @@ it('keeps the completion order of Future\await, awaitAll, awaitAny, awaitFirst a
         $early = new DeferredFuture();
         $futures = ['late' => $late->getFuture(), 'done' => Future::complete('d'), 'early' => $early->getFuture()];
 
-        EventLoop::queue(static fn () => $early->complete('e'));
-        EventLoop::defer(static fn () => $late->complete('l'));
+        Loop::queue(static fn () => $early->complete('e'));
+        Loop::defer(static fn () => $late->complete('l'));
 
         $iterated = [];
         foreach (Future::iterate($futures) as $key => $future) {
@@ -130,14 +130,14 @@ it('keeps the completion order of Future\await, awaitAll, awaitAny, awaitFirst a
         $make = static function (): array {
             $late = new DeferredFuture();
             $early = new DeferredFuture();
-            EventLoop::queue(static fn () => $early->complete('e'));
-            EventLoop::defer(static fn () => $late->complete('l'));
+            Loop::queue(static fn () => $early->complete('e'));
+            Loop::defer(static fn () => $late->complete('l'));
 
             return ['late' => $late->getFuture(), 'early' => $early->getFuture()];
         };
 
         $failing = new DeferredFuture();
-        EventLoop::queue(static fn () => $failing->error(new RuntimeException('x')));
+        Loop::queue(static fn () => $failing->error(new RuntimeException('x')));
 
         return [
             'iterate' => $iterated,

@@ -14,7 +14,7 @@ use Fledge\Async\Redis\Protocol\Resp3ExtensionParser;
 use Fledge\Async\Redis\Protocol\RespParser;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\Stream\Socket;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final readonly class SocketRedisConnection implements RedisConnection
 {
@@ -47,7 +47,7 @@ final readonly class SocketRedisConnection implements RedisConnection
                 ? new Resp3ExtensionParser($push)
                 : new RespParser($push);
 
-        EventLoop::queue(static function () use ($socket, $queue, $factory): void {
+        Loop::queue(static function () use ($socket, $queue, $factory): void {
             /** @psalm-suppress InvalidArgument */
             $parser = $factory($queue->push(...));
 

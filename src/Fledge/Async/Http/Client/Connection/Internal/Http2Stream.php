@@ -13,7 +13,7 @@ use Fledge\Async\Http\Client\Connection\Stream;
 use Fledge\Async\Http\Client\Request;
 use Fledge\Async\Http\Client\Response;
 use Fledge\Async\Queue;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Used in Http2ConnectionProcessor.
@@ -96,11 +96,11 @@ final class Http2Stream
     public function __destruct()
     {
         if ($this->transferWatcher !== null) {
-            EventLoop::cancel($this->transferWatcher);
+            Loop::cancel($this->transferWatcher);
         }
 
         if ($this->inactivityWatcher !== null) {
-            EventLoop::cancel($this->inactivityWatcher);
+            Loop::cancel($this->inactivityWatcher);
         }
 
         $this->deferredCancellation->cancel();
@@ -117,7 +117,7 @@ final class Http2Stream
             return;
         }
 
-        EventLoop::disable($this->inactivityWatcher);
+        Loop::disable($this->inactivityWatcher);
     }
 
     public function enableInactivityWatcher(): void
@@ -128,7 +128,7 @@ final class Http2Stream
 
         $watcher = $this->inactivityWatcher;
 
-        EventLoop::disable($watcher);
-        EventLoop::enable($watcher);
+        Loop::disable($watcher);
+        Loop::enable($watcher);
     }
 }

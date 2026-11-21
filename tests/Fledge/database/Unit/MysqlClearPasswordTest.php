@@ -3,7 +3,7 @@
 use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlConnectionException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * A MySQL v10 greeting that asks for the mysql_clear_password auth plugin, as a rogue
@@ -41,16 +41,16 @@ function connectToClearPasswordServer($server, MysqlConfig $config): array
     $received = '';
     $watchers = [];
 
-    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$received, &$watchers): void {
-        EventLoop::cancel($id);
+    $watchers[] = Loop::onReadable($server, static function (string $id, $server) use (&$received, &$watchers): void {
+        Loop::cancel($id);
         $client = stream_socket_accept($server, 0);
         stream_set_blocking($client, false);
         fwrite($client, clearPasswordGreeting());
 
-        $watchers[] = EventLoop::onReadable($client, static function (string $id, $client) use (&$received): void {
+        $watchers[] = Loop::onReadable($client, static function (string $id, $client) use (&$received): void {
             $chunk = fread($client, 65536);
             if ($chunk === '' || $chunk === false) {
-                EventLoop::cancel($id);
+                Loop::cancel($id);
                 fclose($client);
 
                 return;
@@ -69,7 +69,7 @@ function connectToClearPasswordServer($server, MysqlConfig $config): array
         $error = $e;
     } finally {
         foreach ($watchers as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
         fclose($server);
     }

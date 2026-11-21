@@ -35,7 +35,7 @@ use Fledge\Async\Queue;
 use Fledge\Async\Stream\InternetAddress;
 use Fledge\Async\Stream\Socket;
 use League\Uri;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\Client\events;
 use function Fledge\Async\Http\Client\Internal\normalizeRequestPathWithQuery;
@@ -168,8 +168,8 @@ final class Http2ConnectionProcessor implements Http2Processor
         $this->settings = new DeferredFuture;
         $future = $this->settings->getFuture();
 
-        EventLoop::queue($this->runReadFiber(...));
-        EventLoop::queue($this->runWriteFiber(...));
+        Loop::queue($this->runReadFiber(...));
+        Loop::queue($this->runWriteFiber(...));
 
         try {
             $future->await($cancellation);
@@ -186,7 +186,7 @@ final class Http2ConnectionProcessor implements Http2Processor
     public function onClose(\Closure $onClose): void
     {
         if ($this->onClose === null) {
-            EventLoop::queue($onClose);
+            Loop::queue($onClose);
             return;
         }
 
@@ -466,7 +466,7 @@ final class Http2ConnectionProcessor implements Http2Processor
         \assert($stream->pendingResponse !== null);
 
         $stream->responsePending = false;
-        EventLoop::queue(static function () use ($response, $stream): void {
+        Loop::queue(static function () use ($response, $stream): void {
             try {
                 $stream->requestHeaderCompletion->getFuture()->await();
                 $stream->preResponseResolution?->await();
@@ -704,7 +704,7 @@ final class Http2ConnectionProcessor implements Http2Processor
             return;
         }
 
-        EventLoop::queue(function () use ($pushId, $deferredCancellation, $stream, $cancellation): void {
+        Loop::queue(function () use ($pushId, $deferredCancellation, $stream, $cancellation): void {
             $cancellationId = $cancellation->subscribe(
                 fn (CancelledException $exception) => $this->releaseStream($pushId, $exception, false),
             );
@@ -1137,8 +1137,8 @@ final class Http2ConnectionProcessor implements Http2Processor
                 if ($this->controlBatches !== []) {
                     // A direct read can return the next chunk without suspending; let the write fiber send the replies
                     // to this chunk first, so only replies the server does not take count toward the limit.
-                    $suspension = EventLoop::getSuspension();
-                    EventLoop::defer(static fn () => $suspension->resume());
+                    $suspension = Loop::getSuspension();
+                    Loop::defer(static fn () => $suspension->resume());
                     $suspension->suspend();
                 }
             }
@@ -1159,7 +1159,7 @@ final class Http2ConnectionProcessor implements Http2Processor
                 $this->onClose = null;
 
                 foreach ($onClose as $callback) {
-                    EventLoop::queue($callback);
+                    Loop::queue($callback);
                 }
             }
 
@@ -1250,7 +1250,7 @@ final class Http2ConnectionProcessor implements Http2Processor
 
                 // Settings ACK should be sent before HEADER or DATA frames.
                 if ($difference > 0) {
-                    EventLoop::queue(function (): void {
+                    Loop::queue(function (): void {
                         foreach ($this->streams as $stream) {
                             if ($this->clientWindow <= 0) {
                                 return;
@@ -1503,7 +1503,7 @@ final class Http2ConnectionProcessor implements Http2Processor
         }
 
         $this->pongDeferred = $deferred = new DeferredFuture;
-        $this->pongWatcher = EventLoop::delay(self::PONG_TIMEOUT, fn () => $this->cancelPongWatcher(false));
+        $this->pongWatcher = Loop::delay(self::PONG_TIMEOUT, fn () => $this->cancelPongWatcher(false));
 
         $this->writeFrame(Http2Parser::PING, data: $this->counter = \str_increment($this->counter))->ignore();
 
@@ -1513,7 +1513,7 @@ final class Http2ConnectionProcessor implements Http2Processor
     private function cancelPongWatcher(bool $receivedPong): void
     {
         if ($this->pongWatcher !== null) {
-            EventLoop::cancel($this->pongWatcher);
+            Loop::cancel($this->pongWatcher);
             $this->pongWatcher = null;
         }
 
@@ -1684,12 +1684,12 @@ final class Http2ConnectionProcessor implements Http2Processor
             return null;
         }
 
-        $watcher = EventLoop::delay($timeout, function () use ($streamId, $timeout, $message): void {
+        $watcher = Loop::delay($timeout, function () use ($streamId, $timeout, $message): void {
             \assert(isset($this->streams[$streamId]), 'Stream watcher invoked after stream closed');
             $this->releaseStream($streamId, new TimeoutException($message), false);
         });
 
-        EventLoop::unreference($watcher);
+        Loop::unreference($watcher);
 
         return $watcher;
     }

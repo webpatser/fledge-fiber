@@ -2,7 +2,7 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Propagates per-fiber context (for example an active tracing span) from the fiber calling async() into the
@@ -113,7 +113,7 @@ final class FiberContext
 
     private static function report(\Throwable $exception): void
     {
-        $handler = EventLoop::getErrorHandler();
+        $handler = Loop::getErrorHandler();
 
         if ($handler === null) {
             return;

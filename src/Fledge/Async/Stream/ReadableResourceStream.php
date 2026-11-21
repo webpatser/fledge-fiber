@@ -7,8 +7,8 @@ use Fledge\Async\CancelledException;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /**
  * Readable stream abstraction for PHP's stream resources.
@@ -93,7 +93,7 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
         $suspension = &$this->suspension;
         $readable = &$this->readable;
 
-        $this->callbackId = EventLoop::disable(EventLoop::onReadable($this->resource, static function ($callbackId) use (
+        $this->callbackId = Loop::disable(Loop::onReadable($this->resource, static function ($callbackId) use (
             &$suspension,
             &$readable,
             &$stream,
@@ -125,13 +125,13 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
                 $stream = null;
                 $data = null; // Stream closed, resolve read with null.
 
-                EventLoop::cancel($callbackId);
+                Loop::cancel($callbackId);
 
                 if (!$onClose->isComplete()) {
                     $onClose->complete();
                 }
             } else {
-                EventLoop::disable($callbackId);
+                Loop::disable($callbackId);
             }
 
             \assert($suspension instanceof Suspension);
@@ -145,7 +145,7 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
             $suspension?->throw($exception);
             $suspension = null;
 
-            EventLoop::disable($callbackId);
+            Loop::disable($callbackId);
         };
 
         $this->resumeSuspension = static function () use (&$suspension): void {
@@ -210,8 +210,8 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
 
         if ($data === '') {
             $this->chunkSize = $limit;
-            EventLoop::enable($this->callbackId);
-            $this->suspension = EventLoop::getSuspension();
+            Loop::enable($this->callbackId);
+            $this->suspension = Loop::getSuspension();
 
             $id = $cancellation?->subscribe($this->cancel);
 
@@ -225,11 +225,11 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
 
         if ($this->continuousReads > 10) {
             // Use a deferred suspension so other events are not starved by a stream that always has data available.
-            $this->suspension = EventLoop::getSuspension();
-            EventLoop::defer($this->resumeSuspension);
+            $this->suspension = Loop::getSuspension();
+            Loop::defer($this->resumeSuspension);
             $this->suspension->suspend();
         } elseif ($this->continuousReads++ === 0) {
-            EventLoop::defer($this->resetContinuousReads);
+            Loop::defer($this->resetContinuousReads);
         }
 
         return $data;
@@ -296,7 +296,7 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
     /**
      * References the readable watcher, so the loop keeps running in case there's an active read.
      *
-     * @see EventLoop::reference()
+     * @see Loop::reference()
      */
     public function reference(): void
     {
@@ -304,13 +304,13 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
             return;
         }
 
-        EventLoop::reference($this->callbackId);
+        Loop::reference($this->callbackId);
     }
 
     /**
      * Unreferences the readable watcher, so the loop doesn't keep running even if there are active reads.
      *
-     * @see EventLoop::unreference()
+     * @see Loop::unreference()
      */
     public function unreference(): void
     {
@@ -318,7 +318,7 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
             return;
         }
 
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
     }
 
     public function __destruct()
@@ -336,7 +336,7 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
         $this->readable = false;
         $this->resource = null;
 
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
 
         if (!$this->onClose->isComplete()) {
             $this->onClose->complete();

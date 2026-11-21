@@ -6,7 +6,7 @@ use Fledge\Async\Cancellation;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\Database\SqlConnectionException;
 use pq;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class PqConnection extends Internal\PostgresHandleConnection implements PostgresConnection
 {
@@ -50,18 +50,18 @@ final class PqConnection extends Internal\PostgresHandleConnection implements Po
                     break;
             }
 
-            EventLoop::disable($poll);
-            EventLoop::disable($await);
+            Loop::disable($poll);
+            Loop::disable($await);
         };
 
-        $poll = EventLoop::onReadable($connection->socket, $callback);
-        $await = EventLoop::onWritable($connection->socket, $callback);
+        $poll = Loop::onReadable($connection->socket, $callback);
+        $await = Loop::onWritable($connection->socket, $callback);
 
         try {
             return $deferred->getFuture()->await($cancellation);
         } finally {
-            EventLoop::cancel($poll);
-            EventLoop::cancel($await);
+            Loop::cancel($poll);
+            Loop::cancel($await);
         }
     }
 

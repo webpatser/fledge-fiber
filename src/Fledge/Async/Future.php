@@ -4,7 +4,7 @@ namespace Fledge\Async;
 
 use Fledge\Async\Internal\FutureIterator;
 use Fledge\Async\Internal\FutureState;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template-covariant T
@@ -45,7 +45,7 @@ final class Future
 
             // Use separate fiber for iteration over non-array, because not all items might be immediately available
             // while other futures are already completed.
-            EventLoop::queue(static function () use ($futures, $ref): void {
+            Loop::queue(static function () use ($futures, $ref): void {
                 $enqueue = static function (Future $future, int|string $key) use ($ref): bool {
                     $iterator = $ref->get();
                     $iterator?->enqueue($future->state, $key, $future);
@@ -242,7 +242,7 @@ final class Future
      */
     public function await(?Cancellation $cancellation = null): mixed
     {
-        $suspension = EventLoop::getSuspension();
+        $suspension = Loop::getSuspension();
 
         $callbackId = $this->state->subscribe(static function (?\Throwable $error, mixed $value) use (
             $suspension,

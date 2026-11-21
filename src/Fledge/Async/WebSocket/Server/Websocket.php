@@ -20,7 +20,7 @@ use Fledge\Async\WebSocket\WebsocketCloseCode;
 use Fledge\Async\WebSocket\WebsocketClosedException;
 use Fledge\Async\WebSocket\WebsocketCloseInfo;
 use Psr\Log\LoggerInterface as PsrLogger;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 final class Websocket implements RequestHandler
@@ -115,7 +115,7 @@ final class Websocket implements RequestHandler
 
         $this->clients[$client] = true;
 
-        EventLoop::queue($this->handleClient(...), $client, $request, $response);
+        Loop::queue($this->handleClient(...), $client, $request, $response);
     }
 
     private function handleClient(WebsocketClient $client, Request $request, Response $response): void

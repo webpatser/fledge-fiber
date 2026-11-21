@@ -8,7 +8,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseTransactionsManager;
 use Illuminate\Database\LostConnectionException;
 use Illuminate\Database\QueryException;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 use Throwable;
 use WeakMap;
 

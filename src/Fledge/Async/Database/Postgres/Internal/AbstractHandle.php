@@ -8,7 +8,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Queue;
 use Fledge\Async\Database\Postgres\PostgresConfig;
 use Fledge\Async\Database\SqlConnectionException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @internal
@@ -64,8 +64,8 @@ abstract class AbstractHandle implements PostgresHandle
     {
         self::shutdown($this->listeners, $this->pendingOperation, $this->onClose);
 
-        EventLoop::cancel($this->poll);
-        EventLoop::cancel($this->await);
+        Loop::cancel($this->poll);
+        Loop::cancel($this->await);
     }
 
     /**

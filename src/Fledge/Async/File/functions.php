@@ -6,7 +6,7 @@ use Fledge\Async\File\Driver\EioFilesystemDriver;
 use Fledge\Async\File\Driver\ParallelFilesystemDriver;
 use Fledge\Async\File\Driver\StatusCachingFilesystemDriver;
 use Fledge\Async\File\Driver\UvFilesystemDriver;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Retrieve the application-wide filesystem instance.
@@ -19,7 +19,7 @@ function filesystem(?FilesystemDriver $driver = null): Filesystem
     static $map;
     $map ??= new \WeakMap();
 
-    $loop = EventLoop::getDriver();
+    $loop = Loop::getDriver();
 
     if ($driver === null) {
         if (isset($map[$loop])) {
@@ -41,7 +41,7 @@ function filesystem(?FilesystemDriver $driver = null): Filesystem
  */
 function createDefaultDriver(): FilesystemDriver
 {
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if (UvFilesystemDriver::isSupported($driver)) {
         return new UvFilesystemDriver($driver);

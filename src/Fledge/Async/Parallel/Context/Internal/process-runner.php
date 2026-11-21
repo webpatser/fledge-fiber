@@ -6,7 +6,7 @@ use Fledge\Async\Stream;
 use Fledge\Async\Parallel\Context\ProcessContext;
 use Fledge\Async\Parallel\Ipc;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 \define("AMP_CONTEXT", "process");
 \define("AMP_CONTEXT_ID", \getmypid());
@@ -50,9 +50,9 @@ if (\function_exists("cli_set_process_title")) {
 (function () use ($argv, $argc): void {
     try {
         foreach (ProcessContext::getIgnoredSignals() as $signal) {
-            EventLoop::unreference(EventLoop::onSignal($signal, static fn () => null));
+            Loop::unreference(Loop::onSignal($signal, static fn () => null));
         }
-    } catch (EventLoop\UnsupportedFeatureException) {
+    } catch (Loop\UnsupportedFeatureException) {
         // Signal handling not supported on current event loop driver.
     }
 

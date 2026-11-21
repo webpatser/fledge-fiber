@@ -3,7 +3,7 @@
 namespace Fledge\Async\Internal;
 
 use Fledge\Async\Future;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop\Suspension;
 
 /**
  * @template Tk of array-key

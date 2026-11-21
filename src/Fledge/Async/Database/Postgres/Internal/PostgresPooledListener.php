@@ -6,7 +6,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Database\Postgres\PostgresListener;
 use Fledge\Async\Database\Postgres\PostgresNotification;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @internal
@@ -47,9 +47,9 @@ final class PostgresPooledListener implements PostgresListener, \IteratorAggrega
 
         // Release the hold on the pool exactly once, also when the listener stopped listening.
         if ($this->listener->isListening()) {
-            EventLoop::queue(self::dispose(...), $this->listener, $release);
+            Loop::queue(self::dispose(...), $this->listener, $release);
         } else {
-            EventLoop::queue($release);
+            Loop::queue($release);
         }
     }
 
@@ -61,7 +61,7 @@ final class PostgresPooledListener implements PostgresListener, \IteratorAggrega
         try {
             $listener->unlisten();
         } finally {
-            EventLoop::queue($release);
+            Loop::queue($release);
         }
     }
 
@@ -97,7 +97,7 @@ final class PostgresPooledListener implements PostgresListener, \IteratorAggrega
         try {
             $this->listener->unlisten();
         } finally {
-            EventLoop::queue($release);
+            Loop::queue($release);
         }
     }
 }

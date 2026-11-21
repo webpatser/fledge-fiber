@@ -2,7 +2,7 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * A SignalCancellation automatically requests cancellation when a given signal is received.
@@ -35,7 +35,7 @@ final readonly class SignalCancellation implements Cancellation
 
         $callback = static function () use (&$callbackIds, &$trace, $source, $message): void {
             foreach ($callbackIds as $callbackId) {
-                EventLoop::cancel($callbackId);
+                Loop::cancel($callbackId);
             }
 
             if ($trace ?? false) {
@@ -48,7 +48,7 @@ final readonly class SignalCancellation implements Cancellation
         };
 
         foreach ($signals as $signal) {
-            $callbackIds[] = EventLoop::unreference(EventLoop::onSignal($signal, $callback));
+            $callbackIds[] = Loop::unreference(Loop::onSignal($signal, $callback));
         }
 
         $this->callbackIds = $callbackIds;
@@ -60,7 +60,7 @@ final readonly class SignalCancellation implements Cancellation
     public function __destruct()
     {
         foreach ($this->callbackIds as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
     }
 

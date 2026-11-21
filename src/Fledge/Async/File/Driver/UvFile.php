@@ -9,7 +9,7 @@ use Fledge\Async\DeferredFuture;
 use Fledge\Async\File\Internal;
 use Fledge\Async\File\PendingOperationError;
 use Fledge\Async\Future;
-use Revolt\EventLoop\Driver as EventLoopDriver;
+use Fledge\Loop\Driver as EventLoopDriver;
 
 final class UvFile extends Internal\QueuedWritesFile
 {

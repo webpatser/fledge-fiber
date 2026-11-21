@@ -4,7 +4,7 @@ namespace Fledge\Async\Sync;
 
 use Fledge\Async\Queue;
 use Fledge\Async\Sync\Internal\ConcurrentIteratorChannel;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 
 /**
  * Invokes the given Closure while maintaining a lock from the provided mutex.

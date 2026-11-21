@@ -2,7 +2,7 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * A TimeoutCancellation automatically requests cancellation after the timeout has elapsed.
@@ -26,7 +26,7 @@ final readonly class TimeoutCancellation implements Cancellation
 
         \assert((bool) ($trace = \debug_backtrace(\DEBUG_BACKTRACE_IGNORE_ARGS)));
 
-        $this->callbackId = EventLoop::delay($timeout, static function () use (&$trace, $source, $message): void {
+        $this->callbackId = Loop::delay($timeout, static function () use (&$trace, $source, $message): void {
             if ($trace ?? false) {
                 $message .= \sprintf("\r\n%s was created here: %s", self::class, Internal\formatStacktrace($trace));
             } else {
@@ -36,7 +36,7 @@ final readonly class TimeoutCancellation implements Cancellation
             $source->cancel(new TimeoutException($message));
         });
 
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
     }
 
     /**
@@ -44,7 +44,7 @@ final readonly class TimeoutCancellation implements Cancellation
      */
     public function __destruct()
     {
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
     }
 
     #[\Override]

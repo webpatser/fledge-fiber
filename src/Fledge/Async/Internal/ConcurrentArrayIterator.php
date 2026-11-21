@@ -5,7 +5,7 @@ namespace Fledge\Async\Internal;
 use Fledge\Async\Cancellation;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\DisposedException;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 
 /**
  * @internal

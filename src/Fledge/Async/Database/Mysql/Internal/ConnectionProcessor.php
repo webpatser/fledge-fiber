@@ -20,7 +20,7 @@ use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlTransientResource;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /* @TODO
  * 14.2.3 Auth switch request??
@@ -244,7 +244,7 @@ class ConnectionProcessor implements SqlTransientResource
 
         $id = $cancellation?->subscribe($this->close(...));
 
-        EventLoop::queue($this->read(...));
+        Loop::queue($this->read(...));
 
         $future = $deferred->getFuture();
         if ($id !== null) {
@@ -927,7 +927,7 @@ class ConnectionProcessor implements SqlTransientResource
     /** @see 14.6.4.1.2 LOCAL INFILE Request */
     private function handleLocalInfileRequest(string $packet): void
     {
-        EventLoop::queue(function () use ($packet): void {
+        Loop::queue(function () use ($packet): void {
             try {
                 $filePath = $this->resolveLocalInfilePath(\substr($packet, 1));
                 /** @var \Fledge\Async\File\File $fileHandle */

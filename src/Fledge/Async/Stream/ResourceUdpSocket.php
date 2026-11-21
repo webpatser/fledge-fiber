@@ -8,8 +8,8 @@ use Fledge\Async\CancelledException;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 final class ResourceUdpSocket implements UdpSocket, ResourceStream
 {
@@ -68,7 +68,7 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
         \stream_set_read_buffer($this->socket, 0);
 
         $reader = &$this->reader;
-        $this->callbackId = EventLoop::onReadable($this->socket, static function (string $callbackId, $socket) use (
+        $this->callbackId = Loop::onReadable($this->socket, static function (string $callbackId, $socket) use (
             &$reader,
             &$limit,
         ): void {
@@ -86,11 +86,11 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
 
             /** @psalm-suppress TypeDoesNotContainType */
             if ($data === false) {
-                EventLoop::cancel($callbackId);
+                Loop::cancel($callbackId);
 
                 $reader->resume();
             } else {
-                EventLoop::disable($callbackId);
+                Loop::disable($callbackId);
 
                 $reader->resume([SocketAddress\fromString($address), $data]);
             }
@@ -100,13 +100,13 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
 
         $callbackId = $this->callbackId;
         $this->cancel = static function (CancelledException $exception) use (&$reader, $callbackId): void {
-            EventLoop::disable($callbackId);
+            Loop::disable($callbackId);
 
             $reader?->throw($exception);
             $reader = null;
         };
 
-        EventLoop::disable($this->callbackId);
+        Loop::disable($this->callbackId);
     }
 
     /**
@@ -143,9 +143,9 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
         }
 
         $this->limit = $limit;
-        $this->reader = EventLoop::getSuspension();
+        $this->reader = Loop::getSuspension();
 
-        EventLoop::enable($this->callbackId);
+        Loop::enable($this->callbackId);
 
         $id = $cancellation?->subscribe($this->cancel);
 
@@ -194,7 +194,7 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
     /**
      * References the event loop callback used for being notified about available packets.
      *
-     * @see EventLoop::reference()
+     * @see Loop::reference()
      */
     public function reference(): void
     {
@@ -202,13 +202,13 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
             return;
         }
 
-        EventLoop::reference($this->callbackId);
+        Loop::reference($this->callbackId);
     }
 
     /**
      * Unreferences the event loop callback used for being notified about available packets.
      *
-     * @see EventLoop::unreference()
+     * @see Loop::unreference()
      */
     public function unreference(): void
     {
@@ -216,7 +216,7 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
             return;
         }
 
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
     }
 
     /**
@@ -262,7 +262,7 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
 
     private function free(): void
     {
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
 
         $this->socket = null;
 

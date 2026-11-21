@@ -4,7 +4,7 @@ namespace Fledge\Async\Internal;
 
 use Fledge\Async\Cancellation;
 use Fledge\Async\ConcurrentIterator;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 
 /**
  * Concatenates the given iterators into a single iterator in sequential order.

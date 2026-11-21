@@ -6,7 +6,7 @@ use Fledge\Async\Cancellation;
 use Fledge\Async\CancelledException;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Cancellation with public cancellation method.
@@ -48,7 +48,7 @@ final class Cancellable implements Cancellation
         $exception = $this->getException();
 
         foreach ($callbacks as $callback) {
-            EventLoop::queue($callback, $exception);
+            Loop::queue($callback, $exception);
         }
     }
 
@@ -65,7 +65,7 @@ final class Cancellable implements Cancellation
 
         if ($this->requested) {
             $exception = $this->getException();
-            EventLoop::queue($callback, $exception);
+            Loop::queue($callback, $exception);
         } else {
             $this->callbacks[$id] = $callback;
         }

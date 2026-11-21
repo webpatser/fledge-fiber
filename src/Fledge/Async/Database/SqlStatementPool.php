@@ -11,7 +11,7 @@ use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template TConfig of SqlConfig
@@ -61,7 +61,7 @@ abstract class SqlStatementPool implements SqlStatement
         $this->sql = $sql;
         $this->onClose = $onClose = new DeferredFuture();
 
-        $timeoutWatcher = EventLoop::repeat(1, static function () use ($pool, $statements): void {
+        $timeoutWatcher = Loop::repeat(1, static function () use ($pool, $statements): void {
             $now = \time();
             $idleTimeout = ((int) ($pool->getIdleTimeout() / 10)) ?: 1;
 
@@ -77,8 +77,8 @@ abstract class SqlStatementPool implements SqlStatement
             }
         });
 
-        EventLoop::unreference($timeoutWatcher);
-        $this->onClose(static fn () => EventLoop::cancel($timeoutWatcher));
+        Loop::unreference($timeoutWatcher);
+        $this->onClose(static fn () => Loop::cancel($timeoutWatcher));
     }
 
     public function __destruct()

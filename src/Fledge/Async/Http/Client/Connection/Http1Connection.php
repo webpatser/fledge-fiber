@@ -31,7 +31,7 @@ use Fledge\Async\Stream\Socket;
 use Fledge\Async\Stream\SocketAddress;
 use Fledge\Async\Stream\TlsInfo;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\Client\events;
 use function Fledge\Async\Http\Client\Internal\normalizeRequestPathWithQuery;
@@ -103,7 +103,7 @@ final class Http1Connection implements Connection
     public function onClose(\Closure $onClose): void
     {
         if (!$this->socket || $this->socket->isClosed()) {
-            EventLoop::queue($onClose);
+            Loop::queue($onClose);
             return;
         }
 
@@ -172,7 +172,7 @@ final class Http1Connection implements Connection
         $this->lastUsedAt = 0;
 
         if ($this->timeoutWatcher !== null) {
-            EventLoop::cancel($this->timeoutWatcher);
+            Loop::cancel($this->timeoutWatcher);
         }
 
         if ($this->onClose !== null) {
@@ -180,7 +180,7 @@ final class Http1Connection implements Connection
             $this->onClose = null;
 
             foreach ($onClose as $callback) {
-                EventLoop::queue($callback);
+                Loop::queue($callback);
             }
         }
     }
@@ -215,7 +215,7 @@ final class Http1Connection implements Connection
         }
 
         if ($this->timeoutWatcher !== null) {
-            EventLoop::cancel($this->timeoutWatcher);
+            Loop::cancel($this->timeoutWatcher);
             $this->timeoutWatcher = null;
         }
 
@@ -240,7 +240,7 @@ final class Http1Connection implements Connection
         $writeFailed = false;
         $bodyDone = false;
 
-        EventLoop::queue(function () use (
+        Loop::queue(function () use (
             $responseDeferred,
             $request,
             $stream,
@@ -267,7 +267,7 @@ final class Http1Connection implements Connection
             }
         });
 
-        EventLoop::queue(function () use (
+        Loop::queue(function () use (
             $responseDeferred,
             $request,
             $stream,
@@ -418,7 +418,7 @@ final class Http1Connection implements Connection
                 [$requestTimeout, $explicitTimeout, $priorTimeout] = $this->determineKeepAliveTimeout($response);
 
                 // Read body async
-                EventLoop::queue(function () use (
+                Loop::queue(function () use (
                     $parser,
                     $request,
                     $requestTimeout,
@@ -486,11 +486,11 @@ final class Http1Connection implements Connection
                         // A failed request write makes the connection unusable even after a complete response.
                         if (!$writeFailed && $requestTimeout > 0 && $parser->getState() !== Http1Parser::BODY_IDENTITY_EOF) {
                             $connectionRef = \WeakReference::create($this);
-                            $this->timeoutWatcher = EventLoop::delay(
+                            $this->timeoutWatcher = Loop::delay(
                                 $requestTimeout,
                                 static fn () => $connectionRef->get()?->close(),
                             );
-                            EventLoop::unreference($this->timeoutWatcher);
+                            Loop::unreference($this->timeoutWatcher);
                             $this->watchIdleConnection();
                         } else {
                             $this->close();

@@ -12,7 +12,7 @@ use Fledge\Async\Database\SqlException;
 use Fledge\Async\Database\SqlQueryError;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class SocketMysqlConnection implements MysqlConnection
 {
@@ -280,6 +280,6 @@ final class SocketMysqlConnection implements MysqlConnection
     public function __destruct()
     {
         $processor = $this->processor;
-        EventLoop::queue(static fn () => $processor->unreference());
+        Loop::queue(static fn () => $processor->unreference());
     }
 }

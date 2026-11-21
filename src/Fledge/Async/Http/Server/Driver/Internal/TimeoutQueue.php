@@ -4,7 +4,7 @@ namespace Fledge\Async\Http\Server\Driver\Internal;
 
 use Fledge\Async\Http\Server\Driver\Client;
 use Fledge\Async\Sync\PriorityQueue;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\weakClosure;
 
@@ -28,8 +28,8 @@ final class TimeoutQueue
         $this->streamNames = new \WeakMap();
         $this->now = \time();
 
-        $this->callbackId = EventLoop::unreference(
-            EventLoop::repeat(1, weakClosure(function (): void {
+        $this->callbackId = Loop::unreference(
+            Loop::repeat(1, weakClosure(function (): void {
                 $this->now = \time();
 
                 while ($id = $this->priorityQueue->extract($this->now)) {
@@ -46,7 +46,7 @@ final class TimeoutQueue
 
     public function __destruct()
     {
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
     }
 
     /**

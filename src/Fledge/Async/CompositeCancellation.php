@@ -2,7 +2,7 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class CompositeCancellation implements Cancellation
 {
@@ -42,7 +42,7 @@ final class CompositeCancellation implements Cancellation
             $thatCancellations = [];
 
             foreach ($thatCallbacks as $callback) {
-                EventLoop::queue($callback, $exception);
+                Loop::queue($callback, $exception);
             }
 
             $thatCallbacks = [];
@@ -72,7 +72,7 @@ final class CompositeCancellation implements Cancellation
         $this->nextId = \str_increment($this->nextId);
 
         if ($this->exception) {
-            EventLoop::queue($callback, $this->exception);
+            Loop::queue($callback, $this->exception);
         } else {
             $this->callbacks[$id] = $callback;
         }

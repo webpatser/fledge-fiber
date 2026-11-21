@@ -3,7 +3,7 @@
 namespace Fledge\Async\Dns;
 
 use Fledge\Async\Cancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Retrieve the application-wide DNS resolver instance.
@@ -16,7 +16,7 @@ function dnsResolver(?DnsResolver $dnsResolver = null): DnsResolver
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($dnsResolver) {
         return $map[$driver] = $dnsResolver;

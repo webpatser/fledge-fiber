@@ -26,7 +26,7 @@ use Fledge\Async\Stream\SocketAddress;
 use Fledge\Async\Stream\SocketException;
 use Fledge\Async\Sync\LocalSemaphore;
 use Psr\Log\LoggerInterface as PsrLogger;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 final class SocketHttpServer implements HttpServer
@@ -315,7 +315,7 @@ final class SocketHttpServer implements HttpServer
                 $this->logger->info("Listening on {$scheme}://{$serverName}/");
 
                 // Using short-closure to avoid Psalm bug when using a first-class callable here.
-                EventLoop::queue(fn () => $this->accept($server, $requestHandler, $errorHandler));
+                Loop::queue(fn () => $this->accept($server, $requestHandler, $errorHandler));
             }
         } catch (\Throwable $exception) {
             try {
@@ -333,7 +333,7 @@ final class SocketHttpServer implements HttpServer
         ErrorHandler $errorHandler,
     ): void {
         while ($socket = $server->accept()) {
-            EventLoop::queue($this->handleClient(...), $socket, $requestHandler, $errorHandler);
+            Loop::queue($this->handleClient(...), $socket, $requestHandler, $errorHandler);
         }
     }
 

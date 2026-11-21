@@ -2,7 +2,7 @@
 
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\Internal\UnhandledFutureError;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /*
  * An errored future that is garbage-collected without ->await()/->ignore() reports itself
@@ -13,8 +13,8 @@ use Revolt\EventLoop;
  */
 it('reports an ignored errored future as UnhandledFutureError, not Class-not-found', function () {
     $captured = null;
-    $previous = EventLoop::getErrorHandler();
-    EventLoop::setErrorHandler(function (\Throwable $e) use (&$captured): void {
+    $previous = Loop::getErrorHandler();
+    Loop::setErrorHandler(function (\Throwable $e) use (&$captured): void {
         $captured = $e;
     });
 
@@ -25,10 +25,10 @@ it('reports an ignored errored future as UnhandledFutureError, not Class-not-fou
         gc_collect_cycles();
 
         // Give the loop a tick to surface the queued error report.
-        EventLoop::queue(static fn () => null);
-        EventLoop::run();
+        Loop::queue(static fn () => null);
+        Loop::run();
     } finally {
-        EventLoop::setErrorHandler($previous);
+        Loop::setErrorHandler($previous);
     }
 
     expect($captured)->toBeInstanceOf(UnhandledFutureError::class)

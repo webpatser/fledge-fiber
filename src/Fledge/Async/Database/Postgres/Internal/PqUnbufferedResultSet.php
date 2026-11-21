@@ -7,7 +7,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\Database\Postgres\PostgresResult;
 use pq;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @internal
@@ -49,7 +49,7 @@ final readonly class PqUnbufferedResultSet implements PostgresResult, \IteratorA
 
     public function __destruct()
     {
-        EventLoop::queue(self::dispose(...), $this->generator);
+        Loop::queue(self::dispose(...), $this->generator);
     }
 
     private static function dispose(\Generator $generator): void

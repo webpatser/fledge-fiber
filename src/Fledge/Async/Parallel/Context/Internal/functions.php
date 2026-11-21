@@ -8,12 +8,12 @@ use Fledge\Async\Future;
 use Fledge\Async\Parallel\Ipc;
 use Fledge\Async\Serialization\SerializationException;
 use Fledge\Async\Sync\ChannelException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 function runContext(string $uri, string $key, Cancellation $connectCancellation, array $argv): void
 {
-    EventLoop::queue(function () use ($argv, $uri, $key, $connectCancellation): void {
+    Loop::queue(function () use ($argv, $uri, $key, $connectCancellation): void {
         /** @noinspection PhpUnusedLocalVariableInspection */
         $argc = \count($argv);
 
@@ -83,5 +83,5 @@ function runContext(string $uri, string $key, Cancellation $connectCancellation,
         }
     });
 
-    EventLoop::run();
+    Loop::run();
 }

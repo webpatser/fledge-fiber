@@ -3,7 +3,7 @@
 namespace Fledge\Async\Parallel\Worker;
 
 use Fledge\Async\Cancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Gets or sets the global worker pool.
@@ -16,7 +16,7 @@ function workerPool(?WorkerPool $pool = null): WorkerPool
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($pool) {
         return $map[$driver] = $pool;
@@ -66,7 +66,7 @@ function workerFactory(?WorkerFactory $factory = null): WorkerFactory
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($factory) {
         return $map[$driver] = $factory;

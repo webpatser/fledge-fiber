@@ -15,7 +15,7 @@ use Fledge\Async\File\Whence;
 use Fledge\Async\Future;
 use Fledge\Async\Parallel\Worker\TaskFailureException;
 use Fledge\Async\Parallel\Worker\WorkerException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -66,7 +66,7 @@ final class ParallelFile implements File, \IteratorAggregate
             $id = $this->id;
             $this->id = null;
             $worker = $this->worker;
-            EventLoop::queue(static fn () => $worker->execute(new Internal\FileTask('fclose', [], $id)));
+            Loop::queue(static fn () => $worker->execute(new Internal\FileTask('fclose', [], $id)));
         }
 
         if (!$this->onClose->isComplete()) {

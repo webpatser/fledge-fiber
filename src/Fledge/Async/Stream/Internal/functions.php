@@ -7,7 +7,7 @@ use Fledge\Async\CancelledException;
 use Fledge\Async\NullCancellation;
 use Fledge\Async\Stream\TlsException;
 use League\Uri\UriString;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 // Use Linux error codes if the socket extension is not available
 \define(__NAMESPACE__ . '\CONNECTION_BUSY', \defined('SOCKET_EAGAIN') ? \SOCKET_EAGAIN : 11);
@@ -112,12 +112,12 @@ function setupTls($socket, array $options, ?Cancellation $cancellation): void
     while (true) {
         $cancellation->throwIfRequested();
 
-        $suspension = EventLoop::getSuspension();
+        $suspension = Loop::getSuspension();
 
         // Watcher is guaranteed to be created, because we throw above if cancellation has already been requested
         /** @psalm-suppress PossiblyUndefinedVariable $callbackId is defined below. */
         $cancellationId = $cancellation->subscribe(static function ($e) use ($suspension, &$callbackId): void {
-            EventLoop::cancel($callbackId);
+            Loop::cancel($callbackId);
 
             $suspension->throw($e);
         });
@@ -131,13 +131,13 @@ function setupTls($socket, array $options, ?Cancellation $cancellation): void
         // OpenSSL reports which direction the pending handshake step is blocked on. Waiting for readable while it
         // needs to flush (e.g. a large certificate chain into a full send buffer) stalls until the peer gives up.
         $callbackId = \stream_socket_get_crypto_status($socket) === \STREAM_CRYPTO_STATUS_WANT_WRITE
-            ? EventLoop::onWritable($socket, $callback)
-            : EventLoop::onReadable($socket, $callback);
+            ? Loop::onWritable($socket, $callback)
+            : Loop::onReadable($socket, $callback);
 
         try {
             $suspension->suspend();
         } finally {
-            EventLoop::cancel($callbackId);
+            Loop::cancel($callbackId);
         }
 
         try {

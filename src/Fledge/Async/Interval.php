@@ -2,7 +2,7 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * This object invokes the given callback within a new coroutine every $interval seconds until either the
@@ -23,16 +23,16 @@ final class Interval
      */
     public function __construct(float $interval, \Closure $closure, bool $reference = true)
     {
-        $this->callbackId = EventLoop::repeat($interval, $closure);
+        $this->callbackId = Loop::repeat($interval, $closure);
 
         if (!$reference) {
-            EventLoop::unreference($this->callbackId);
+            Loop::unreference($this->callbackId);
         }
     }
 
     public function __destruct()
     {
-        EventLoop::cancel($this->callbackId);
+        Loop::cancel($this->callbackId);
     }
 
     /**
@@ -40,7 +40,7 @@ final class Interval
      */
     public function isReferenced(): bool
     {
-        return EventLoop::isReferenced($this->callbackId);
+        return Loop::isReferenced($this->callbackId);
     }
 
     /**
@@ -50,7 +50,7 @@ final class Interval
      */
     public function reference(): self
     {
-        EventLoop::reference($this->callbackId);
+        Loop::reference($this->callbackId);
 
         return $this;
     }
@@ -62,7 +62,7 @@ final class Interval
      */
     public function unreference(): self
     {
-        EventLoop::unreference($this->callbackId);
+        Loop::unreference($this->callbackId);
 
         return $this;
     }
@@ -72,7 +72,7 @@ final class Interval
      */
     public function isEnabled(): bool
     {
-        return EventLoop::isEnabled($this->callbackId);
+        return Loop::isEnabled($this->callbackId);
     }
 
     /**
@@ -82,7 +82,7 @@ final class Interval
      */
     public function enable(): self
     {
-        EventLoop::enable($this->callbackId);
+        Loop::enable($this->callbackId);
 
         return $this;
     }
@@ -94,7 +94,7 @@ final class Interval
      */
     public function disable(): self
     {
-        EventLoop::disable($this->callbackId);
+        Loop::disable($this->callbackId);
 
         return $this;
     }

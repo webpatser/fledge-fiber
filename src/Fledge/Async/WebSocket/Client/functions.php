@@ -5,7 +5,7 @@ namespace Fledge\Async\WebSocket\Client;
 use Fledge\Async\Cancellation;
 use Fledge\Async\Http\Client\HttpException;
 use Psr\Http\Message\UriInterface as PsrUri;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Set or access the global websocket Connector instance.
@@ -14,7 +14,7 @@ function websocketConnector(?WebsocketConnector $connector = null): WebsocketCon
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($connector) {
         return $map[$driver] = $connector;

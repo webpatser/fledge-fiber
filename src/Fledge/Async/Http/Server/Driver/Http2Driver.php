@@ -33,7 +33,7 @@ use Fledge\Async\Stream\InternetAddress;
 use League\Uri;
 use Psr\Http\Message\UriInterface as PsrUri;
 use Psr\Log\LoggerInterface as PsrLogger;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\formatDateHeader;
 
@@ -921,7 +921,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
 
         $stream->clientWindow += $windowSize;
 
-        EventLoop::defer($this->sendBufferedData(...));
+        Loop::defer($this->sendBufferedData(...));
     }
 
     public function handleConnectionWindowIncrement(int $windowSize): void
@@ -935,7 +935,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
 
         $this->clientWindow += $windowSize;
 
-        EventLoop::defer($this->sendBufferedData(...));
+        Loop::defer($this->sendBufferedData(...));
     }
 
     public function handleHeaders(int $streamId, array $pseudo, array $headers, bool $streamEnded): void
@@ -1284,7 +1284,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         $future->ignore();
 
         if ($stream->serverWindow <= self::MINIMUM_WINDOW) {
-            EventLoop::queue(function () use ($future, $stream, $streamId): void {
+            Loop::queue(function () use ($future, $stream, $streamId): void {
                 try {
                     $future->await();
                 } catch (\Throwable) {
@@ -1438,7 +1438,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
                     }
 
                     // Settings ACK should be sent before HEADER or DATA frames.
-                    EventLoop::defer($this->sendBufferedData(...));
+                    Loop::defer($this->sendBufferedData(...));
                     break;
 
                 case Http2Parser::ENABLE_PUSH:

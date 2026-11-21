@@ -7,7 +7,7 @@ use Fledge\Async\Database\SqlConnection;
 use Fledge\Async\Database\SqlConnectionPool;
 use Fledge\Async\Database\SqlTransaction;
 use PDO;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 
 /**
  * Abstract PDO-compatible shim wrapping an Fledge Async SQL connection pool.

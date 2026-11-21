@@ -5,7 +5,7 @@ use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlException;
 use Fledge\Async\File\Driver\BlockingFilesystemDriver;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\File\createDefaultDriver;
@@ -61,17 +61,17 @@ function withLocalInfileServer(string $requestedPath, Closure $client): array
     $watchers = [];
     $infileRequested = false;
 
-    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, &$infileRequested, $requestedPath): void {
-        EventLoop::cancel($id);
+    $watchers[] = Loop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, &$infileRequested, $requestedPath): void {
+        Loop::cancel($id);
         $conn = stream_socket_accept($server, 0);
         stream_set_blocking($conn, false);
         fwrite($conn, localInfileGreeting());
         $buffer = '';
 
-        $watchers[] = EventLoop::onReadable($conn, static function (string $id, $conn) use (&$packets, &$buffer, &$infileRequested, $requestedPath): void {
+        $watchers[] = Loop::onReadable($conn, static function (string $id, $conn) use (&$packets, &$buffer, &$infileRequested, $requestedPath): void {
             $chunk = fread($conn, 65536);
             if ($chunk === '' || $chunk === false) {
-                EventLoop::cancel($id);
+                Loop::cancel($id);
                 fclose($conn);
 
                 return;
@@ -92,7 +92,7 @@ function withLocalInfileServer(string $requestedPath, Closure $client): array
 
                 if ($payload === "\x01") {
                     // COM_QUIT: close as a real server does, so the client's close() returns.
-                    EventLoop::cancel($id);
+                    Loop::cancel($id);
                     fclose($conn);
 
                     return;
@@ -116,7 +116,7 @@ function withLocalInfileServer(string $requestedPath, Closure $client): array
         $result = $client($port);
     } finally {
         foreach ($watchers as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
         fclose($server);
     }

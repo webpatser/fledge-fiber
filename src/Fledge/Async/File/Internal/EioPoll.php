@@ -2,7 +2,7 @@
 
 namespace Fledge\Async\File\Internal;
 
-use Revolt\EventLoop\Driver as EventLoopDriver;
+use Fledge\Loop\Driver as EventLoopDriver;
 
 /** @internal */
 final class EioPoll

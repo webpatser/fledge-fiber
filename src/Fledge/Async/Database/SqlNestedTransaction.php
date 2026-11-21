@@ -11,7 +11,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionError;
 use Fledge\Async\Database\SqlTransactionIsolation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template TResult of SqlResult
@@ -120,7 +120,7 @@ abstract class SqlNestedTransaction implements SqlTransaction
         $identifier = $this->identifier;
         $onRollback = $this->onRollback;
         $onClose = $this->onClose;
-        EventLoop::queue(static function () use (
+        Loop::queue(static function () use (
             &$busy,
             $transaction,
             $executor,
@@ -154,7 +154,7 @@ abstract class SqlNestedTransaction implements SqlTransaction
             $result = $this->executor->query($sql);
             return $this->createResult($result, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }
@@ -175,7 +175,7 @@ abstract class SqlNestedTransaction implements SqlTransaction
             $result = $this->executor->execute($sql, $params);
             return $this->createResult($result, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }
@@ -192,7 +192,7 @@ abstract class SqlNestedTransaction implements SqlTransaction
             $this->executor->createSavepoint($identifier);
             return $this->createNestedTransaction($this->transaction, $this->executor, $identifier, $this->release);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
     }

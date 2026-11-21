@@ -8,7 +8,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\Database\Mysql\MysqlColumnDefinition;
 use Fledge\Async\Database\Mysql\MysqlResult;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -49,7 +49,7 @@ final class MysqlConnectionResult implements MysqlResult, \IteratorAggregate
 
     public function __destruct()
     {
-        EventLoop::queue(self::dispose(...), $this->generator);
+        Loop::queue(self::dispose(...), $this->generator);
     }
 
     private static function dispose(\Generator $generator): void

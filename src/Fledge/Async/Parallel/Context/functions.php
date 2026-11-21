@@ -3,7 +3,7 @@
 namespace Fledge\Async\Parallel\Context;
 
 use Fledge\Async\Cancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\Serialization\encodeUnprintableChars;
 
 /**
@@ -28,7 +28,7 @@ function contextFactory(?ContextFactory $factory = null): ContextFactory
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($factory) {
         return $map[$driver] = $factory;

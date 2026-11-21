@@ -10,7 +10,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionError;
 use Fledge\Async\Database\SqlTransactionIsolation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template TResult of SqlResult
@@ -123,7 +123,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         $executor = $this->executor;
         $onRollback = $this->onRollback;
         $onClose = $this->onClose;
-        EventLoop::queue(static function () use (&$busy, $executor, $onRollback, $onClose): void {
+        Loop::queue(static function () use (&$busy, $executor, $onRollback, $onClose): void {
             try {
                 while ($busy) {
                     $busy->getFuture()->await();
@@ -197,7 +197,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         try {
             $result = $this->executor->query($sql);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
 
@@ -217,7 +217,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         try {
             $statement = $this->executor->prepare($sql);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
 
@@ -240,7 +240,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
         try {
             $result = $this->executor->execute($sql, $params);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
 
@@ -257,7 +257,7 @@ abstract class SqlConnectionTransaction implements SqlTransaction
             $identifier = \bin2hex(\random_bytes(8));
             $this->executor->createSavepoint($identifier);
         } catch (\Throwable $exception) {
-            EventLoop::queue($this->release);
+            Loop::queue($this->release);
             throw $exception;
         }
 

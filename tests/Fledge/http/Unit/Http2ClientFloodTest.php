@@ -36,7 +36,7 @@ function startH2ClientProcessor(
     int $maxQueuedControlFrames = Http2ConnectionProcessor::DEFAULT_MAX_QUEUED_CONTROL_FRAMES,
     ?Closure $wrapClientSocket = null,
 ): array {
-    \Revolt\EventLoop::setErrorHandler(null);
+    \Fledge\Loop::setErrorHandler(null);
 
     [$clientSide, $serverSide] = createSocketPair();
 

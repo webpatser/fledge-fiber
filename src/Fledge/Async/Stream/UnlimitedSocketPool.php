@@ -6,7 +6,7 @@ use Fledge\Async\Cancellation;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use League\Uri\UriString;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * SocketPool implementation that doesn't impose any limits on concurrent open connections.
@@ -90,7 +90,7 @@ final class UnlimitedSocketPool implements SocketPool
             $socket->isAvailable = false;
 
             if ($socket->idleWatcher !== null) {
-                EventLoop::disable($socket->idleWatcher);
+                Loop::disable($socket->idleWatcher);
             }
 
             return $socket->object;
@@ -131,12 +131,12 @@ final class UnlimitedSocketPool implements SocketPool
         $socket = $this->sockets[$cacheKey][$objectId];
         $socket->isAvailable = true;
 
-        $socket->idleWatcher ??= EventLoop::unreference(EventLoop::delay(
+        $socket->idleWatcher ??= Loop::unreference(Loop::delay(
             $this->idleTimeout,
             fn () => $this->clearFromId($socket->object),
         ));
 
-        EventLoop::enable($socket->idleWatcher);
+        Loop::enable($socket->idleWatcher);
     }
 
     /**
@@ -239,7 +239,7 @@ final class UnlimitedSocketPool implements SocketPool
         $socket = $this->sockets[$cacheKey][$objectId];
 
         if ($socket->idleWatcher) {
-            EventLoop::cancel($socket->idleWatcher);
+            Loop::cancel($socket->idleWatcher);
         }
 
         unset(

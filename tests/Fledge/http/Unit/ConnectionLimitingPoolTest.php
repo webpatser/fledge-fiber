@@ -13,7 +13,7 @@ use Fledge\Async\NullCancellation;
 use Fledge\Fiber\Http\FledgeHandler;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request as Psr7Request;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -160,7 +160,7 @@ it('hands a released connection to the next waiter when the first waiter was can
 
     // Cancel B, then release A before B's fiber has resumed to leave the queue.
     $cancelB->cancel();
-    EventLoop::queue(function () use (&$streamA): void {
+    Loop::queue(function () use (&$streamA): void {
         $streamA = null;
     });
 
@@ -230,14 +230,14 @@ it('counts the wait for a pool slot against the Guzzle timeout', function () {
 
     // A's body is only read once A is waited on, so A keeps the slot until then.
     // A request that ignores its timeout while queued would wait forever: fail instead of hanging.
-    $watchdog = EventLoop::delay(3, static function (): void {
+    $watchdog = Loop::delay(3, static function (): void {
         throw new \RuntimeException('Request B was still queued 3 s after its 0.1 s timeout');
     });
 
     try {
         expect(fn () => $promiseB->wait())->toThrow(ConnectException::class, 'Allowed transfer timeout exceeded');
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
     }
 
     // B timed out while still queued: A, which holds the only slot, has not been answered yet.

@@ -9,7 +9,7 @@ use Fledge\Async\Http\HttpMessage;
 use Fledge\Async\Http\HttpResponse;
 use Fledge\Async\Http\HttpStatus;
 use League\Uri;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @psalm-import-type HeaderParamValueType from HttpMessage
@@ -58,7 +58,7 @@ final class Response extends HttpResponse
     public function __destruct()
     {
         foreach ($this->onDispose as $onDispose) {
-            EventLoop::queue($onDispose);
+            Loop::queue($onDispose);
         }
     }
 

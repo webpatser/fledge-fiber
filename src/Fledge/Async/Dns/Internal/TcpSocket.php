@@ -12,7 +12,7 @@ use LibDNS\Decoder\DecoderFactory;
 use LibDNS\Encoder\Encoder;
 use LibDNS\Encoder\EncoderFactory;
 use LibDNS\Messages\Message;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 final class TcpSocket extends Socket
@@ -29,8 +29,8 @@ final class TcpSocket extends Socket
 
         $deferred = new DeferredFuture;
 
-        $watcher = EventLoop::onWritable($socket, static function (string $watcher) use ($socket, $deferred): void {
-            EventLoop::cancel($watcher);
+        $watcher = Loop::onWritable($socket, static function (string $watcher) use ($socket, $deferred): void {
+            Loop::cancel($watcher);
 
             $deferred->complete(new self($socket));
         });
@@ -38,7 +38,7 @@ final class TcpSocket extends Socket
         try {
             return $deferred->getFuture()->await(new TimeoutCancellation($timeout));
         } catch (CancelledException) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
 
             throw new DnsTimeoutException("Name resolution timed out, could not connect to server at $uri");
         }

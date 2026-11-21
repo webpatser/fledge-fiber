@@ -3,7 +3,7 @@
 use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlConnectionException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Connect to a throwaway server that announces an oversized packet and then trickles a few
@@ -14,8 +14,8 @@ function connectToOversizedPacketServer(int $announcedLength, int $maxPacketSize
     $server = stream_socket_server('tcp://127.0.0.1:0');
     $port = (int) substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
 
-    $watcher = EventLoop::onReadable($server, static function (string $id, $server) use ($announcedLength): void {
-        EventLoop::cancel($id);
+    $watcher = Loop::onReadable($server, static function (string $id, $server) use ($announcedLength): void {
+        Loop::cancel($id);
         $client = stream_socket_accept($server, 0);
         fwrite($client, substr(pack('V', $announcedLength), 0, 3)."\x00".str_repeat('x', 64));
         fclose($client);
@@ -28,7 +28,7 @@ function connectToOversizedPacketServer(int $announcedLength, int $maxPacketSize
     } catch (Throwable $e) {
         return $e;
     } finally {
-        EventLoop::cancel($watcher);
+        Loop::cancel($watcher);
         fclose($server);
     }
 

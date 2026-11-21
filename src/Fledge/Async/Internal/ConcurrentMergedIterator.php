@@ -7,7 +7,7 @@ use Fledge\Async\DeferredCancellation;
 use Fledge\Async\Future;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\Queue;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -62,7 +62,7 @@ final readonly class ConcurrentMergedIterator implements ConcurrentIterator
             });
         }
 
-        EventLoop::queue(static function () use ($futures, $queue, $deferredCancellation): void {
+        Loop::queue(static function () use ($futures, $queue, $deferredCancellation): void {
             try {
                 Future\await($futures);
                 $queue->complete();

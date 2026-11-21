@@ -7,8 +7,8 @@ use Fledge\Async\CancelledException;
 use Fledge\Async\DeferredCancellation;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\DisposedException;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /**
  * @internal
@@ -67,14 +67,14 @@ final class ConcurrentClosureIterator implements ConcurrentIterator
             $sequence = $this->sequence;
             $supplier = $this->supplier;
             $deferredCancellation = $this->deferredCancellation;
-            EventLoop::queue(static function (int $position) use (
+            Loop::queue(static function (int $position) use (
                 $queue,
                 $sources,
                 $sequence,
                 $supplier,
                 $deferredCancellation
             ): void {
-                $suspension = EventLoop::getSuspension();
+                $suspension = Loop::getSuspension();
 
                 do {
                     try {

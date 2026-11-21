@@ -6,7 +6,7 @@ use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlQueryError;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\delay;
 
@@ -59,13 +59,13 @@ final class StatementReexecuteFakeServer
         $this->listener = stream_socket_server('tcp://127.0.0.1:0');
         $this->port = (int) substr(strrchr(stream_socket_get_name($this->listener, false), ':'), 1);
 
-        $this->acceptWatcher = EventLoop::unreference(EventLoop::onReadable($this->listener, function (string $id): void {
-            EventLoop::cancel($id);
+        $this->acceptWatcher = Loop::unreference(Loop::onReadable($this->listener, function (string $id): void {
+            Loop::cancel($id);
             $this->client = stream_socket_accept($this->listener, 0);
             stream_set_blocking($this->client, false);
             fwrite($this->client, $this->packet($this->greeting()));
 
-            $this->readWatcher = EventLoop::unreference(EventLoop::onReadable($this->client, $this->read(...)));
+            $this->readWatcher = Loop::unreference(Loop::onReadable($this->client, $this->read(...)));
         }));
     }
 
@@ -125,10 +125,10 @@ final class StatementReexecuteFakeServer
 
     public function stop(): void
     {
-        EventLoop::cancel($this->acceptWatcher);
+        Loop::cancel($this->acceptWatcher);
 
         if ($this->readWatcher !== null) {
-            EventLoop::cancel($this->readWatcher);
+            Loop::cancel($this->readWatcher);
         }
 
         if (is_resource($this->client)) {
@@ -150,7 +150,7 @@ final class StatementReexecuteFakeServer
     {
         $chunk = fread($this->client, 1 << 20);
         if ($chunk === false || ($chunk === '' && feof($this->client))) {
-            EventLoop::cancel($this->readWatcher);
+            Loop::cancel($this->readWatcher);
             $this->readWatcher = null;
 
             return;
@@ -189,7 +189,7 @@ final class StatementReexecuteFakeServer
 
         // COM_QUIT: the client waits for the socket to close.
         if ($command === 0x01 || ($command === 0x1a && $this->dropOnReset)) {
-            EventLoop::cancel($this->readWatcher);
+            Loop::cancel($this->readWatcher);
             $this->readWatcher = null;
             fclose($this->client);
             $this->client = null;
@@ -297,7 +297,7 @@ final class StatementReexecuteFakeServer
 function runStatementReexecuteScenario(Closure $scenario, float $timeout = 15): void
 {
     $server = new StatementReexecuteFakeServer;
-    $suspension = EventLoop::getSuspension();
+    $suspension = Loop::getSuspension();
     $waiting = true;
 
     $settle = static function (?Throwable $outcome) use (&$waiting, $suspension): void {
@@ -307,7 +307,7 @@ function runStatementReexecuteScenario(Closure $scenario, float $timeout = 15): 
         }
     };
 
-    EventLoop::queue(static function () use ($scenario, $server, $settle): void {
+    Loop::queue(static function () use ($scenario, $server, $settle): void {
         try {
             $connection = (new SocketMysqlConnector)->connect(
                 new MysqlConfig('127.0.0.1', $server->port, 'app', 'secret'),
@@ -322,7 +322,7 @@ function runStatementReexecuteScenario(Closure $scenario, float $timeout = 15): 
         }
     });
 
-    $watchdog = EventLoop::unreference(EventLoop::delay($timeout, static function () use ($settle): void {
+    $watchdog = Loop::unreference(Loop::delay($timeout, static function () use ($settle): void {
         $settle(new RuntimeException('The scenario hung until the watchdog fired'));
     }));
 
@@ -333,19 +333,19 @@ function runStatementReexecuteScenario(Closure $scenario, float $timeout = 15): 
         $failure = $exception;
     }
 
-    EventLoop::cancel($watchdog);
+    Loop::cancel($watchdog);
     $server->stop();
 
     if ($failure !== null) {
-        $errorHandler = EventLoop::getErrorHandler();
-        EventLoop::setErrorHandler(static function (): void {});
+        $errorHandler = Loop::getErrorHandler();
+        Loop::setErrorHandler(static function (): void {});
 
         try {
             delay(0.1);
             gc_collect_cycles();
             delay(0);
         } finally {
-            EventLoop::setErrorHandler($errorHandler);
+            Loop::setErrorHandler($errorHandler);
         }
 
         throw $failure;

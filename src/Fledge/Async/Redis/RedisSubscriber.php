@@ -12,7 +12,7 @@ use Fledge\Async\Redis\Connection\RedisConnectionException;
 use Fledge\Async\Redis\Connection\RedisConnector;
 use Fledge\Async\Redis\Protocol\QueryException;
 use Fledge\Async\Redis\Protocol\RedisError;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 final class RedisSubscriber
@@ -131,7 +131,7 @@ final class RedisSubscriber
         $closing = &$this->closing;
         $backoff = $this->backoff;
 
-        EventLoop::queue(static function () use (
+        Loop::queue(static function () use (
             &$running,
             &$connection,
             &$queues,

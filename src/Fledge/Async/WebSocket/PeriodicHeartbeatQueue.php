@@ -4,7 +4,7 @@ namespace Fledge\Async\WebSocket;
 
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\weakClosure;
 
@@ -44,7 +44,7 @@ final class PeriodicHeartbeatQueue implements WebsocketHeartbeatQueue
 
         $this->now = \microtime(true);
 
-        $this->watcher = EventLoop::repeat(1, weakClosure(function () use ($queuedPingLimit): void {
+        $this->watcher = Loop::repeat(1, weakClosure(function () use ($queuedPingLimit): void {
             $this->now = \microtime(true);
 
             foreach ($this->heartbeatTimeouts as $clientId => $expiryTime) {
@@ -71,12 +71,12 @@ final class PeriodicHeartbeatQueue implements WebsocketHeartbeatQueue
             }
         }));
 
-        EventLoop::unreference($this->watcher);
+        Loop::unreference($this->watcher);
     }
 
     public function __destruct()
     {
-        EventLoop::cancel($this->watcher);
+        Loop::cancel($this->watcher);
     }
 
     public function insert(WebsocketClient $client): void

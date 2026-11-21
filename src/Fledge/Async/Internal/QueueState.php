@@ -8,9 +8,9 @@ use Fledge\Async\Future;
 use Fledge\Async\Internal;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\DisposedException;
-use Revolt\EventLoop;
-use Revolt\EventLoop\FiberLocal;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\FiberLocal;
+use Fledge\Loop\Suspension;
 
 /**
  * Class used internally by {@see Pipeline} implementations. Do not use this class in your code, instead compose your
@@ -103,7 +103,7 @@ final class QueueState implements \IteratorAggregate
         $this->currentValue->set(null); // Remove reference to current value while awaiting next value.
 
         // No value has been emitted, suspend fiber to await next value.
-        $this->waiting[] = $suspension = EventLoop::getSuspension();
+        $this->waiting[] = $suspension = Loop::getSuspension();
 
         if ($cancellation) {
             $waiting = &$this->waiting;
@@ -276,7 +276,7 @@ final class QueueState implements \IteratorAggregate
         $next = $this->doPush($value, $position);
 
         if ($next === null) {
-            $this->backpressure[$position] = $suspension = EventLoop::getSuspension();
+            $this->backpressure[$position] = $suspension = Loop::getSuspension();
             $suspension->suspend();
             return;
         }

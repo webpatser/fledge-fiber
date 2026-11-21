@@ -6,7 +6,7 @@ use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * Connect to a throwaway local server whose handshake greeting does not advertise CLIENT_SSL,
@@ -28,13 +28,13 @@ function connectToServerWithoutClientSsl(?ConnectContext $context): array
     $received = '';
     $accepted = null;
 
-    $watcher = EventLoop::onReadable($server, static function (string $id, $server) use ($greeting, &$received, &$accepted): void {
-        EventLoop::cancel($id);
+    $watcher = Loop::onReadable($server, static function (string $id, $server) use ($greeting, &$received, &$accepted): void {
+        Loop::cancel($id);
         $accepted = stream_socket_accept($server, 0);
         fwrite($accepted, $greeting);
 
-        EventLoop::onReadable($accepted, static function (string $id, $client) use (&$received): void {
-            EventLoop::cancel($id);
+        Loop::onReadable($accepted, static function (string $id, $client) use (&$received): void {
+            Loop::cancel($id);
             $received .= (string) fread($client, 65536);
             fclose($client);
         });
@@ -45,7 +45,7 @@ function connectToServerWithoutClientSsl(?ConnectContext $context): array
     } catch (SqlConnectionException $e) {
         return [$e, $received];
     } finally {
-        EventLoop::cancel($watcher);
+        Loop::cancel($watcher);
         fclose($server);
     }
 

@@ -5,7 +5,7 @@ namespace Fledge\Async\Database\Postgres;
 use Fledge\Async\Cancellation;
 use Fledge\Async\DeferredFuture;
 use Fledge\Async\Database\SqlConnectionException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class PgSqlConnection extends Internal\PostgresHandleConnection implements PostgresConnection
 {
@@ -17,7 +17,7 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
     {
         // @codeCoverageIgnoreStart
         /** @psalm-suppress UndefinedClass */
-        if (EventLoop::getDriver()->getHandle() instanceof \EvLoop) {
+        if (Loop::getDriver()->getHandle() instanceof \EvLoop) {
             throw new \Error('ext-pgsql is not compatible with pecl-ev; use pecl-pq or a different loop extension');
         } // @codeCoverageIgnoreEnd
 
@@ -54,13 +54,13 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
                 case \PGSQL_POLLING_READING:
                     // Wait for readability only: a connected socket is always writable, so
                     // leaving the writable watcher on would spin this callback.
-                    EventLoop::disable($await);
-                    EventLoop::enable($poll);
+                    Loop::disable($await);
+                    Loop::enable($poll);
                     return;
 
                 case \PGSQL_POLLING_WRITING:
-                    EventLoop::disable($poll);
-                    EventLoop::enable($await);
+                    Loop::disable($poll);
+                    Loop::enable($await);
                     return;
 
                 case \PGSQL_POLLING_FAILED:
@@ -76,20 +76,20 @@ final class PgSqlConnection extends Internal\PostgresHandleConnection implements
                     break;
             }
 
-            EventLoop::disable($poll);
-            EventLoop::disable($await);
+            Loop::disable($poll);
+            Loop::disable($await);
         };
 
         // libpq starts an async connect in the writing state, so wait for writability first
         // and switch watchers as pg_connect_poll() reports what it needs next.
-        $poll = EventLoop::disable(EventLoop::onReadable($socket, $callback));
-        $await = EventLoop::onWritable($socket, $callback);
+        $poll = Loop::disable(Loop::onReadable($socket, $callback));
+        $await = Loop::onWritable($socket, $callback);
 
         try {
             return $deferred->getFuture()->await($cancellation);
         } finally {
-            EventLoop::cancel($poll);
-            EventLoop::cancel($await);
+            Loop::cancel($poll);
+            Loop::cancel($await);
         }
     }
 

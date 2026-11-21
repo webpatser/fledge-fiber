@@ -4,7 +4,7 @@ use Fledge\Async\Future;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Fiber\Redis\FledgeRedisConnector;
 use Fledge\Fiber\Redis\FledgeRedisConnection;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -463,7 +463,7 @@ it('fails a blpop in flight when another fiber disconnects, without swallowing a
     delay(0.05);
 
     // Hang guard only: without the fix the pop waits until this push.
-    $watchdog = EventLoop::delay(1, function () use ($other, $key): void {
+    $watchdog = Loop::delay(1, function () use ($other, $key): void {
         $other->command('rpush', [$key, 'watchdog']);
     });
 
@@ -472,7 +472,7 @@ it('fails a blpop in flight when another fiber disconnects, without swallowing a
     try {
         expect(fn () => $pop->await())->toThrow(RedisException::class, 'connection lost');
     } finally {
-        EventLoop::cancel($watchdog);
+        Loop::cancel($watchdog);
     }
 
     // The closed connection is off the server: nobody pops this one.

@@ -9,7 +9,7 @@ use Fledge\Async\Database\SqlConnectionPool;
 use Fledge\Async\TimeoutCancellation;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Fledge\Fiber\Database\Pdo\FledgePdoStatement;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use Tests\Fledge\database\Stubs\FakeRowResult;
 
 use function Fledge\Async\async;
@@ -36,7 +36,7 @@ function withQuoteServer(int|array $statusFlags, string $charset, Closure $clien
     $watchers = [];
     $accepted = 0;
 
-    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$watchers, &$accepted, $statusFlags): void {
+    $watchers[] = Loop::onReadable($server, static function (string $id, $server) use (&$watchers, &$accepted, $statusFlags): void {
         $conn = stream_socket_accept($server, 0);
         stream_set_blocking($conn, false);
         $statusFlags = is_array($statusFlags) ? $statusFlags[min($accepted, count($statusFlags) - 1)] : $statusFlags;
@@ -52,10 +52,10 @@ function withQuoteServer(int|array $statusFlags, string $charset, Closure $clien
         $ok = "\x00\x00\x00".pack('v', $statusFlags)."\x00\x00";
         $buffer = '';
 
-        $watchers[] = EventLoop::onReadable($conn, static function (string $id, $conn) use (&$buffer, $ok): void {
+        $watchers[] = Loop::onReadable($conn, static function (string $id, $conn) use (&$buffer, $ok): void {
             $chunk = fread($conn, 65536);
             if ($chunk === '' || $chunk === false) {
-                EventLoop::cancel($id);
+                Loop::cancel($id);
                 fclose($conn);
 
                 return;
@@ -74,7 +74,7 @@ function withQuoteServer(int|array $statusFlags, string $charset, Closure $clien
                 $buffer = substr($buffer, 4 + $length);
 
                 if ($payload === "\x01") {
-                    EventLoop::cancel($id);
+                    Loop::cancel($id);
                     fclose($conn);
 
                     return;
@@ -96,7 +96,7 @@ function withQuoteServer(int|array $statusFlags, string $charset, Closure $clien
         $pool->close();
 
         foreach ($watchers as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
         fclose($server);
     }

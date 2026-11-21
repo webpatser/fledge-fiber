@@ -9,8 +9,8 @@ use Countable;
 use InvalidArgumentException;
 use LogicException;
 use PDO;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 use RuntimeException;
 use SplObjectStorage;
 use Throwable;
@@ -277,14 +277,14 @@ final class NativePdoPool implements Countable
     private function wait(): PDO
     {
         $owner = LeaseGuard::currentOwner();
-        $suspension = EventLoop::getSuspension();
+        $suspension = Loop::getSuspension();
         $id = $this->nextWaiterId++;
 
         $this->waiters[$id] = [$suspension, $owner];
 
         // Fires only while we are still queued: once dequeued by release(),
         // discard() or close(), our entry is gone and the timer is a no-op.
-        $timer = EventLoop::delay($this->waitTimeout, function () use ($id, $suspension): void {
+        $timer = Loop::delay($this->waitTimeout, function () use ($id, $suspension): void {
             if (! isset($this->waiters[$id])) {
                 return;
             }
@@ -305,7 +305,7 @@ final class NativePdoPool implements Countable
 
             throw $e;
         } finally {
-            EventLoop::cancel($timer);
+            Loop::cancel($timer);
         }
 
         return $result ?? $this->openConnection($owner);
@@ -429,13 +429,13 @@ final class NativePdoPool implements Countable
 
         $pool = WeakReference::create($this);
 
-        $this->reapTimer = EventLoop::unreference(EventLoop::repeat(
+        $this->reapTimer = Loop::unreference(Loop::repeat(
             max(0.1, $this->idleTimeout / 2),
             static function (string $id) use ($pool): void {
                 $instance = $pool->get();
 
                 if ($instance === null) {
-                    EventLoop::cancel($id);
+                    Loop::cancel($id);
 
                     return;
                 }
@@ -452,7 +452,7 @@ final class NativePdoPool implements Countable
         }
 
         try {
-            EventLoop::cancel($this->reapTimer);
+            Loop::cancel($this->reapTimer);
         } catch (Throwable) {
             // The loop may already be gone during shutdown.
         }

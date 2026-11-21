@@ -8,7 +8,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Sync\KeyedMutex;
 use Fledge\Async\Sync\Lock;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * A cache which stores data in files in a directory.
@@ -73,17 +73,17 @@ final class FileCache implements StringCache
         };
 
         // trigger once, so short running scripts also GC and don't grow forever
-        EventLoop::defer($gcWatcher);
+        Loop::defer($gcWatcher);
 
-        $this->gcWatcher = EventLoop::repeat(300, $gcWatcher);
+        $this->gcWatcher = Loop::repeat(300, $gcWatcher);
 
-        EventLoop::unreference($this->gcWatcher);
+        Loop::unreference($this->gcWatcher);
     }
 
     public function __destruct()
     {
         if ($this->gcWatcher !== null) {
-            EventLoop::cancel($this->gcWatcher);
+            Loop::cancel($this->gcWatcher);
         }
     }
 

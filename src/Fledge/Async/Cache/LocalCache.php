@@ -4,7 +4,7 @@ namespace Fledge\Async\Cache;
 
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * A cache which stores data in an in-memory (local) array.
@@ -70,10 +70,10 @@ final class LocalCache implements Cache, \Countable, \IteratorAggregate
             }
         };
 
-        $this->gcCallbackId = EventLoop::repeat($gcInterval, $state->collectGarbage(...));
+        $this->gcCallbackId = Loop::repeat($gcInterval, $state->collectGarbage(...));
         $this->sizeLimit = $sizeLimit;
 
-        EventLoop::unreference($this->gcCallbackId);
+        Loop::unreference($this->gcCallbackId);
     }
 
     public function __destruct()
@@ -81,7 +81,7 @@ final class LocalCache implements Cache, \Countable, \IteratorAggregate
         $this->state->cache = [];
         $this->state->cacheTimeouts = [];
 
-        EventLoop::cancel($this->gcCallbackId);
+        Loop::cancel($this->gcCallbackId);
     }
 
     public function get(string $key): mixed

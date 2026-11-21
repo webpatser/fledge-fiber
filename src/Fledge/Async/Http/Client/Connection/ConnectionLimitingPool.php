@@ -9,7 +9,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\Http\Client\Request;
 use Fledge\Async\Http\Client\Response;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 final class ConnectionLimitingPool implements ConnectionPool
@@ -96,14 +96,14 @@ final class ConnectionLimitingPool implements ConnectionPool
                     // A response body may still be streaming on this connection; closing now
                     // would abort it. The connection exposes no idle callback, so poll with an
                     // unreferenced timer and close once the in-flight streams have finished.
-                    $callbackId = EventLoop::repeat(0.1, static function (string $callbackId) use ($connection): void {
+                    $callbackId = Loop::repeat(0.1, static function (string $callbackId) use ($connection): void {
                         if ($connection->isIdle()) {
-                            EventLoop::cancel($callbackId);
+                            Loop::cancel($callbackId);
                             $connection->close();
                         }
                     });
-                    EventLoop::unreference($callbackId);
-                    $connection->onClose(static fn () => EventLoop::cancel($callbackId));
+                    Loop::unreference($callbackId);
+                    $connection->onClose(static fn () => Loop::cancel($callbackId));
                 });
             }
         }
@@ -249,7 +249,7 @@ final class ConnectionLimitingPool implements ConnectionPool
         $this->connections[$uri] ??= new \ArrayObject();
         $this->connections[$uri][$futureId] = $connectionFuture;
 
-        EventLoop::queue(function () use (
+        Loop::queue(function () use (
             $connectionFuture,
             $uri,
             $futureId,

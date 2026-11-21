@@ -19,7 +19,7 @@ use Fledge\Async\WebSocket\Parser\Rfc6455ParserFactory;
 use Fledge\Async\WebSocket\Parser\WebsocketFrameCompilerFactory;
 use Fledge\Async\WebSocket\Parser\WebsocketFrameType;
 use Fledge\Async\WebSocket\Parser\WebsocketParserFactory;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @implements \IteratorAggregate<int, WebsocketMessage>
@@ -70,7 +70,7 @@ final class Rfc6455Client implements WebsocketClient, \IteratorAggregate
 
         $heartbeatQueue?->insert($this);
 
-        EventLoop::queue(
+        Loop::queue(
             $this->frameHandler->read(...),
             $parserFactory->createParser($this->frameHandler, $masked, $compressionContext),
         );

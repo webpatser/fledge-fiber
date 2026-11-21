@@ -4,7 +4,7 @@ namespace Fledge\Fiber\Database\Pdo;
 
 use Fledge\Async\Database\SqlCommonConnectionPool;
 use Fledge\Async\Database\SqlConnection;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * One pooled connection pinned to a fiber (or the main context) by a FledgePdo.
@@ -145,7 +145,7 @@ final class SessionPin
             }
 
             // Resetting and closing wait on the socket, which a destructor must not do.
-            EventLoop::queue(static function () use ($pool, $connection, $reset, $close): void {
+            Loop::queue(static function () use ($pool, $connection, $reset, $close): void {
                 try {
                     if (! $close && $reset !== null && ! $connection->isClosed() && ! $pool->isClosed()) {
                         $close = ! $reset($connection);

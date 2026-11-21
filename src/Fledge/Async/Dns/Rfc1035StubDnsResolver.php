@@ -16,7 +16,7 @@ use LibDNS\Messages\Message;
 use LibDNS\Messages\MessageResponseCodes;
 use LibDNS\Records\Question;
 use LibDNS\Records\QuestionFactory;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\now;
 
@@ -70,7 +70,7 @@ final class Rfc1035StubDnsResolver implements DnsResolver
         $this->blockingFallbackResolver = new BlockingFallbackDnsResolver;
 
         $sockets = &$this->sockets;
-        $this->gcCallbackId = EventLoop::repeat(5, static function () use (&$sockets): void {
+        $this->gcCallbackId = Loop::repeat(5, static function () use (&$sockets): void {
             if (!$sockets) {
                 return;
             }
@@ -84,12 +84,12 @@ final class Rfc1035StubDnsResolver implements DnsResolver
             }
         });
 
-        EventLoop::unreference($this->gcCallbackId);
+        Loop::unreference($this->gcCallbackId);
     }
 
     public function __destruct()
     {
-        EventLoop::cancel($this->gcCallbackId);
+        Loop::cancel($this->gcCallbackId);
     }
 
     public function resolve(string $name, ?int $typeRestriction = null, ?Cancellation $cancellation = null): array

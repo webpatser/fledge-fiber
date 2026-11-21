@@ -20,7 +20,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
 
@@ -140,7 +140,7 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
 
         $idleTimeout = &$this->idleTimeout;
 
-        $timeoutWatcher = EventLoop::repeat(1, static function () use (&$idleTimeout, $connections, $idle) {
+        $timeoutWatcher = Loop::repeat(1, static function () use (&$idleTimeout, $connections, $idle) {
             $now = \time();
             while (!$idle->isEmpty()) {
                 $connection = $idle->bottom();
@@ -158,8 +158,8 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
             }
         });
 
-        EventLoop::unreference($timeoutWatcher);
-        $this->onClose(static fn () => EventLoop::cancel($timeoutWatcher));
+        Loop::unreference($timeoutWatcher);
+        $this->onClose(static fn () => Loop::cancel($timeoutWatcher));
     }
 
     public function __destruct()
@@ -346,12 +346,12 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
         // Fledge: one deadline for the whole call, the wait for the turn and the connect included. The timer
         // stays referenced, as a caller waiting for a connection keeps the loop alive until it gets one.
         $deadline = new DeferredCancellation();
-        $timer = EventLoop::delay($this->waitTimeout, static fn () => $deadline->cancel());
+        $timer = Loop::delay($this->waitTimeout, static fn () => $deadline->cancel());
 
         try {
             return $this->popConnection($deadline->getCancellation());
         } finally {
-            EventLoop::cancel($timer);
+            Loop::cancel($timer);
         }
     }
 

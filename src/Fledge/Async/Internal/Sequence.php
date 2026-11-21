@@ -2,8 +2,8 @@
 
 namespace Fledge\Async\Internal;
 
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /** @internal */
 final class Sequence
@@ -22,7 +22,7 @@ final class Sequence
 
         \assert(!isset($this->suspensions[$position]));
 
-        $suspension = EventLoop::getSuspension();
+        $suspension = Loop::getSuspension();
         $this->suspensions[$position] = $suspension;
         $suspension->suspend();
     }

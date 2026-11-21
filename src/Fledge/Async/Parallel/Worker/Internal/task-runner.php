@@ -9,7 +9,7 @@ use Fledge\Async\Parallel\Worker\Internal;
 use Fledge\Async\Queue;
 use Fledge\Async\Serialization\SerializationException;
 use Fledge\Async\Sync\Channel;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 return static function (Channel $channel) use ($argc, $argv): int {
     if (!\defined("AMP_WORKER")) {
@@ -44,7 +44,7 @@ return static function (Channel $channel) use ($argc, $argv): int {
 
             $jobChannel = new JobChannel($id, $channel, $queue->iterate());
 
-            EventLoop::queue(static function () use (
+            Loop::queue(static function () use (
                 &$cancellationSources,
                 &$queues,
                 $data,

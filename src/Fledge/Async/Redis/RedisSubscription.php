@@ -6,7 +6,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\ConcurrentIterator;
 use Fledge\Async\DisposedException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @implements \IteratorAggregate<int, string>
@@ -45,7 +45,7 @@ final class RedisSubscription implements \IteratorAggregate
     public function unsubscribe(): void
     {
         if ($this->unsubscribe) {
-            EventLoop::queue($this->unsubscribe);
+            Loop::queue($this->unsubscribe);
             $this->unsubscribe = null;
         }
 

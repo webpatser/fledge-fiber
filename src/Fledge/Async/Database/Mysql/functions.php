@@ -6,7 +6,7 @@ use Fledge\Async\Cancellation;
 use Fledge\Async\Database\RetrySqlConnector;
 use Fledge\Async\Database\SqlConnector;
 use Fledge\Async\Database\SqlException;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @param SqlConnector<MysqlConfig, MysqlConnection>|null $connector
@@ -17,7 +17,7 @@ function mysqlConnector(?SqlConnector $connector = null): SqlConnector
 {
     static $map;
     $map ??= new \WeakMap();
-    $driver = EventLoop::getDriver();
+    $driver = Loop::getDriver();
 
     if ($connector) {
         return $map[$driver] = $connector;

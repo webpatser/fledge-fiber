@@ -5,7 +5,7 @@ use Fledge\Async\Database\Mysql\SocketMysqlConnector;
 use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\TimeoutCancellation;
 use Fledge\Fiber\Database\Connectors\FledgeMySqlConnector;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 const RSA_TEST_SCRAMBLE = 'abcdefghijklmnopqrst';
 const RSA_TEST_LENENC = 0x00200000; // CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
@@ -53,16 +53,16 @@ function connectToFullAuthServer(Closure $config, ?Throwable &$error = null, str
     $packets = [];
     $watchers = [];
 
-    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, $plugin): void {
-        EventLoop::cancel($id);
+    $watchers[] = Loop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, $plugin): void {
+        Loop::cancel($id);
         $conn = stream_socket_accept($server, 0);
         stream_set_blocking($conn, false);
         fwrite($conn, rsaKeyGreeting($plugin));
 
-        $watchers[] = EventLoop::onReadable($conn, static function (string $id, $conn) use (&$packets): void {
+        $watchers[] = Loop::onReadable($conn, static function (string $id, $conn) use (&$packets): void {
             $chunk = fread($conn, 65536);
             if ($chunk === '' || $chunk === false) {
-                EventLoop::cancel($id);
+                Loop::cancel($id);
                 fclose($conn);
 
                 return;
@@ -86,7 +86,7 @@ function connectToFullAuthServer(Closure $config, ?Throwable &$error = null, str
         $error = $e;
     } finally {
         foreach ($watchers as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
         fclose($server);
     }
@@ -132,17 +132,17 @@ function connectToScriptedAuthServer(
     $packets = [];
     $watchers = [];
 
-    $watchers[] = EventLoop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, $replies, $plugin, $extraCapabilities): void {
-        EventLoop::cancel($id);
+    $watchers[] = Loop::onReadable($server, static function (string $id, $server) use (&$packets, &$watchers, $replies, $plugin, $extraCapabilities): void {
+        Loop::cancel($id);
         $conn = stream_socket_accept($server, 0);
         stream_set_blocking($conn, false);
         fwrite($conn, rsaKeyGreeting($plugin, $extraCapabilities));
         $buffer = '';
 
-        $watchers[] = EventLoop::onReadable($conn, static function (string $id, $conn) use (&$packets, &$buffer, $replies): void {
+        $watchers[] = Loop::onReadable($conn, static function (string $id, $conn) use (&$packets, &$buffer, $replies): void {
             $chunk = fread($conn, 65536);
             if ($chunk === '' || $chunk === false) {
-                EventLoop::cancel($id);
+                Loop::cancel($id);
                 fclose($conn);
 
                 return;
@@ -161,7 +161,7 @@ function connectToScriptedAuthServer(
                 $buffer = substr($buffer, 4 + $length);
 
                 if ($payload === "\x01" && $seq === 0) {
-                    EventLoop::cancel($id);
+                    Loop::cancel($id);
                     fclose($conn);
 
                     return;
@@ -188,7 +188,7 @@ function connectToScriptedAuthServer(
         $error = $e;
     } finally {
         foreach ($watchers as $watcher) {
-            EventLoop::cancel($watcher);
+            Loop::cancel($watcher);
         }
         fclose($server);
     }

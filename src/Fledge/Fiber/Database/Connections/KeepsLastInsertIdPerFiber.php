@@ -4,7 +4,7 @@ namespace Fledge\Fiber\Database\Connections;
 
 use Fiber;
 use Illuminate\Database\MySqlConnection;
-use Revolt\EventLoop\FiberLocal;
+use Fledge\Loop\FiberLocal;
 
 /**
  * Keeps Laravel's connection-level `$lastInsertId` per fiber.

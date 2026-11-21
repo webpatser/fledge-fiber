@@ -15,7 +15,7 @@ use Fledge\Async\Process\Internal\ProcessStatus;
 use Fledge\Async\Process\Internal\ProcessStreams;
 use Fledge\Async\Process\Internal\ProcHolder;
 use Fledge\Async\Process\Internal\Windows\WindowsRunner as WindowsProcessRunner;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 final class Process
 {
@@ -114,7 +114,7 @@ final class Process
         /** @psalm-suppress RedundantPropertyInitializationCheck */
         self::$streamHolder ??= new \WeakMap();
 
-        $driver = EventLoop::getDriver();
+        $driver = Loop::getDriver();
         return self::$driverRunner[$driver] ??= \PHP_OS_FAMILY === 'Windows'
             ? new WindowsProcessRunner()
             : new PosixProcessRunner();

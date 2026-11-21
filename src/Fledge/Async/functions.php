@@ -2,8 +2,8 @@
 
 namespace Fledge\Async;
 
-use Revolt\EventLoop;
-use Revolt\EventLoop\UnsupportedFeatureException;
+use Fledge\Loop;
+use Fledge\Loop\UnsupportedFeatureException;
 
 use function Fledge\Async\Future\awaitAll;
 
@@ -50,7 +50,7 @@ function async(\Closure $closure, mixed ...$args): Future
     $state = new Internal\FutureState();
     $snapshot = FiberContext::capture();
 
-    EventLoop::queue($run, $state, $closure, $args, $snapshot);
+    Loop::queue($run, $state, $closure, $args, $snapshot);
 
     return new Future($state);
 }
@@ -104,20 +104,20 @@ function now(): float
  */
 function delay(float $timeout, bool $reference = true, ?Cancellation $cancellation = null): void
 {
-    $suspension = EventLoop::getSuspension();
-    $callbackId = EventLoop::delay($timeout, static fn () => $suspension->resume());
+    $suspension = Loop::getSuspension();
+    $callbackId = Loop::delay($timeout, static fn () => $suspension->resume());
     $cancellationId = $cancellation?->subscribe(
         static fn (CancelledException $exception) => $suspension->throw($exception)
     );
 
     if (!$reference) {
-        EventLoop::unreference($callbackId);
+        Loop::unreference($callbackId);
     }
 
     try {
         $suspension->suspend();
     } finally {
-        EventLoop::cancel($callbackId);
+        Loop::cancel($callbackId);
 
         /** @psalm-suppress PossiblyNullArgument $cancellationId will not be null if $cancellation is not null. */
         $cancellation?->unsubscribe($cancellationId);
@@ -136,7 +136,7 @@ function delay(float $timeout, bool $reference = true, ?Cancellation $cancellati
  */
 function trapSignal(int|array $signals, bool $reference = true, ?Cancellation $cancellation = null): int
 {
-    $suspension = EventLoop::getSuspension();
+    $suspension = Loop::getSuspension();
     $callback = static fn (string $watcher, int $signal) => $suspension->resume($signal);
     $id = $cancellation?->subscribe(static fn (CancelledException $exception) => $suspension->throw($exception));
 
@@ -147,9 +147,9 @@ function trapSignal(int|array $signals, bool $reference = true, ?Cancellation $c
     }
 
     foreach ($signals as $signo) {
-        $callbackIds[] = $callbackId = EventLoop::onSignal($signo, $callback);
+        $callbackIds[] = $callbackId = Loop::onSignal($signo, $callback);
         if (!$reference) {
-            EventLoop::unreference($callbackId);
+            Loop::unreference($callbackId);
         }
     }
 
@@ -157,7 +157,7 @@ function trapSignal(int|array $signals, bool $reference = true, ?Cancellation $c
         return $suspension->suspend();
     } finally {
         foreach ($callbackIds as $callbackId) {
-            EventLoop::cancel($callbackId);
+            Loop::cancel($callbackId);
         }
 
         /** @psalm-suppress PossiblyNullArgument $id will not be null if $cancellation is not null. */

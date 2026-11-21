@@ -8,7 +8,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Parallel\Ipc\IpcHub;
 use Fledge\Async\Parallel\Ipc\LocalIpcHub;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 final class DefaultContextFactory implements ContextFactory
@@ -70,11 +70,11 @@ final class DefaultContextFactory implements ContextFactory
      */
     private static function outputStream(string $name): Stream\WritableResourceStream
     {
-        /** @var array<string, \WeakMap<EventLoop\Driver, Stream\WritableResourceStream>> $map */
+        /** @var array<string, \WeakMap<Loop\Driver, Stream\WritableResourceStream>> $map */
         static $map = [];
         $map[$name] ??= new \WeakMap();
 
-        $driver = EventLoop::getDriver();
+        $driver = Loop::getDriver();
 
         if (!isset($map[$name][$driver])) {
             $constant = \strtoupper($name);

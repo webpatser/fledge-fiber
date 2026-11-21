@@ -267,7 +267,7 @@ class FiberHandleRequests extends HandleRequests
             return false;
         }
 
-        if (! class_exists(\Revolt\EventLoop::class)) {
+        if (! class_exists(\Fledge\Loop::class)) {
             return false;
         }
 

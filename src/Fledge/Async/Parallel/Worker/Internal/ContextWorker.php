@@ -21,7 +21,7 @@ use Fledge\Async\Parallel\Worker\WorkerException;
 use Fledge\Async\Queue;
 use Fledge\Async\Sync\ChannelException;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -113,7 +113,7 @@ final class ContextWorker implements Worker
 
     private static function receive(Context $context, callable $onReceive): void
     {
-        EventLoop::queue(static function () use ($context, $onReceive): void {
+        Loop::queue(static function () use ($context, $onReceive): void {
             try {
                 $received = $context->receive();
             } catch (\Throwable $exception) {

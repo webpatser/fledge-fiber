@@ -7,7 +7,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
 use Fledge\Async\NullCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template Tk of array-key
@@ -127,7 +127,7 @@ final class FutureIterator
 
             $this->cancellation->throwIfRequested();
 
-            $this->queue->suspension = EventLoop::getSuspension();
+            $this->queue->suspension = Loop::getSuspension();
 
             /** @var array{Tk, Future<Tv>}|null */
             return $this->queue->suspension->suspend();

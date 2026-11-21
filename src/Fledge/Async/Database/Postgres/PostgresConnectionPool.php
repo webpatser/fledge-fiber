@@ -11,7 +11,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -176,7 +176,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
 
         if ($waitTimeout !== null) {
             $remaining = \max(0.0, $waitTimeout - (\hrtime(true) - $start) / 1e9);
-            $timer = EventLoop::delay($remaining, static function () use ($connection, &$timedOut): void {
+            $timer = Loop::delay($remaining, static function () use ($connection, &$timedOut): void {
                 $timedOut = true;
                 $connection->close();
             });
@@ -211,7 +211,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
             throw $exception;
         } finally {
             if ($timer !== null) {
-                EventLoop::cancel($timer);
+                Loop::cancel($timer);
             }
         }
     }

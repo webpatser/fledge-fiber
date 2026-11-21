@@ -11,7 +11,7 @@ use Fledge\Async\TimeoutCancellation;
 use parallel\Future as ParallelFuture;
 use parallel\Runtime;
 use parallel\Runtime\Error\Closed;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /**
  * @template-covariant TResult
@@ -62,7 +62,7 @@ final class ThreadContext extends AbstractContext
         }
 
         self::$hubs ??= new \WeakMap();
-        $hub = (self::$hubs[EventLoop::getDriver()] ??= new Internal\ParallelHub());
+        $hub = (self::$hubs[Loop::getDriver()] ??= new Internal\ParallelHub());
 
         $key = $ipcHub->generateKey();
 
@@ -99,7 +99,7 @@ final class ThreadContext extends AbstractContext
             \define("AMP_CONTEXT", "parallel");
             \define("AMP_CONTEXT_ID", $id);
 
-            EventLoop::unreference(EventLoop::repeat(self::EXIT_CHECK_FREQUENCY, function (): void {
+            Loop::unreference(Loop::repeat(self::EXIT_CHECK_FREQUENCY, function (): void {
                 // Timer to give the chance for the PHP VM to be interrupted by Runtime::kill(), since system calls
                 // such as select() will not be interrupted.
             }));

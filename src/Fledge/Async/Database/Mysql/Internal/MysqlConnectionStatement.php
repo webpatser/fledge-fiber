@@ -9,7 +9,7 @@ use Fledge\Async\Database\Mysql\MysqlResult;
 use Fledge\Async\Database\Mysql\MysqlStatement;
 use Fledge\Async\Database\SqlConnectionException;
 use Fledge\Async\Database\SqlQueryError;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 /** @internal */
 final class MysqlConnectionStatement implements MysqlStatement
@@ -216,7 +216,7 @@ final class MysqlConnectionStatement implements MysqlStatement
     public function __destruct()
     {
         if ($this->processor) {
-            EventLoop::queue(self::shutdown(...), $this->processor, $this->statementId, $this->onClose);
+            Loop::queue(self::shutdown(...), $this->processor, $this->statementId, $this->onClose);
         }
     }
 

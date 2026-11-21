@@ -193,7 +193,7 @@ it('does not leave an unobserved future when a stream is reset before its reques
     $peer = startH2Driver();
 
     $errors = [];
-    \Revolt\EventLoop::setErrorHandler(function (\Throwable $e) use (&$errors): void {
+    \Fledge\Loop::setErrorHandler(function (\Throwable $e) use (&$errors): void {
         $errors[] = $e;
     });
 

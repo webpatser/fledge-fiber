@@ -6,8 +6,8 @@ use Fledge\Async\DeferredFuture;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Future;
-use Revolt\EventLoop;
-use Revolt\EventLoop\Suspension;
+use Fledge\Loop;
+use Fledge\Loop\Suspension;
 
 /**
  * This class provides a tool for efficiently writing to a stream asynchronously. A single fiber is used for all
@@ -33,10 +33,10 @@ final class AsyncWriter
         $this->writeQueue = $writeQueue = new \SplQueue;
 
         $suspension = &$this->suspension;
-        EventLoop::queue(static function () use ($writeQueue, $destination, &$suspension): void {
+        Loop::queue(static function () use ($writeQueue, $destination, &$suspension): void {
             while ($destination->isWritable()) {
                 if ($writeQueue->isEmpty()) {
-                    $suspension = EventLoop::getSuspension();
+                    $suspension = Loop::getSuspension();
                     if (!$suspension->suspend()) {
                         return;
                     }

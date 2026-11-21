@@ -8,7 +8,7 @@ use Fledge\Async\Sync\KeyedMutex;
 use Fledge\Async\Sync\Lock;
 use Psr\Log\LoggerInterface as PsrLogger;
 use Psr\Log\NullLogger;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\delay;
 
 /**
@@ -130,7 +130,7 @@ RENEW;
     public function __destruct()
     {
         if ($this->watcher !== null) {
-            EventLoop::cancel($this->watcher);
+            Loop::cancel($this->watcher);
         }
     }
 
@@ -222,7 +222,7 @@ RENEW;
         unset($this->locks[$key . ' @ ' . $token]);
 
         if (empty($this->locks) && $this->watcher !== null) {
-            EventLoop::cancel($this->watcher);
+            Loop::cancel($this->watcher);
             $this->watcher = null;
         }
 
@@ -258,7 +258,7 @@ RENEW;
         $redis = $this->redis;
         $logger = $this->logger;
 
-        $this->watcher = EventLoop::repeat(
+        $this->watcher = Loop::repeat(
             $options->getLockRenewInterval(),
             static function () use (&$locks, $options, $redis, $logger): void {
                 \assert(!empty($locks));

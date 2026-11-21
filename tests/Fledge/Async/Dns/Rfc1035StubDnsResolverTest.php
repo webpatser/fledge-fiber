@@ -9,7 +9,7 @@ use Fledge\Async\Dns\DnsException;
 use Fledge\Async\Dns\DnsRecord;
 use Fledge\Async\Dns\Rfc1035StubDnsResolver;
 use Fledge\Async\Dns\StaticDnsConfigLoader;
-use Revolt\EventLoop;
+use Fledge\Loop;
 
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -28,7 +28,7 @@ function startFakeNameserver(object $state): array
     stream_set_blocking($server, false);
     $port = (int) substr(strrchr(stream_socket_get_name($server, false), ':'), 1);
 
-    $callbackId = EventLoop::onReadable($server, static function (string $id, $server) use ($state): void {
+    $callbackId = Loop::onReadable($server, static function (string $id, $server) use ($state): void {
         $query = stream_socket_recvfrom($server, 512, 0, $peer);
         if ($query === false || strlen($query) < 12) {
             return;
@@ -58,7 +58,7 @@ function startFakeNameserver(object $state): array
         };
 
         if ($state->delay > 0) {
-            EventLoop::delay($state->delay, $send);
+            Loop::delay($state->delay, $send);
         } else {
             $send();
         }
@@ -76,7 +76,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    EventLoop::cancel($this->nsCallback);
+    Loop::cancel($this->nsCallback);
     fclose($this->nsSocket);
 });
 

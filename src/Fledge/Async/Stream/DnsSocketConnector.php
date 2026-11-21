@@ -12,7 +12,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\NullCancellation;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\Dns\dnsResolver;
 
 final class DnsSocketConnector implements SocketConnector
@@ -75,10 +75,10 @@ final class DnsSocketConnector implements SocketConnector
 
                 $deferred = new DeferredFuture();
                 $id = $cancellation->subscribe($deferred->error(...));
-                $watcher = EventLoop::onWritable(
+                $watcher = Loop::onWritable(
                     $socket,
                     static function (string $watcher) use ($deferred, $id, $cancellation): void {
-                        EventLoop::cancel($watcher);
+                        Loop::cancel($watcher);
                         $cancellation->unsubscribe($id);
                         $deferred->complete();
                     }
@@ -97,7 +97,7 @@ final class DnsSocketConnector implements SocketConnector
                         $failures ? '; previous attempts: ' . \implode($failures) : ''
                     ), Internal\CONNECTION_TIMEOUT); // See ETIMEDOUT in http://www.virtsync.com/c-error-codes-include-errno
                 } finally {
-                    EventLoop::cancel($watcher);
+                    Loop::cancel($watcher);
                     $cancellation->unsubscribe($id);
                 }
 

@@ -12,7 +12,7 @@ use Fledge\Async\Process\Internal\ProcessStatus;
 use Fledge\Async\Process\Internal\ProcessStreams;
 use Fledge\Async\Process\ProcessException;
 use Fledge\Async\TimeoutCancellation;
-use Revolt\EventLoop;
+use Fledge\Loop;
 use function Fledge\Async\async;
 
 /**
@@ -55,7 +55,7 @@ final class SocketConnector
         [$this->address, $port] = \explode(':', \stream_socket_get_name($this->server, false));
         $this->port = (int) $port;
 
-        $this->acceptCallbackId = EventLoop::unreference(EventLoop::onReadable(
+        $this->acceptCallbackId = Loop::unreference(Loop::onReadable(
             $this->server,
             fn () => $this->acceptClient()
         ));
@@ -63,7 +63,7 @@ final class SocketConnector
 
     public function connectPipes(WindowsHandle $handle, Cancellation $cancellation): ProcessStreams
     {
-        EventLoop::reference($this->acceptCallbackId);
+        Loop::reference($this->acceptCallbackId);
 
         $this->pendingProcesses[$handle->wrapperPid] = $handle;
 
@@ -83,7 +83,7 @@ final class SocketConnector
             unset($this->pendingProcesses[$handle->wrapperPid]);
 
             if (!$this->pendingProcesses) {
-                EventLoop::unreference($this->acceptCallbackId);
+                Loop::unreference($this->acceptCallbackId);
             }
         }
 
