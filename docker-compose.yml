@@ -91,6 +91,9 @@ services:
   #   docker compose --profile linux run --rm php86 php -d zend.assertions=1 -d assert.exception=1 \
   #     -d memory_limit=-1 vendor/bin/pest --no-coverage tests/Fledge/Async/Stream
   # With fledge-loop installed from a symlinked path repository, also mount it: -v ../fledge-loop:/fledge-loop:ro
+  # Postgres tests reach the postgres service over the compose network (the image has pgsql and pdo_pgsql):
+  #   docker compose --profile linux run --rm -e FLEDGE_TEST_POSTGRES_HOST=postgres -e FLEDGE_TEST_POSTGRES_PORT=5432 \
+  #     php86 php -d zend.assertions=1 -d assert.exception=1 vendor/bin/pest --no-coverage tests/Fledge/database/Integration
   php86:
     build: docker/php86-cli
     profiles: ["linux"]
