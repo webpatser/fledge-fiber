@@ -2,26 +2,21 @@
 
 ## v13.43.0.3 - 2026-11-21
 
-### Added
-- `Fledge\Async\EventLoop\Driver\PollDriver`: a Revolt event loop driver on PHP 8.6 `Io\Poll` (epoll on Linux, kqueue on macOS/BSD), not bound by the 1024 descriptor limit of `stream_select`. Streams the backend rejects fall back to a `stream_select` set.
-- `Fledge\Async\EventLoop\LoopDriver` selects and installs the event loop driver per worker via `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`, `revolt`). `auto` uses the poll driver where available and Revolt's own choice otherwise; `select` is the rollback. `install()` refuses to swap a running or non-empty loop; a forked child calls `afterFork()` instead.
-- `LoopDriver::afterFork()`: for a child right after `pcntl_fork()`. It discards the inherited driver even when Revolt reports it running (the parent awaited from `{main}`) or non-empty, without any kernel operation on the parent's epoll registrations, and installs a fresh driver chosen like `install()`. The child starts with an empty loop; loop signal handlers of the parent are reset to the default disposition, and the new driver continues the parent's callback id sequence, so a stale parent id is unknown in the child instead of cancelling one of the child's callbacks. Unreachable parent objects are garbage-collected before the child's driver opens its descriptor, so a parent `Io\Poll\Context` awaiting collection (Revolt 1.1 creates one as its default driver) cannot close the child's reused kqueue number on macOS and BSD. `install()` refusals now point to `afterFork()`, naming the parent process when the driver was inherited.
-- Benchmark `bench/eventloop/idle_connections.php` with results: on a Linux container, epoll and select are even with 10 idle connections (282k versus 280k round trips/s) and epoll is 3.2 times as fast with 400 (233k versus 72k).
-
 ### Changed
-- PHP 8.6 is now required (`"php": "^8.6"`); PHP 8.5 is dropped. CI runs on 8.6 only.
+- BREAKING: the event loop is now [webpatser/fledge-loop](https://github.com/webpatser/fledge-loop) (`Fledge\Loop`) instead of revolt/event-loop. Code that uses `Revolt\EventLoop` directly must be renamed: `Revolt\EventLoop` becomes `Fledge\Loop` (so `EventLoop::defer()` becomes `Loop::defer()` after `use Fledge\Loop;`) and `Revolt\EventLoop\X` becomes `Fledge\Loop\X`. fledge-loop conflicts with revolt/event-loop, so Composer refuses to install both. Its default driver uses PHP 8.6 `Io\Poll` (epoll on Linux, kqueue on macOS/BSD) and is not bound by the 1024 descriptor limit of `stream_select`; `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`) chooses the driver, and `Loop::install()`, `Loop::afterFork()` and `Loop::fork()` cover a worker's own setup and forked children. The `event_loop` config key carries the same values. The fiberio waiter is `Fledge\Loop\FiberIoWaiter`.
+- PHP 8.6 is now required (`"php": "^8.6"`); PHP 8.5 is dropped. CI runs on 8.6 only, with assertions enabled, on the `poll` and `select` drivers and with `FLEDGE_EVENT_LOOP` unset.
 - Dev toolchain moves to Pest 5 (PHPUnit 13), which is needed to install on PHP 8.6.
 - `ConnectContext` and `BindContext` expose the PHP 8.6 socket context options as `withKeepAlive(?int $idle, ?int $interval, ?int $count)`, `withoutKeepAlive()`, `withReceiveBufferSize()` and `withSendBufferSize()` (plus `without` and getters). Redis `tcp_keepalive` now uses `withKeepAlive()` at connect instead of importing the stream into ext-sockets. The WebSocket server still sets `TCP_NODELAY` per accepted client through ext-sockets, because its listener is built from the caller's `BindContext`; set `withTcpNoDelay()` there.
+- The resource stream and socket classes (`ReadableResourceStream`, `WritableResourceStream`, `ResourceSocket`, `ResourceServerSocket`, `ResourceUdpSocket`), the Postgres handles and the process runner cancel or disable their loop callbacks before the stream is closed, as fledge-loop requires.
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
+### Removed
+- The uv filesystem driver (`UvFilesystemDriver`, `UvFile`): fledge-loop has no uv driver. The eio driver stays.
+
 ### Fixed
-- `PollDriver` fork guard: the driver records the process that created it, and in a forked child the sync of watcher changes and every wait on its `Io\Poll\Context` throw an exception naming `LoopDriver::afterFork()` instead of using the epoll descriptor shared with the parent (which made the parent segfault on the child's events and let the child delete the parent's registrations). A child that exits without touching the loop no longer drops the parent's watchers at shutdown (best effort: a shutdown function registered before the driver can still close a watched stream first; `afterFork()` is the only full protection).
-- `PollDriver`: a `stream_select()` failure on the fallback set without a warning now throws like `StreamSelectDriver` instead of being ignored.
 - Redis `tcp_keepalive` keeps a connect context's own keep-alive idle, interval and count instead of resetting them to the OS defaults.
 - `ConnectContext` and `BindContext` reject buffer sizes above 2147483647 with a `ValueError` at `withReceiveBufferSize()` and `withSendBufferSize()` instead of failing at connect or bind.
-- CI runs the suite on the `poll` and `select` drivers (it ran `poll` twice since `auto` became `poll`).
 - TLS handshakes now wait for writable when `stream_socket_get_crypto_status()` reports WANT_WRITE, so a handshake blocked on flushing (large certificate chain, full send buffer) no longer stalls until the peer times out.
-- `RevoltWaiter`'s loop-fiber stream wait uses a poll(2) `Io\Poll\Context` instead of `stream_select()`, so sockets numbered at or above 1024 are waited on correctly instead of reporting an immediate timeout.
 - `Http2Driver` keeps discarding an exception raised while completing a stream that is already closed; the PHP 8.6 "return in finally" fix does not change that.
 - `Http2Driver` end-of-body handling no longer returns from a `finally` block (deprecated in PHP 8.6); the stream release check moved into one condition.
 - `Sync\Lock` and `ContextWorkerPool` use `SplObjectStorage::offsetSet()` and `offsetUnset()` instead of the `attach()` and `detach()` methods deprecated in PHP 8.5.

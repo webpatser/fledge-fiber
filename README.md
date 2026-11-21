@@ -7,7 +7,7 @@ Provides fiber-based database (MySQL, MariaDB, PostgreSQL), Redis, HTTP, WebSock
 ## Requirements
 
 - PHP 8.6+
-- [revolt/event-loop](https://github.com/revoltphp/event-loop) ^1.0
+- [webpatser/fledge-loop](https://github.com/webpatser/fledge-loop) ^0.1 (the event loop, `Fledge\Loop`)
 - fledge-framework v13.42.0.1 and later require fledge-fiber 13.42.0.1 or later (earlier v13 frameworks work with any fiber v13 release)
 
 ## Installation
@@ -51,7 +51,7 @@ Transactions on `fledge-mysql`, `fledge-mariadb` and `fledge-pgsql` are pinned p
 
 ### Native MySQL/MariaDB drivers (`fledge-mysql-native`, `fledge-mariadb-native`)
 
-A pool of real `pdo_mysql` connections running on [php-fiberio](https://github.com/webpatser/php-fiberio), one lease per fiber. Fiberio makes the stock PDO socket I/O yield to the Revolt event loop, so you get Laravel's own connectors, TLS, session settings and error shapes without the userland wire protocol. A fiber takes a connection for the duration of a query (or a whole transaction, or a `cursor()` until its generator ends) and gives it back afterwards. A fiber that finds the pool empty waits for a free lease, and fails with a `RuntimeException` after `pool_wait_timeout`.
+A pool of real `pdo_mysql` connections running on [php-fiberio](https://github.com/webpatser/php-fiberio), one lease per fiber. Fiberio makes the stock PDO socket I/O yield to the event loop, so you get Laravel's own connectors, TLS, session settings and error shapes without the userland wire protocol. A fiber takes a connection for the duration of a query (or a whole transaction, or a `cursor()` until its generator ends) and gives it back afterwards. A fiber that finds the pool empty waits for a free lease, and fails with a `RuntimeException` after `pool_wait_timeout`.
 
 #### When to use which driver
 
@@ -241,37 +241,7 @@ With `allow_redirects.referer` enabled, Guzzle 7 sends the full previous URL (pa
 
 ## Event loop driver
 
-Long-running workers pick their Revolt driver with `FLEDGE_EVENT_LOOP`:
-
-- `auto` (default): the poll driver on PHP 8.6 (`Io\Poll`: epoll on Linux, kqueue on macOS/BSD), Revolt's own choice where no backend exists.
-- `poll`: always the poll driver; throws if no backend is available.
-- `select`: Revolt's `stream_select` driver. This is the rollback value.
-- `revolt`: whatever Revolt's `DriverFactory` creates (honours `REVOLT_DRIVER`).
-
-Which call to use:
-
-- `Fledge\Async\EventLoop\LoopDriver::install()`: a process's own first setup, before its loop has run anything. It refuses to swap a running or non-empty loop.
-- `Fledge\Async\EventLoop\LoopDriver::afterFork()`: in a child, as the first call after `pcntl_fork()` returned 0, from `{main}` (not inside a fiber or loop callback), whenever the parent had already used the event loop (a queue master forking workers, a forking server). It discards the inherited driver even when Revolt still reports it running or non-empty, installs a fresh one chosen like `install()` and returns it.
-
-```php
-$pid = pcntl_fork();
-
-if ($pid === 0) {
-    LoopDriver::afterFork();          // first, before opening or closing any descriptor
-    EventLoop::onSignal(SIGTERM, ...); // the parent's loop signal handlers are gone
-    // create servers, pools and timers for the child here
-}
-```
-
-The child starts with an empty loop. Every timer, stream watcher and loop signal handler of the parent is gone, and so is anything built on them in the parent (servers, timeout queues, connection pools): create those again in the child. Signal handlers the parent registered through the loop are reset to the default disposition in the child; dispositions set directly with `pcntl_signal()`, `SIG_IGN` included, are inherited from the OS untouched. Closing an inherited socket in the child after `afterFork()` is harmless to the parent.
-
-Callback ids handed out in the parent are dead in the child: the fresh driver continues the parent's id sequence, so a parent-built object that cancels its old id in the child hits an unknown id (a no-op for `cancel()`, `disable()` and `unreference()`; `enable()` and `reference()` throw `InvalidCallbackError`) instead of one of the child's callbacks.
-
-Fork from a quiet point, with no fiber suspended mid-command on a connection: fibers suspended in the parent unwind in the child (during `afterFork()`, or at the child's exit without it) and their cleanup can write to the parent's peer. That is a property of forking with live fibers, not of `afterFork()`.
-
-The reason: the parent's epoll descriptor is shared with a forked child on Linux (a watcher the child adds, changes or removes alters the parent's registrations, and the parent crashes on the child's events), and kqueue descriptors are not inherited at all on macOS and BSD. The poll driver therefore refuses to touch its descriptor from any process other than the one that created it and throws an exception naming `afterFork()`. A child that exits without `afterFork()` normally leaves the parent's registrations intact, but that shutdown hook is best effort: a shutdown function registered before the driver was created runs first, and if it closes a stream the parent watches, the parent loses that watcher. `afterFork()` is the only full protection.
-
-The default was decided by a benchmark gate, see `bench/eventloop/README.md`.
+The event loop is [webpatser/fledge-loop](https://github.com/webpatser/fledge-loop) (`Fledge\Loop`); its README covers driver selection and forking. `FLEDGE_EVENT_LOOP` picks the driver on first use (`auto`, `poll` or `select`, the rollback), `Loop::install()` chooses it in a process's own setup, and a forked child starts on a fresh loop with `Loop::afterFork()` right after `pcntl_fork()`, or forks through `Loop::fork()`. The `event_loop` key in `config/fledge-http.php` carries the same value for workers that pass it to those calls.
 
 ## Differences from stock Laravel
 

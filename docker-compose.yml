@@ -87,8 +87,10 @@ services:
     environment:
       PORT: 8080
 
-  # Linux run of the event loop driver tests (Epoll and Poll backends).
-  #   docker compose --profile linux run --rm php86 vendor/bin/pest --no-coverage tests/Fledge/Async/EventLoop
+  # Linux (epoll) run of the suites that need no database (the container cannot reach the host's database ports):
+  #   docker compose --profile linux run --rm php86 php -d zend.assertions=1 -d assert.exception=1 \
+  #     -d memory_limit=-1 vendor/bin/pest --no-coverage tests/Fledge/Async/Stream
+  # With fledge-loop installed from a symlinked path repository, also mount it: -v ../fledge-loop:/fledge-loop:ro
   php86:
     build: docker/php86-cli
     profiles: ["linux"]
