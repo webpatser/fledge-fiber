@@ -8,12 +8,18 @@
 - Dev toolchain moves to Pest 5 (PHPUnit 13), which is needed to install on PHP 8.6.
 - `ConnectContext` and `BindContext` expose the PHP 8.6 socket context options as `withKeepAlive(?int $idle, ?int $interval, ?int $count)`, `withoutKeepAlive()`, `withReceiveBufferSize()` and `withSendBufferSize()` (plus `without` and getters). Redis `tcp_keepalive` now uses `withKeepAlive()` at connect instead of importing the stream into ext-sockets. The WebSocket server still sets `TCP_NODELAY` per accepted client through ext-sockets, because its listener is built from the caller's `BindContext`; set `withTcpNoDelay()` there.
 - The resource stream and socket classes (`ReadableResourceStream`, `WritableResourceStream`, `ResourceSocket`, `ResourceServerSocket`, `ResourceUdpSocket`), the Postgres handles and the process runner cancel or disable their loop callbacks before the stream is closed, as fledge-loop requires.
+- The default event loop driver is now `PollDriver`, built on PHP 8.6 `Io\Poll`, where it was `stream_select()` before. `FLEDGE_EVENT_LOOP=select` (or the `event_loop` config key) keeps the `stream_select()` driver.
+- BREAKING: `EioFilesystemDriver::__construct()` now takes a `Fledge\Loop\Driver` instead of a `Revolt\EventLoop\Driver`.
+- Closing a stream while one of its loop callbacks is still enabled is now an error when assertions are active (`zend.assertions=1`) or `FLEDGE_DEBUG` is set: the loop throws an `\Error` naming the stream's callbacks at the next tick. Cancel the callbacks first; see "Closing streams" in the fledge-loop README. In production the loop does not throw.
+- The `php86` Docker image (the Linux epoll test run) now has `pgsql` and `pdo_pgsql`, and CI loads `pgsql` explicitly, so the ext-pgsql connect and close paths run on epoll too.
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
 ### Removed
+- BREAKING: `Fledge\Fiber\Database\Native\RevoltWaiter`. Use `Fledge\Loop\FiberIoWaiter` (`\FiberIo\enable(new \Fledge\Loop\FiberIoWaiter)`).
 - The uv filesystem driver (`UvFilesystemDriver`, `UvFile`): fledge-loop has no uv driver. The eio driver stays.
 
 ### Fixed
+- Postgres: an asynchronous connect no longer hangs when libpq switches to a new socket during the connect, as it does for a multi-host connection string whose first host refuses, or for `host=localhost` when `::1` is tried first and the server listens on IPv4 only. libpq closes the old socket inside its poll step, and a kqueue or epoll registration for that descriptor never fires again, so the connect waited until its cancellation (or forever). The ext-pgsql connect now cancels its watcher before every poll step and then watches a fresh `pg_socket()` stream with the interest libpq asked for. The ext-pq connect does the same, re-registering pq's socket from a deferred callback (untested: ext-pq is not in the test setups). The `stream_select()` driver was not affected.
 - Redis `tcp_keepalive` keeps a connect context's own keep-alive idle, interval and count instead of resetting them to the OS defaults.
 - `ConnectContext` and `BindContext` reject buffer sizes above 2147483647 with a `ValueError` at `withReceiveBufferSize()` and `withSendBufferSize()` instead of failing at connect or bind.
 - TLS handshakes now wait for writable when `stream_socket_get_crypto_status()` reports WANT_WRITE, so a handshake blocked on flushing (large certificate chain, full send buffer) no longer stalls until the peer times out.
