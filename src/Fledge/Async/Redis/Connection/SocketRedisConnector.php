@@ -47,8 +47,10 @@ final readonly class SocketRedisConnector implements RedisConnector
             // retries a refused connect with 2 s and 4 s of backoff. Reconnect
             // retries belong to ReconnectingRedisLink and its own backoff.
             $socketConnector = $this->socketConnector ?? new Stream\DnsSocketConnector();
-            $socket = $socketConnector->connect($this->uri, $this->connectContext, $cancellation);
-            if ($this->connectContext->getTlsContext()) {
+            // SO_KEEPALIVE (the phpredis tcp_keepalive option) is a socket context option, set at connect
+            $connectContext = $this->tcpKeepalive ? $this->connectContext->withKeepAlive() : $this->connectContext;
+            $socket = $socketConnector->connect($this->uri, $connectContext, $cancellation);
+            if ($connectContext->getTlsContext()) {
                 $socket->setupTls($cancellation);
             }
         } catch (Stream\SocketException $e) {
@@ -59,33 +61,6 @@ final readonly class SocketRedisConnector implements RedisConnector
             );
         }
 
-        if ($this->tcpKeepalive) {
-            self::enableTcpKeepalive($socket);
-        }
-
         return new SocketRedisConnection($socket, $this->parserFactory);
-    }
-
-    /**
-     * Best-effort SO_KEEPALIVE, mirroring the phpredis tcp_keepalive option.
-     * Requires ext-sockets; silently skipped when unavailable.
-     */
-    private static function enableTcpKeepalive(Stream\Socket $socket): void
-    {
-        if (!\extension_loaded('sockets') || !$socket instanceof Stream\ResourceStream) {
-            return;
-        }
-
-        $resource = $socket->getResource();
-
-        if (!\is_resource($resource)) {
-            return;
-        }
-
-        $imported = @\socket_import_stream($resource);
-
-        if ($imported !== false && $imported !== null) {
-            @\socket_set_option($imported, \SOL_SOCKET, \SO_KEEPALIVE, 1);
-        }
     }
 }

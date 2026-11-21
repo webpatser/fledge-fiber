@@ -15,6 +15,13 @@ final class BindContext
     private bool $broadcast = false;
     private bool $tcpNoDelay = false;
 
+    private bool $keepAlive = false;
+    private ?int $keepAliveIdle = null;
+    private ?int $keepAliveInterval = null;
+    private ?int $keepAliveCount = null;
+    private ?int $receiveBufferSize = null;
+    private ?int $sendBufferSize = null;
+
     private ?ServerTlsContext $tlsContext = null;
 
     public function withoutBindTo(): self
@@ -92,6 +99,113 @@ final class BindContext
         return clone($this, ['tcpNoDelay' => false]);
     }
 
+    public function hasKeepAlive(): bool
+    {
+        return $this->keepAlive;
+    }
+
+    /**
+     * Enables SO_KEEPALIVE. The idle time, probe interval and probe count (TCP_KEEPIDLE,
+     * TCP_KEEPINTVL, TCP_KEEPCNT) are only set when given; otherwise the OS defaults apply.
+     */
+    public function withKeepAlive(?int $idle = null, ?int $interval = null, ?int $count = null): self
+    {
+        foreach (['idle' => $idle, 'interval' => $interval, 'count' => $count] as $name => $value) {
+            if ($value !== null && $value < 1) {
+                throw new \ValueError("Invalid keep-alive {$name} ({$value}), must be greater than 0");
+            }
+        }
+
+        return clone($this, [
+            'keepAlive' => true,
+            'keepAliveIdle' => $idle,
+            'keepAliveInterval' => $interval,
+            'keepAliveCount' => $count,
+        ]);
+    }
+
+    public function withoutKeepAlive(): self
+    {
+        return clone($this, [
+            'keepAlive' => false,
+            'keepAliveIdle' => null,
+            'keepAliveInterval' => null,
+            'keepAliveCount' => null,
+        ]);
+    }
+
+    public function getKeepAliveIdle(): ?int
+    {
+        return $this->keepAliveIdle;
+    }
+
+    public function getKeepAliveInterval(): ?int
+    {
+        return $this->keepAliveInterval;
+    }
+
+    public function getKeepAliveCount(): ?int
+    {
+        return $this->keepAliveCount;
+    }
+
+    public function getReceiveBufferSize(): ?int
+    {
+        return $this->receiveBufferSize;
+    }
+
+    public function withReceiveBufferSize(int $bytes): self
+    {
+        if ($bytes < 1) {
+            throw new \ValueError("Invalid receive buffer size ({$bytes}), must be greater than 0");
+        }
+
+        return clone($this, ['receiveBufferSize' => $bytes]);
+    }
+
+    public function withoutReceiveBufferSize(): self
+    {
+        return clone($this, ['receiveBufferSize' => null]);
+    }
+
+    public function getSendBufferSize(): ?int
+    {
+        return $this->sendBufferSize;
+    }
+
+    public function withSendBufferSize(int $bytes): self
+    {
+        if ($bytes < 1) {
+            throw new \ValueError("Invalid send buffer size ({$bytes}), must be greater than 0");
+        }
+
+        return clone($this, ['sendBufferSize' => $bytes]);
+    }
+
+    public function withoutSendBufferSize(): self
+    {
+        return clone($this, ['sendBufferSize' => null]);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function withKeepAliveAndBufferOptions(array $options): array
+    {
+        if ($this->keepAlive) {
+            $options['so_keepalive'] = true;
+            $this->keepAliveIdle !== null && $options['tcp_keepidle'] = $this->keepAliveIdle;
+            $this->keepAliveInterval !== null && $options['tcp_keepintvl'] = $this->keepAliveInterval;
+            $this->keepAliveCount !== null && $options['tcp_keepcnt'] = $this->keepAliveCount;
+        }
+
+        $this->receiveBufferSize !== null && $options['so_rcvbuf'] = $this->receiveBufferSize;
+        $this->sendBufferSize !== null && $options['so_sndbuf'] = $this->sendBufferSize;
+
+        return $options;
+    }
+
     public function getTlsContext(): ?ServerTlsContext
     {
         return $this->tlsContext;
@@ -110,7 +224,7 @@ final class BindContext
     public function toStreamContextArray(): array
     {
         $array = [
-            'socket' => [
+            'socket' => $this->withKeepAliveAndBufferOptions([
                 'bindto' => $this->bindTo,
                 'backlog' => $this->backlog,
                 'ipv6_v6only' => true,
@@ -119,7 +233,7 @@ final class BindContext
                 'so_reuseport' => $this->reusePort,
                 'so_broadcast' => $this->broadcast,
                 'tcp_nodelay' => $this->tcpNoDelay,
-            ],
+            ]),
         ];
 
         if ($this->tlsContext) {

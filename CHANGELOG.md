@@ -5,6 +5,7 @@
 ### Changed
 - PHP 8.6 is now required (`"php": "^8.6"`); PHP 8.5 is dropped. CI runs on 8.6 only.
 - Dev toolchain moves to Pest 5 (PHPUnit 13), which is needed to install on PHP 8.6.
+- `ConnectContext` and `BindContext` expose the PHP 8.6 socket context options as `withKeepAlive(?int $idle, ?int $interval, ?int $count)`, `withoutKeepAlive()`, `withReceiveBufferSize()` and `withSendBufferSize()` (plus `without` and getters). Redis `tcp_keepalive` now uses `withKeepAlive()` at connect instead of importing the stream into ext-sockets. The WebSocket server still sets `TCP_NODELAY` per accepted client through ext-sockets, because its listener is built from the caller's `BindContext`; set `withTcpNoDelay()` there.
 - Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
 
 ### Fixed
