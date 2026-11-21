@@ -301,7 +301,7 @@ final class ContextWorkerPool implements LimitedWorkerPool
                 }
             });
 
-            $this->workers->detach($worker);
+            $this->workers->offsetUnset($worker);
         } while (true);
     }
 }

@@ -71,8 +71,8 @@ final class Lock
             $future = async($release);
 
             $pending = self::$pendingOperations ??= self::setupPendingOperations();
-            $pending->attach($future);
-            $future->finally(fn () => $pending->detach($future))->ignore();
+            $pending[$future] = null;
+            $future->finally(fn () => $pending->offsetUnset($future))->ignore();
         } else {
             $release();
         }

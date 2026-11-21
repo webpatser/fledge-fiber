@@ -56,7 +56,9 @@ function providerWith(array $flags): FiberHttpServiceProvider
 
 function callProvider(object $target, string $method, mixed ...$args): mixed
 {
-    return (new ReflectionMethod($target, $method))->invoke($target, ...$args);
+    $reflection = new ReflectionMethod($target, $method);
+
+    return $reflection->invoke($reflection->isStatic() ? null : $target, ...$args);
 }
 
 function handlerOf(HandlerStack $stack): mixed
