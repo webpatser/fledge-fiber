@@ -5,7 +5,6 @@ namespace Fledge\Async\File;
 use Fledge\Async\File\Driver\EioFilesystemDriver;
 use Fledge\Async\File\Driver\ParallelFilesystemDriver;
 use Fledge\Async\File\Driver\StatusCachingFilesystemDriver;
-use Fledge\Async\File\Driver\UvFilesystemDriver;
 use Fledge\Loop;
 
 /**
@@ -42,10 +41,6 @@ function filesystem(?FilesystemDriver $driver = null): Filesystem
 function createDefaultDriver(): FilesystemDriver
 {
     $driver = Loop::getDriver();
-
-    if (UvFilesystemDriver::isSupported($driver)) {
-        return new UvFilesystemDriver($driver);
-    }
 
     if (EioFilesystemDriver::isSupported()) {
         return new EioFilesystemDriver($driver);

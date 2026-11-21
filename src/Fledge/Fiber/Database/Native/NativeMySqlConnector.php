@@ -188,7 +188,7 @@ class NativeMySqlConnector implements ConnectorInterface
     }
 
     /**
-     * Make sure fiberio is loaded and enabled with the Revolt waiter.
+     * Make sure fiberio is loaded and enabled with Fledge\Loop\FiberIoWaiter.
      *
      * With `'fiberio' => 'optional'` a missing extension logs one warning per
      * process and continues with blocking PDO.

@@ -24,7 +24,7 @@ use function Fledge\Async\Future\await;
 /**
  * Lease scoping of the native connection on a real NativePdoPool, against
  * guarded PDO doubles (no server). `sleep <seconds>` statements suspend the
- * calling fiber, so Revolt interleaves fibers like a slow query would.
+ * calling fiber, so the loop interleaves fibers like a slow query would.
  */
 
 /**
@@ -627,7 +627,7 @@ it('rolls back a fiber\'s transaction records when COMMIT fails with a server er
     $connection->setTransactionManager(new DatabaseTransactionsManager);
     $events = [];
 
-    // Two tasks back to back on one fiber, like a Revolt callback fiber reused for the next callback.
+    // Two tasks back to back on one fiber, like a loop callback fiber reused for the next callback.
     $fiber = new Fiber(function () use ($connection, &$events) {
         try {
             $connection->transaction(function ($c) use (&$events) {
@@ -1168,13 +1168,13 @@ it('drops only the read lease when a read-only fiber loses its connection before
         ->and($readPool)->toHaveCount(2);
 });
 
-it('starts each Revolt callback with a clean transaction level, lease and insert id when the callback fiber is reused', function () {
+it('starts each loop callback with a clean transaction level, lease and insert id when the callback fiber is reused', function () {
     [$connection, $pool, $pdos] = nativeLeaseSetup(2);
     $connection->setTransactionManager(new DatabaseTransactionsManager);
     $events = [];
     $fibers = [];
 
-    // Neither callback suspends, so Revolt runs both on the same callback fiber.
+    // Neither callback suspends, so the loop runs both on the same callback fiber.
     $a = async(function () use ($connection, &$events, &$fibers) {
         $fibers[] = Fiber::getCurrent();
 

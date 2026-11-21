@@ -35,7 +35,7 @@ use Fledge\Loop\FiberLocal;
 class FiberAwareTransactionsManager extends DatabaseTransactionsManager
 {
     /**
-     * Per-fiber inner managers. Revolt clears a FiberLocal after every
+     * Per-fiber inner managers. The loop clears a FiberLocal after every
      * callback, so records a callback abandoned (a transaction it never
      * committed or rolled back) never reach the next callback on that fiber.
      *
@@ -225,7 +225,7 @@ class FiberAwareTransactionsManager extends DatabaseTransactionsManager
 
     /**
      * Drop the current fiber's inner manager once it holds nothing, so a
-     * fiber Revolt reuses for a later callback starts clean.
+     * fiber the loop reuses for a later callback starts clean.
      */
     private function forgetIdleFiber(): void
     {

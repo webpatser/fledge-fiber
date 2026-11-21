@@ -35,7 +35,7 @@ use function Fledge\Async\delay;
  * on top of this handler.
  *
  * Each request is dispatched via Fledge\Async\async(), which starts it on the
- * Revolt event loop immediately. The returned Guzzle Promise resolves
+ * event loop immediately. The returned Guzzle Promise resolves
  * when Future::await() completes. Multiple concurrent requests (e.g.,
  * from Http::pool()) all progress when any single await() drives the
  * event loop.

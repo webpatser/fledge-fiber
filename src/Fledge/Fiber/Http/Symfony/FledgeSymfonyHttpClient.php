@@ -21,7 +21,7 @@ use Symfony\Contracts\HttpClient\ResponseStreamInterface;
  * Symfony HttpClient on the Fledge async HTTP client.
  *
  * Lets Symfony consumers (the mailer's HTTP transports: Mailgun, Postmark,
- * Resend, ...) run non-blocking on the Revolt loop. Requests start as soon
+ * Resend, ...) run non-blocking on the event loop. Requests start as soon
  * as request() returns and progress while any fiber awaits, so responses
  * created back to back overlap on the wire; reading a response suspends only
  * the calling fiber.

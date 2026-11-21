@@ -10,7 +10,7 @@ use GuzzleHttp\HandlerStack;
  *
  * Integrations that build their own Guzzle client (mail transports,
  * broadcasting, S3, Elasticsearch) take their handler stack from here so
- * they all run non-blocking on the Revolt loop instead of curl.
+ * they all run non-blocking on the event loop instead of curl.
  *
  * Connection pools live in one AsyncClientFactory per per-host limit,
  * shared across every stack and client this class hands out, so keep-alive

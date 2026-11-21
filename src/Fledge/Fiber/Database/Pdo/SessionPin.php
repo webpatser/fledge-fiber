@@ -9,7 +9,7 @@ use Fledge\Loop;
 /**
  * One pooled connection pinned to a fiber (or the main context) by a FledgePdo.
  *
- * Pins live in a FiberLocal. Revolt clears FiberLocal storage after every
+ * Pins live in a FiberLocal. The loop clears FiberLocal storage after every
  * callback, and a fiber that is destroyed takes its storage with it, so the pin
  * is destroyed when its fiber's scope ends: normally, on an exception, or when
  * the fiber is abandoned. Before that, FledgePdo hands a pin back early when

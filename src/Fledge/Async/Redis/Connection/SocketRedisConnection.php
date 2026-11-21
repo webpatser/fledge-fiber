@@ -59,7 +59,7 @@ final readonly class SocketRedisConnection implements RedisConnection
                         /* A wire parse failure is not a Fledge RedisException: the
                          * resp3 extension parser throws \Resp3\RedisException, and a
                          * pure-PHP parser bug would throw Error. Anything escaping
-                         * this loop kills the event-loop callback (Revolt rethrows it
+                         * this loop kills the event-loop callback (the loop rethrows it
                          * as UncaughtThrowable), stranding every pending future on
                          * this connection with no error and leaving the socket open.
                          * Wrap it, keep a hex head of the offending chunk so a

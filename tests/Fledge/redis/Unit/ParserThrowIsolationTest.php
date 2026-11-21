@@ -8,8 +8,8 @@ use Fledge\Async\Stream\ResourceSocket;
 /*
  * A wire parse failure must surface as a RedisException on receive(), never escape the
  * read fiber. The resp3 extension parser throws \Resp3\RedisException (not a Fledge
- * RedisException) on malformed framing; before the fix that escaped the EventLoop::queue
- * callback, Revolt rethrew it as UncaughtThrowable, every pending future on the
+ * RedisException) on malformed framing; before the fix that escaped the Loop::queue
+ * callback, the loop rethrew it as UncaughtThrowable, every pending future on the
  * connection was stranded, and the socket stayed open. Seen live on dialed.at as
  * "Uncaught Resp3\RedisException ... RESP3 parse error: expected LF after CR in length".
  */

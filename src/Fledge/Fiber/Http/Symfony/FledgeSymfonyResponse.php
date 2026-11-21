@@ -29,7 +29,7 @@ use function Fledge\Async\Future\awaitFirst;
 /**
  * Lazy Symfony response over a Fledge async request.
  *
- * The request is already running on the Revolt loop; every accessor only
+ * The request is already running on the event loop; every accessor only
  * awaits what it needs (headers, then body chunks), suspending the calling
  * fiber rather than the process. Error semantics follow Symfony's own
  * responses: getHeaders(), getContent() and toArray() throw for 3xx, 4xx

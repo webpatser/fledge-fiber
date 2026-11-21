@@ -59,11 +59,12 @@ return [
     | Event Loop Driver
     |--------------------------------------------------------------------------
     |
-    | Which Revolt driver a worker runs on: `poll` (PHP 8.6 Io\Poll), `select`
-    | (stream_select, the rollback value), `revolt` (Revolt's own factory) or
-    | `auto` (the default: `poll` where Io\Poll has a
-    | backend, otherwise `revolt`). Not applied here: a long-running worker
-    | passes it to Fledge\Async\EventLoop\LoopDriver::install() after fork.
+    | Which event loop driver a worker runs on: `auto` (the default: `poll`
+    | where Io\Poll has a kqueue or epoll backend, otherwise `select`), `poll`
+    | (PHP 8.6 Io\Poll) or `select` (stream_select, the rollback value). Not
+    | applied here: consumers pass it to Fledge\Loop::install() during their
+    | own setup or to Fledge\Loop::afterFork() in a forked child. Without
+    | either, the loop reads FLEDGE_EVENT_LOOP itself on first use.
     |
     */
 

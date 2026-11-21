@@ -23,8 +23,8 @@ use WeakMap;
  * the main context has a lease of its own.
  *
  * Lease scope (keyed on the current fiber plus a scope depth, never on fiber
- * lifetime, because Revolt reuses callback fibers; the per-fiber state lives
- * in a FiberLocal, which Revolt clears after every callback):
+ * lifetime, because the loop reuses callback fibers; the per-fiber state lives
+ * in a FiberLocal, which the loop clears after every callback):
  * - run() and the transaction methods open a scope; the outermost scope
  *   releases the fiber's leases in `finally` when its transaction level is 0.
  * - A transaction pins the lease until the final commit or rollback.
@@ -51,7 +51,7 @@ use WeakMap;
  * statements on that slot (write, read or direct, each pinned on its own)
  * reuse the connection, so Schema::disableForeignKeyConstraints() or SET @x
  * holds for the next statement as on one stock PDO, and a transaction begun
- * later runs on it too. The pin ends when Revolt clears the fiber's
+ * later runs on it too. The pin ends when the loop clears the fiber's
  * FiberLocal after the callback (the request or job), or on disconnect(),
  * a reconnect, or a lost connection; in the main context it lasts until
  * disconnect(). When another fiber or context replaces the pool, the pinned
@@ -80,7 +80,7 @@ use WeakMap;
 trait UsesNativePdoPool
 {
     /**
-     * Per-fiber lease scopes. Revolt clears a FiberLocal after every callback,
+     * Per-fiber lease scopes. The loop clears a FiberLocal after every callback,
      * so a callback fiber it reuses never inherits the previous callback's
      * transaction level or leases (an abandoned scope is destroyed, and its
      * destructor drops a connection with an open transaction).
@@ -470,7 +470,7 @@ trait UsesNativePdoPool
      * fiber's transaction level at 0 and throws. Its transaction records are
      * rolled back too, whatever the exception type: otherwise they linger in
      * the fiber's manager, the fiber is never forgotten there, and on a fiber
-     * Revolt reuses a later afterCommit callback or after-commit job attaches
+     * The loop reuses a later afterCommit callback or after-commit job attaches
      * to the dead record and fires on an unrelated commit.
      *
      * On a lost connection the stock handler also nulls the raw write slot,

@@ -10,7 +10,7 @@ use Fledge\Loop;
  *
  * A hook registers a pair of closures under a name. `$capture()` runs in the parent fiber when async() is called
  * and returns a snapshot. `$restore($snapshot)` runs in the child fiber before the closure starts and may return
- * a cleanup closure, which runs after the closure finishes (also when it throws). Revolt reuses callback fibers,
+ * a cleanup closure, which runs after the closure finishes (also when it throws). The loop reuses callback fibers,
  * so a hook that stores state per fiber must undo it in its cleanup.
  *
  * A throwing hook never breaks async(): the throwable is passed to the event loop error handler when one is set

@@ -14,7 +14,7 @@ use Fledge\Loop\FiberLocal;
  * QueryExecuted. A listener that suspends in between would let another fiber
  * insert on the same connection object and overwrite the id, so
  * insertGetId() would return the other fiber's row. The id lives in a
- * FiberLocal (Revolt clears it after every callback); the main context uses
+ * FiberLocal (the loop clears it after every callback); the main context uses
  * the backing slot. Same pattern as the native drivers' UsesNativePdoPool.
  *
  * @mixin MySqlConnection

@@ -203,7 +203,7 @@ it('does not let a rollback in one fiber touch the other fiber or the main conte
         ->and($connection->getPdo()->log)->toBe(['begin', 'commit']);
 });
 
-it('keeps the level per fiber under Revolt scheduling', function () {
+it('keeps the level per fiber under loop scheduling', function () {
     $connection = nativeTxConnection(nativeFakePdo(...));
 
     $worker = fn (string $name, float $pause) => async(function () use ($connection, $name, $pause) {
@@ -241,7 +241,7 @@ it('isolates concurrent fiber transactions on a real MariaDB server', function (
         $this->markTestSkipped('MariaDB not available on port '.test_env('FLEDGE_TEST_MARIADB_PORT', 13307));
     }
 
-    // This test drives fibers by hand; a fiberio waiter would park them on Revolt.
+    // This test drives fibers by hand; a fiberio waiter would park them on the loop.
     if (function_exists('FiberIo\enabled') && \FiberIo\enabled()) {
         \FiberIo\disable();
     }

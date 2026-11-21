@@ -23,8 +23,8 @@ use WeakReference;
  * - At most `$size` connections are open (idle + leased + being opened).
  * - Connections are created lazily by the factory, on demand.
  * - Idle connections older than `$idleTimeout` seconds are closed: on every
- *   acquire, and by an unreferenced Revolt timer while any sit idle.
- * - A fiber finding the pool exhausted parks on a Revolt Suspension. Waiters
+ *   acquire, and by an unreferenced loop timer while any sit idle.
+ * - A fiber finding the pool exhausted parks on a loop Suspension. Waiters
  *   are served strictly FIFO: a released connection is handed directly to the
  *   oldest waiter, and a discarded one passes its slot to the oldest waiter,
  *   which then opens a fresh connection.

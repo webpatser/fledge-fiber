@@ -21,7 +21,7 @@ use Throwable;
  *   their own session state. It is discarded, never released, when the pin
  *   ends (see giveBack()).
  *
- * Scopes are stored in a FiberLocal. Revolt reuses callback fibers and clears
+ * Scopes are stored in a FiberLocal. The loop reuses callback fibers and clears
  * FiberLocal storage after every callback, so a scope a callback left behind
  * (a pinned lease, an abandoned transaction, a PDO taken outside any scope)
  * is destroyed before the next callback runs on that fiber: that is where a

@@ -14,7 +14,7 @@ use function Fledge\Async\delay;
 
 /*
  * Statement release runs from event-loop callbacks (SqlPooledResult queues it). An exception
- * there surfaces as a Revolt UncaughtThrowable in the next, unrelated query, so a release on a
+ * there surfaces as the loop's UncaughtThrowable in the next, unrelated query, so a release on a
  * connection that was killed or timed out (KILL, wait_timeout) must discard the statement quietly.
  */
 afterEach(fn () => Mockery::close());

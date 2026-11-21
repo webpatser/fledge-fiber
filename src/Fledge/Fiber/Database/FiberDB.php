@@ -9,7 +9,7 @@ use function Fledge\Async\Future\await;
  * Fiber-powered concurrent database operations.
  *
  * Runs multiple database queries/closures in parallel Fibers using the
- * Revolt event loop. Each operation suspends its Fiber while waiting
+ * event loop. Each operation suspends its Fiber while waiting
  * for I/O, allowing other operations to progress concurrently.
  *
  * Requires an Fledge-based database driver (fledge-mysql, fledge-pgsql, etc.)

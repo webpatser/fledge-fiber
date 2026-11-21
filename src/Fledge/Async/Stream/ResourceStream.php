@@ -7,14 +7,14 @@ interface ResourceStream
     /**
      * References the underlying watcher, so the loop keeps running in case there's an active stream operation.
      *
-     * @see EventLoop::reference()
+     * @see \Fledge\Loop::reference()
      */
     public function reference(): void;
 
     /**
      * Unreferences the underlying watcher, so the loop doesn't keep running even if there are active stream operations.
      *
-     * @see EventLoop::unreference()
+     * @see \Fledge\Loop::unreference()
      */
     public function unreference(): void;
 

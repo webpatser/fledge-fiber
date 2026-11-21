@@ -9,18 +9,9 @@ use Fledge\Loop;
 
 final class PgSqlConnection extends Internal\PostgresHandleConnection implements PostgresConnection
 {
-    /**
-     * @throws \Error If pecl-ev is used as a loop extension.
-     */
     #[\Override]
     public static function connect(PostgresConfig $config, ?Cancellation $cancellation = null): self
     {
-        // @codeCoverageIgnoreStart
-        /** @psalm-suppress UndefinedClass */
-        if (Loop::getDriver()->getHandle() instanceof \EvLoop) {
-            throw new \Error('ext-pgsql is not compatible with pecl-ev; use pecl-pq or a different loop extension');
-        } // @codeCoverageIgnoreEnd
-
         if (!$connection = \pg_connect($config->getConnectionString(), \PGSQL_CONNECT_ASYNC | \PGSQL_CONNECT_FORCE_NEW)) {
             throw new SqlConnectionException("Failed to create connection resource");
         }
