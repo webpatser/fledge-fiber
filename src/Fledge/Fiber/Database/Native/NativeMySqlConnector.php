@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fledge\Fiber\Database\Native;
 
+use Fledge\Loop\FiberIoWaiter;
 use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectorInterface;
 use Illuminate\Database\Connectors\MySqlConnector;
@@ -222,10 +223,10 @@ class NativeMySqlConnector implements ConnectorInterface
         try {
             if (! \FiberIo\enabled()) {
                 if (self::fiberIoSupportsHooks()) {
-                    \FiberIo\enable(new RevoltWaiter, self::resolveHooks($config));
+                    \FiberIo\enable(new FiberIoWaiter, self::resolveHooks($config));
                 } else {
                     // php-fiberio v0.1.0: no hooks argument.
-                    \FiberIo\enable(new RevoltWaiter);
+                    \FiberIo\enable(new FiberIoWaiter);
                 }
             }
         } catch (\Error $e) {

@@ -9,7 +9,6 @@ declare(strict_types=1);
  * Usage: php -d extension=<path>/fiberio.so mysql_driver_bench_local.php
  *        [--host=127.0.0.1] [--port=13307] [--user=fledge] [--password=fledge]
  *        [--database=fledge_test] [--runs=5] [--scale=0.2]
- *        [--revolt-waiter=~/Development/Github/php-fiberio/src/RevoltWaiter.php]
  *
  * Local sibling of mysql_driver_bench.php: no Laravel app, fledge-fiber's own
  * vendor autoload, tables from seed_local_mariadb.php in the docker mariadb:11.
@@ -17,7 +16,7 @@ declare(strict_types=1);
  *   - "fledge"            : FledgeMySqlPdo on a MysqlConnectionPool (32 connections)
  *   - "pdo_mysql"         : one stock PDO; in the fiber cases its blocking I/O
  *                           serialises the fibers
- *   - "pdo_mysql+fiberio" : FiberIo\enable(new FiberIo\RevoltWaiter) and a pool
+ *   - "pdo_mysql+fiberio" : FiberIo\enable(new FiberIoWaiter) and a pool
  *                           of 32 real PDO connections, one per fiber. Bulk and
  *                           point cases run inside one fiber so the waiter path
  *                           is the one measured. The point case prepares one
@@ -47,10 +46,10 @@ declare(strict_types=1);
  *
  * The hook is enabled only while a fiberio column runs (their PDOs are opened
  * while enabled), so fledge's own sockets never go through fiberio. The native
- * column uses the driver's own Native\RevoltWaiter, the others php-fiberio's.
+ * column enables fiberio through the driver's connector, the others directly;
+ * all use Fledge\Loop\FiberIoWaiter.
  */
 
-use FiberIo\RevoltWaiter;
 use Fledge\Async\Database\Mysql\MysqlConfig;
 use Fledge\Async\Database\Mysql\MysqlConnectionPool;
 use Fledge\Fiber\Database\Native\NativeMariaDbConnection;
@@ -58,8 +57,8 @@ use Fledge\Fiber\Database\Native\NativeMariaDbConnector;
 use Fledge\Fiber\Database\Native\NativeMySqlConnection;
 use Fledge\Fiber\Database\Native\NativeMySqlConnector;
 use Fledge\Fiber\Database\Native\NativePdo;
-use Fledge\Fiber\Database\Native\RevoltWaiter as NativeRevoltWaiter;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
+use Fledge\Loop\FiberIoWaiter;
 use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectionFactory;
 use Illuminate\Database\MariaDbConnection;
@@ -91,7 +90,6 @@ function fail(string $message): never
 $opt = [
     'host' => '127.0.0.1', 'port' => '13307', 'user' => 'fledge', 'password' => 'fledge', 'database' => 'fledge_test',
     'runs' => '5', 'scale' => '0.2',
-    'revolt-waiter' => (getenv('HOME') ?: '').'/Development/Github/php-fiberio/src/RevoltWaiter.php',
 ];
 foreach (array_slice($argv, 1) as $arg) {
     if (preg_match('/^--([a-z-]+)=(.*)$/', $arg, $m) && array_key_exists($m[1], $opt)) {
@@ -109,12 +107,8 @@ if (! in_array($opt['host'], ['127.0.0.1', '::1'], true)) {
 if (! extension_loaded('fiberio')) {
     fail('fiberio is not loaded; run with php -d extension=<path>/modules/fiberio.so');
 }
-if (! is_file($opt['revolt-waiter'])) {
-    fail("RevoltWaiter not found at {$opt['revolt-waiter']}");
-}
 
 require __DIR__.'/../../vendor/autoload.php';
-require $opt['revolt-waiter'];
 
 // ---------------------------------------------------------------- connections
 $dsn = "mysql:host={$opt['host']};port={$opt['port']};dbname={$opt['database']};charset=utf8mb4";
@@ -146,7 +140,7 @@ $fledge = new FledgeMySqlPdo(new MysqlConnectionPool(
 ));
 $stock = $newPdo();
 
-$waiter = new RevoltWaiter;
+$waiter = new FiberIoWaiter;
 FiberIo\enable($waiter);
 $fiberPool = [];
 for ($i = 0; $i < FIBERS; $i++) {
@@ -178,7 +172,7 @@ $native = $isMaria
     ? new NativeMariaDbConnection($nativePool, $opt['database'], '', $nativeConfig)
     : new NativeMySqlConnection($nativePool, $opt['database'], '', $nativeConfig);
 FiberIo\disable();
-$nativeWaiter = new NativeRevoltWaiter;
+$nativeWaiter = new FiberIoWaiter;
 
 // Open the first pooled PDO while the hook is on, then release the main-context lease with a query.
 FiberIo\enable($nativeWaiter);
@@ -218,9 +212,9 @@ if (! $nativePdo instanceof NativePdo || $native->getRawPdo() !== $nativePool) {
 $transport = "Transport check\n"
     ."  fledge-mariadb    : tcp://{$opt['host']}:{$opt['port']} (FledgeMySqlPdo, pool ".FIBERS.")\n"
     ."  pdo_mysql         : {$stockStatus}, port {$opt['port']}\n"
-    ."  pdo_mysql+fiberio : {$fiberStatus}, port {$opt['port']}, ".FIBERS." PDO connections, RevoltWaiter (also the prepare-per-call column)\n"
+    ."  pdo_mysql+fiberio : {$fiberStatus}, port {$opt['port']}, ".FIBERS." PDO connections, FiberIoWaiter (also the prepare-per-call column)\n"
     ."  laravel stock     : {$laravelStockClass} ({$laravelStockConfig['driver']} driver), {$laravelStockStatus}, port {$opt['port']}, one blocking PDO, no fiberio, no pool\n"
-    ."  native-driver     : {$nativeConfig['driver']}, {$nativeStatus}, port {$opt['port']}, pool ".FIBERS.", Native\\RevoltWaiter, via Laravel Connection\n"
+    ."  native-driver     : {$nativeConfig['driver']}, {$nativeStatus}, port {$opt['port']}, pool ".FIBERS.", FiberIoWaiter, via Laravel Connection\n"
     ."  server            : {$version}\n"
     .'  php               : '.PHP_VERSION.', fiberio '.phpversion('fiberio').", runs={$runs}, scale={$scale}\n";
 echo $transport."\n";

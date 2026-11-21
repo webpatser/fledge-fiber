@@ -7,7 +7,7 @@ declare(strict_types=1);
  * (SELECT only, read-only).
  *
  * Usage: php [-d extension=<path>/fiberio.so] mysql_driver_bench.php <app-path>
- *        [--runs=5] [--scale=1.0] [--fiberio-waiter=<path>/RevoltWaiter.php]
+ *        [--runs=5] [--scale=1.0]
  *
  * Boots the Laravel/Fledge app at <app-path> and compares connections on the
  * SAME unix socket and credentials:
@@ -15,12 +15,12 @@ declare(strict_types=1);
  *   - "pdo_mysql"         : runtime clone `mariadb_pdo` with driver `mariadb`
  *   - "pdo_mysql+fiberio" : 32 runtime clones `mariadb_fiberio_<n>` (driver
  *                           `mariadb`, one real PDO per fiber) opened while
- *                           FiberIo\enable(new FiberIo\RevoltWaiter) is on. Bulk
+ *                           FiberIo\enable(new Fledge\Loop\FiberIoWaiter) is on. Bulk
  *                           and point cases run inside one fiber so the waiter
  *                           path is the one measured. The hook is enabled only
  *                           while this column runs. The column is skipped with
- *                           a note when ext/fiberio is not loaded or no
- *                           --fiberio-waiter is given.
+ *                           a note when ext/fiberio is not loaded or the app
+ *                           does not have webpatser/fledge-loop installed.
  *
  * Concurrency uses Fledge\Async\async() + Fledge\Async\Future\await() (the same
  * primitives as FiberDB::concurrent()). pdo_mysql runs in the very same fibers,
@@ -56,20 +56,17 @@ function fail(string $message): never
 $appPath = null;
 $runs = 5;
 $scale = 1.0;
-$waiterPath = null;
 foreach (array_slice($argv, 1) as $arg) {
     if (str_starts_with($arg, '--runs=')) {
         $runs = max(1, (int) substr($arg, 7));
     } elseif (str_starts_with($arg, '--scale=')) {
         $scale = max(0.0001, (float) substr($arg, 8));
-    } elseif (str_starts_with($arg, '--fiberio-waiter=')) {
-        $waiterPath = substr($arg, 17);
     } elseif ($appPath === null) {
         $appPath = rtrim($arg, '/');
     }
 }
 if ($appPath === null || ! is_file("{$appPath}/vendor/autoload.php") || ! is_file("{$appPath}/bootstrap/app.php")) {
-    fail('usage: php mysql_driver_bench.php <app-path> [--runs=5] [--scale=1.0] [--fiberio-waiter=<path>]');
+    fail('usage: php mysql_driver_bench.php <app-path> [--runs=5] [--scale=1.0]');
 }
 
 chdir($appPath);
@@ -108,17 +105,12 @@ $clone['driver'] = 'mariadb';
 unset($clone['pool_size'], $clone['pool_idle_timeout']);
 config(['database.connections.mariadb_pdo' => $clone]);
 
-// fiberio column: only when the extension is loaded and a waiter is given.
+// fiberio column: only when the extension is loaded and the app has the waiter.
 $fiberioNote = null;
 if (! extension_loaded('fiberio')) {
     $fiberioNote = 'ext/fiberio not loaded';
-} elseif ($waiterPath === null || ! is_file($waiterPath)) {
-    $fiberioNote = 'no --fiberio-waiter file given (' . var_export($waiterPath, true) . ')';
-} else {
-    require $waiterPath;
-    if (! class_exists(Revolt\EventLoop::class)) {
-        $fiberioNote = 'revolt/event-loop is not in the app vendor';
-    }
+} elseif (! class_exists(Fledge\Loop\FiberIoWaiter::class)) {
+    $fiberioNote = 'webpatser/fledge-loop is not in the app vendor';
 }
 $fiberio = $fiberioNote === null;
 
@@ -142,7 +134,7 @@ if ($fiberio) {
     if (FiberIo\enabled()) {
         FiberIo\disable();
     }
-    $waiter = new FiberIo\RevoltWaiter;
+    $waiter = new Fledge\Loop\FiberIoWaiter;
     FiberIo\enable($waiter);
     try {
         for ($f = 0; $f < FIBERS; $f++) {
@@ -177,7 +169,7 @@ echo "  configured unix_socket : {$socket}\n";
 echo "  fledge-mariadb         : unix://{$socket} (class " . $fledgePdo::class . ", server @@socket={$fledgeSocket})\n";
 echo "  pdo_mysql              : {$nativeStatus} (server @@socket={$nativeSocket}), same path {$socket}\n";
 echo $fiberio
-    ? "  pdo_mysql+fiberio      : {$fiberStatus} (server @@socket={$fiberSocket}), " . FIBERS . ' PDO connections, RevoltWaiter, fiberio ' . phpversion('fiberio') . "\n"
+    ? "  pdo_mysql+fiberio      : {$fiberStatus} (server @@socket={$fiberSocket}), " . FIBERS . ' PDO connections, FiberIoWaiter, fiberio ' . phpversion('fiberio') . "\n"
     : "  pdo_mysql+fiberio      : SKIPPED ({$fiberioNote})\n";
 echo '  server                 : ' . DB::connection('mariadb')->selectOne('select version() as v')->v . "\n";
 echo '  php                    : ' . PHP_VERSION . ", runs={$runs}, scale={$scale}\n\n";
