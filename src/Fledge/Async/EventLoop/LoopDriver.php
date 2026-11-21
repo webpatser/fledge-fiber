@@ -185,14 +185,21 @@ final class LoopDriver
      *    with `pcntl_signal()` (including `SIG_IGN`) are inherited by the OS and left untouched. Other drivers (ev, uv,
      *    event) are dropped as they are and rely on their extension's own fork handling.
      * 3. The new driver continues the inherited driver's callback id sequence (Revolt's private
-     *    `AbstractDriver::$nextId`, carried by reflection right after the install in step 4 and before this method
+     *    `AbstractDriver::$nextId`, carried by reflection right after the install in step 5 and before this method
      *    returns; ev, uv, event and select drivers all extend AbstractDriver, and a TracingDriver is unwrapped on
      *    either side; if the reflection fails, the ids are reserved through the public API with one E_USER_WARNING,
      *    see continueCallbackIds()), so a parent-created id held by a parent-built object is
      *    unknown in the child instead of naming one of the child's callbacks. Revolt treats an unknown id as a no-op
      *    in `cancel()`, `disable()` and `unreference()`, and throws `InvalidCallbackError` from `enable()`,
      *    `reference()`, `isEnabled()`, `isReferenced()` and `getType()`.
-     * 4. The new driver replaces Revolt's private static `EventLoop::$driver` (the one piece of global state: the
+     * 4. Before the new driver is created, a descriptor-free StreamSelectDriver is installed (Revolt's private static
+     *    is set by reflection, then `EventLoop::setDriver()` garbage-collects with its own placeholder), so every
+     *    unreachable parent object, including an `Io\Poll\Context` whose kqueue number the new driver would
+     *    otherwise reuse, is destroyed first. Only then is the new driver created and installed. A parent
+     *    `Io\Poll\Context` that is still referenced at that point (held in a variable, or a Revolt `IoPollDriver`
+     *    kept by user code) and dropped later in the child closes a descriptor number the child may have reused on
+     *    macOS and BSD; Fledge's own PollDriver parks its Context instead, other owners cannot be fixed from here.
+     * 5. The new driver replaces Revolt's private static `EventLoop::$driver` (the one piece of global state: the
      *    loop fiber, the callback fiber and the suspensions all live inside the driver object). Revolt's own
      *    `setDriver()` refuses while the inherited driver counts as running, so the property is set by reflection,
      *    after which `EventLoop::setDriver()` performs its usual swap with a placeholder driver installed while it
@@ -221,7 +228,12 @@ final class LoopDriver
             );
         }
 
-        $driver = self::create($name); // Throws before anything is discarded.
+        $resolved = self::resolve($name); // Throws before anything is discarded.
+
+        if ($resolved === 'poll' && !PollDriver::isSupported()) {
+            self::create($resolved); // Throws the same exception as install(), still before anything is discarded.
+        }
+
         $property = new \ReflectionProperty(EventLoop::class, 'driver');
         $inherited = $property->isInitialized() ? $property->getValue() : null;
         $released = null;
@@ -239,8 +251,20 @@ final class LoopDriver
         $nextCallbackId = self::nextCallbackId($inherited);
         unset($inherited);
 
-        $property->setValue(null, $driver);
+        // Collect the parent's garbage BEFORE the new driver opens its descriptor. A kqueue is not inherited, so the
+        // number of every parent kqueue is free in the child, and the new driver's kqueue takes the lowest one. A
+        // parent Io\Poll\Context that is unreachable but not yet collected (for example the default driver Revolt
+        // 1.1 creates on the first EventLoop::getDriver() call, kept alive by its own reference cycles until the next
+        // GC run) closes its descriptor number when it is collected: done after the new driver exists, that closed
+        // the new driver's kqueue. A StreamSelectDriver, which owns no descriptor, is installed while Revolt's
+        // setDriver() runs the collection.
+        $placeholder = new StreamSelectDriver();
+        $property->setValue(null, $placeholder);
+        EventLoop::setDriver($placeholder);
+
+        $driver = self::create($resolved);
         EventLoop::setDriver($driver);
+        unset($placeholder);
         self::remember($driver);
 
         // After the install, so a failure here cannot leave the child without a driver, and before this method

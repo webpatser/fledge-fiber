@@ -17,7 +17,7 @@ use Revolt\EventLoop\Driver\StreamSelectDriver;
  * @param  array<string, mixed>  $vars  Variables defined (via var_export) before the code runs.
  * @return array<string, mixed>
  */
-function loopDriverForkScenario(string $code, array $vars = []): array
+function loopDriverForkScenario(string $code, array $vars = [], ?string &$stderr = null): array
 {
     $autoload = dirname(__DIR__, 4).'/vendor/autoload.php';
     $prelude = 'require '.var_export($autoload, true).";\n";
@@ -52,6 +52,27 @@ function loopDriverForkScenario(string $code, array $vars = []): array
     return $decoded;
 }
 
+/**
+ * Fails with the child's own report (exception class, message, origin), its exit status and the shared stderr when
+ * the child caught an exception, instead of leaving only a missing key in an array diff.
+ *
+ * @param  array<string, mixed>  $result
+ */
+function assertForkedChildSucceeded(array $result, string $stderr): void
+{
+    if (isset($result['child']['error'])) {
+        test()->fail(sprintf(
+            "forked child failed: %s: %s at %s (child exit %s)\nchild report: %s\nstderr: %s",
+            $result['child']['error'],
+            $result['child']['message'] ?? '',
+            $result['child']['at'] ?? '?',
+            var_export($result['childExit'] ?? null, true),
+            json_encode($result['child']),
+            $stderr,
+        ));
+    }
+}
+
 /*
  * Parent: $parentDriver with a watched socket pair, a loop signal handler and an await from {main}, then fork.
  * Child ($mode): 'afterFork' calls LoopDriver::afterFork($childDriver); 'afterFork+close' also closes the
@@ -84,6 +105,16 @@ const LOOP_DRIVER_FORK_IO = <<<'PHP'
                 $out['installed'] = EventLoop::getDriver() === $driver;
                 $out['callbacks'] = count(EventLoop::getIdentifiers());
                 $out['sigusr1Default'] = pcntl_signal_get_handler(SIGUSR1) === SIG_DFL;
+                gc_collect_cycles();
+                $handle = $driver->getHandle();
+                $out['handleUsable'] = true;
+                if ($handle instanceof Io\Poll\Context) {
+                    try {
+                        $handle->wait(Time\Duration::fromSeconds(0));
+                    } catch (Throwable) {
+                        $out['handleUsable'] = false; // The new driver's descriptor was closed behind its back.
+                    }
+                }
             }
 
             if ($mode === 'afterFork+close') {
@@ -112,6 +143,7 @@ const LOOP_DRIVER_FORK_IO = <<<'PHP'
         } catch (Throwable $exception) {
             $out['error'] = $exception::class;
             $out['message'] = $exception->getMessage();
+            $out['at'] = $exception->getFile().':'.$exception->getLine();
         }
 
         fwrite($reportPeer, json_encode($out)."\n");
@@ -144,7 +176,9 @@ it('gives a forked child a fresh empty loop while the parent keeps only its own 
         'parentDriver' => $parentDriver,
         'childDriver' => $childDriver,
         'mode' => 'afterFork',
-    ]);
+    ], $stderr);
+
+    assertForkedChildSucceeded($result, $stderr);
 
     expect($result['parentGot'])->toBe('hello again')
         ->and($result['childExit'])->toBe(0)
@@ -153,6 +187,7 @@ it('gives a forked child a fresh empty loop while the parent keeps only its own 
             'installed' => true,
             'callbacks' => 0,
             'sigusr1Default' => true,
+            'handleUsable' => true,
             'got' => 'job',
             'ticked' => true,
         ]);
@@ -170,7 +205,9 @@ it('keeps the parent watching a stream the child closes after afterFork()', func
         'parentDriver' => $parentDriver,
         'childDriver' => 'poll',
         'mode' => 'afterFork+close',
-    ]);
+    ], $stderr);
+
+    assertForkedChildSucceeded($result, $stderr);
 
     expect($result['parentGot'])->toBe('hello again')
         ->and($result['child']['got'] ?? null)->toBe('job');
@@ -468,3 +505,62 @@ it('reserves parent callback ids through the public API when the counter cannot 
         ->and(strlen($childNext) > strlen($parentNext) || ($childNext > $parentNext && strlen($childNext) === strlen($parentNext)))
         ->toBeTrue();
 })->with(['poll', 'select']);
+
+it('collects parent garbage before the child driver opens its descriptor', function (string $childDriver) {
+    // An unreachable parent Io\Poll\Context still waiting for the cycle collector at fork time (as Revolt 1.1's
+    // default IoPollDriver is after install()). On macOS and BSD its kqueue number is free in the child; collected
+    // after the child's new driver took that number, it closed the new driver's kqueue.
+    $result = loopDriverForkScenario(<<<'PHP'
+        use Fledge\Async\EventLoop\LoopDriver;
+        use Revolt\EventLoop;
+
+        // The parent runs on select (no descriptor of its own), so the garbage Context holds the lowest kqueue
+        // number, the one the child's new driver gets. Created after install(), whose setDriver() collects cycles.
+        LoopDriver::install('select');
+        Fledge\Async\delay(0.01);
+
+        $garbage = new stdClass();
+        $garbage->self = $garbage;
+        $garbage->context = new Io\Poll\Context();
+        unset($garbage); // Unreachable, but only the cycle collector frees it.
+        [$report, $reportPeer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+
+        $pid = pcntl_fork();
+
+        if ($pid === 0) {
+            $out = [];
+            try {
+                $driver = LoopDriver::afterFork($childDriver);
+                gc_collect_cycles();
+                $driver->getHandle()?->wait(Time\Duration::fromSeconds(0));
+                $out['handleUsable'] = true;
+                [$own, $ownPeer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+                fwrite($ownPeer, 'job');
+                $got = '';
+                $id = EventLoop::onReadable($own, function () use ($own, &$got) {
+                    $got .= fread($own, 100);
+                });
+                Fledge\Async\delay(0.05);
+                EventLoop::cancel($id);
+                $out['got'] = $got;
+            } catch (Throwable $exception) {
+                $out['error'] = $exception::class;
+                $out['message'] = $exception->getMessage();
+                $out['at'] = $exception->getFile().':'.$exception->getLine();
+            }
+
+            fwrite($reportPeer, json_encode($out)."\n");
+            exit(0);
+        }
+
+        pcntl_waitpid($pid, $status);
+        echo json_encode([
+            'childExit' => pcntl_wifexited($status) ? pcntl_wexitstatus($status) : -pcntl_wtermsig($status),
+            'child' => json_decode((string) fgets($report), true),
+        ]);
+        PHP, ['childDriver' => $childDriver], $stderr);
+
+    assertForkedChildSucceeded($result, $stderr);
+
+    expect($result['child'])->toBe(['handleUsable' => true, 'got' => 'job']);
+})->with(['poll', 'revolt'])->skip($requiresFork, 'needs pcntl and posix');
