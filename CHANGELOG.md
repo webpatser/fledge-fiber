@@ -1,5 +1,16 @@
 # Changelog
 
+## v13.43.0.3 - 2026-11-21
+
+### Changed
+- PHP 8.6 is now required (`"php": "^8.6"`); PHP 8.5 is dropped. CI runs on 8.6 only.
+- Dev toolchain moves to Pest 5 (PHPUnit 13), which is needed to install on PHP 8.6.
+- Tests: `ReflectionMethod::invoke()` is no longer called with an object for static methods, and `phpunit.xml` sets `memory_limit` to -1 so a plain `vendor/bin/pest` matches CI.
+
+### Fixed
+- `Http2Driver` end-of-body handling no longer returns from a `finally` block (deprecated in PHP 8.6); the stream release check moved into one condition.
+- `Sync\Lock` and `ContextWorkerPool` use `SplObjectStorage::offsetSet()` and `offsetUnset()` instead of the `attach()` and `detach()` methods deprecated in PHP 8.5.
+
 ## v13.43.0.2 - 2026-11-19
 
 ### Fixed
