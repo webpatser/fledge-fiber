@@ -155,7 +155,7 @@ function localInfileConfig(int $port): MysqlConfig
 }
 
 beforeEach(function () {
-    // Without ext-uv or ext-eio the default is ParallelFilesystemDriver, which runs file I/O in worker
+    // Without ext-eio the default is ParallelFilesystemDriver, which runs file I/O in worker
     // processes. This file tests the MySQL protocol, so the blocking driver keeps it deterministic and
     // free of worker processes.
     filesystem(new BlockingFilesystemDriver);

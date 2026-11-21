@@ -13,7 +13,7 @@ use function Fledge\Async\async;
 
 /*
  * Without ext-parallel, DefaultContextFactory starts a ProcessContext and forwards the child's STDOUT and
- * STDERR to the parent's. Without ext-uv or ext-eio, the default filesystem driver is ParallelFilesystemDriver,
+ * STDERR to the parent's. Without ext-eio, the default filesystem driver is ParallelFilesystemDriver,
  * whose workers come from DefaultContextFactory; MySQL LOAD DATA LOCAL INFILE (ConnectionProcessor) opens its
  * file through that driver, so a broken factory fails every LOCAL INFILE query in that setup.
  */
