@@ -86,3 +86,13 @@ services:
       - "18081:8080"
     environment:
       PORT: 8080
+
+  # Linux run of the event loop driver tests (Epoll and Poll backends).
+  #   docker compose --profile linux run --rm php86 vendor/bin/pest --no-coverage tests/Fledge/Async/EventLoop
+  php86:
+    build: docker/php86-cli
+    profiles: ["linux"]
+    working_dir: /app
+    volumes:
+      - .:/app:ro
+    command: ["php", "-v"]
