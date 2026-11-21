@@ -26,42 +26,64 @@ final class PqConnection extends Internal\PostgresHandleConnection implements Po
         // failed: " prefix libpq already wrote, so a failed connect would lose the text pdo_pgsql shows.
         // The connect itself is non-blocking anyway (PQconnectStart).
         $deferred = new DeferredFuture();
+        $callbackId = null;
 
-        /** @psalm-suppress UndefinedVariable $poll is defined below. */
-        $callback = static function () use (&$poll, &$await, $connection, $config, $deferred): void {
+        // Fledge: libpq may replace its socket during the connect (next address or host after a failed
+        // attempt, or a retry without SSL), and it closes the old one inside poll(). A kqueue or epoll
+        // registration made for the old descriptor never fires for the new one. pq creates its socket
+        // stream once, in the constructor, so a fresh stream as PgSqlConnection uses is not available:
+        // every step cancels its watcher before polling and watches the stream again from a deferred
+        // callback, after the loop has dropped the old registration, so the driver registers the
+        // descriptor anew. This relies on the new socket reusing the old descriptor number (the lowest
+        // free one), as pq's socket property itself does.
+        $watch = static function (int $result) use (&$step, &$callbackId, $connection): void {
+            $callbackId = $result === pq\Connection::POLLING_READING
+                ? Loop::onReadable($connection->socket, $step)
+                : Loop::onWritable($connection->socket, $step);
+        };
+
+        $step = static function () use (&$callbackId, $watch, $connection, $config, $deferred): void {
+            Loop::cancel($callbackId);
+            $callbackId = null;
+
             switch ($result = $connection->poll()) {
                 case pq\Connection::POLLING_READING:
                 case pq\Connection::POLLING_WRITING:
-                    return; // Connection still reading or writing, so return and leave callback enabled.
+                    $callbackId = Loop::defer(static function () use ($watch, $result): void {
+                        $watch($result);
+                    });
+                    return;
 
                 case pq\Connection::POLLING_FAILED:
                     $deferred->error(new SqlConnectionException($connection->errorMessage));
-                    break;
+                    return;
 
                 case pq\Connection::POLLING_OK:
                     $connection->nonblocking = true;
                     $connection->unbuffered = true;
 
                     $deferred->complete(new self($connection, $config));
-                    break;
+                    return;
 
                 default:
                     $deferred->error(new SqlConnectionException('Unexpected connection status value: ' . $result));
-                    break;
+                    return;
             }
-
-            Loop::disable($poll);
-            Loop::disable($await);
         };
 
-        $poll = Loop::onReadable($connection->socket, $callback);
-        $await = Loop::onWritable($connection->socket, $callback);
+        // libpq starts an async connect in the writing state.
+        $watch(pq\Connection::POLLING_WRITING);
 
         try {
             return $deferred->getFuture()->await($cancellation);
         } finally {
-            Loop::cancel($poll);
-            Loop::cancel($await);
+            if ($callbackId !== null) {
+                Loop::cancel($callbackId);
+            }
+
+            // The step closure refers to itself; break that cycle so the connection is freed (and
+            // its session ended) as soon as its handle lets go, not at the next GC run.
+            $step = null;
         }
     }
 
