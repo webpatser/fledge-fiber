@@ -7,8 +7,13 @@ namespace Fledge\Fiber\Database\Native;
 use const FiberIo\READABLE;
 use const FiberIo\WRITABLE;
 
+use Io\Poll\Backend;
+use Io\Poll\Context;
+use Io\Poll\Event;
+use Io\Poll\FailedPollWaitException;
 use Revolt\EventLoop;
 use Revolt\EventLoop\Internal\AbstractDriver;
+use Time\Duration;
 
 /**
  * Waiter for FiberIo\enable() that parks the current fiber on the Revolt
@@ -20,7 +25,7 @@ use Revolt\EventLoop\Internal\AbstractDriver;
  * fibers is the event loop's own: with HOOK_SLEEP on, Revolt's idle
  * usleep() until the next timer is hooked too. That fiber cannot park on
  * itself, so there the waiter never suspends: a timer wait hands the sleep
- * back to fiberio, which blocks, and a stream wait blocks in stream_select()
+ * back to fiberio, which blocks, and a stream wait blocks in poll(2)
  * (see waitInLoopFiber()).
  *
  * This is the canonical Revolt waiter for php-fiberio, which no longer
@@ -84,8 +89,7 @@ final class RevoltWaiter
      * fiberio retries once and then sleeps the remainder blocking, which is
      * exactly the stock usleep() the loop asked for. True would mean "woken",
      * which ends a hooked usleep() at once and makes the loop busy-spin on
-     * its idle sleep. A stream call blocks in stream_select() on the
-     * watch-only dup.
+     * its idle sleep. A stream call blocks in poll(2) on the watch-only dup.
      *
      * @param  resource|null  $stream
      */
@@ -95,20 +99,44 @@ final class RevoltWaiter
             return false;
         }
 
-        $read = ($events & READABLE) ? [$stream] : null;
-        $write = ($events & WRITABLE) ? [$stream] : null;
-        $except = null;
-
-        if ($timeout === null) {
-            $seconds = null;
-            $micro = null;
-        } else {
-            $timeout = \max(0.0, $timeout);
-            $seconds = (int) $timeout;
-            $micro = (int) (($timeout - $seconds) * 1_000_000);
+        $watch = [];
+        if ($events & READABLE) {
+            $watch[] = Event::Read;
+        }
+        if ($events & WRITABLE) {
+            $watch[] = Event::Write;
         }
 
-        return (int) @\stream_select($read, $write, $except, $seconds, $micro) > 0;
+        // A fresh poll(2) context per call: no FD_SETSIZE limit like
+        // stream_select(), no kernel object to leak across fork, and the
+        // watched dup may differ between calls. It costs about 300 ns more
+        // than stream_select() on a ready socket. add() throws
+        // InvalidHandleException for a stream it cannot watch; that, like
+        // any wait failure other than EINTR, propagates to fiberio, which
+        // reports the I/O as failed.
+        $context = new Context(Backend::Poll);
+        $context->add(new \StreamPollHandle($stream), $watch);
+
+        $deadline = $timeout === null ? null : \hrtime(true) + (int) \ceil(\max(0.0, $timeout) * 1_000_000_000);
+
+        for (;;) {
+            $remaining = $deadline === null ? null : Duration::fromNanoseconds(\max(0, $deadline - \hrtime(true)));
+
+            try {
+                // HangUp and Error are reported without being asked for and
+                // count as ready, as they did for stream_select(): the next
+                // read or write surfaces the real error.
+                return $context->wait($remaining, 1) !== [];
+            } catch (FailedPollWaitException $exception) {
+                if ($exception->getCode() !== FailedPollWaitException::ERROR_INTERRUPTED) {
+                    throw $exception;
+                }
+                // EINTR: wait again for what is left, like fiberio's own poll().
+                if ($deadline !== null && \hrtime(true) >= $deadline) {
+                    return false;
+                }
+            }
+        }
     }
 
     /**
