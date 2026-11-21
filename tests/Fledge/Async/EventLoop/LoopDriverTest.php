@@ -9,22 +9,64 @@ use Revolt\EventLoop\Driver\StreamSelectDriver;
 use Revolt\EventLoop\DriverFactory;
 
 /*
- * Every test starts on a fresh, empty StreamSelectDriver and restores the suite's previous driver and the
- * FLEDGE_EVENT_LOOP environment variable afterwards.
+ * resolve() and create() never touch the process-wide driver, so those tests run in this process. Every test that
+ * calls install() runs in a fresh PHP process instead: once any earlier test in the suite has awaited from {main},
+ * Revolt keeps its loop fiber suspended and reports the global driver as running until EventLoop::run() returns,
+ * so the suite cannot promise an idle loop here (and Revolt's own setDriver() refuses to swap it).
+ *
+ * Each test restores the FLEDGE_EVENT_LOOP environment variable afterwards.
  */
 beforeEach(function () {
-    $this->previousDriver = EventLoop::getDriver();
     $this->previousEnv = getenv(LoopDriver::ENV);
     putenv(LoopDriver::ENV);
-    EventLoop::setDriver(new StreamSelectDriver());
 });
 
 afterEach(function () {
-    EventLoop::setDriver($this->previousDriver);
     $this->previousEnv === false
         ? putenv(LoopDriver::ENV)
         : putenv(LoopDriver::ENV.'='.$this->previousEnv);
 });
+
+/**
+ * Run PHP code in a fresh process (autoloaded, FLEDGE_EVENT_LOOP unset) and decode the JSON it prints.
+ *
+ * @param  array<string, mixed>  $vars  Variables defined (via var_export) before the code runs.
+ * @return array<string, mixed>
+ */
+function loopDriverInFreshProcess(string $code, array $vars = []): array
+{
+    $autoload = dirname(__DIR__, 4).'/vendor/autoload.php';
+    $prelude = 'require '.var_export($autoload, true).";\n";
+
+    foreach ($vars as $name => $value) {
+        $prelude .= '$'.$name.' = '.var_export($value, true).";\n";
+    }
+
+    $env = getenv();
+    unset($env[LoopDriver::ENV]);
+
+    $process = proc_open(
+        [PHP_BINARY, '-d', 'display_errors=stderr', '-r', $prelude.$code],
+        [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        null,
+        $env,
+    );
+
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    proc_close($process);
+
+    $decoded = json_decode($stdout, true);
+
+    if (! is_array($decoded)) {
+        test()->fail("subprocess did not print JSON. stdout: {$stdout} stderr: {$stderr}");
+    }
+
+    return $decoded;
+}
 
 $revoltClass = (new DriverFactory())->create()::class;
 $autoName = PollDriver::isSupported() ? 'poll' : 'revolt';
@@ -81,11 +123,19 @@ it('reads the environment variable when no name is given', function () {
 
     expect(LoopDriver::resolve())->toBe('select')
         ->and(LoopDriver::create()::class)->toBe(StreamSelectDriver::class);
+});
 
-    putenv(LoopDriver::ENV.'=poll');
+it('installs the driver named by the environment variable when no name is given', function () {
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        putenv(Fledge\Async\EventLoop\LoopDriver::ENV.'=poll');
+        $driver = Fledge\Async\EventLoop\LoopDriver::install();
+        echo json_encode([
+            'class' => $driver::class,
+            'installed' => Revolt\EventLoop::getDriver() === $driver,
+        ]);
+        PHP);
 
-    expect(LoopDriver::install())->toBeInstanceOf(PollDriver::class)
-        ->and(EventLoop::getDriver())->toBeInstanceOf(PollDriver::class);
+    expect($result)->toBe(['class' => PollDriver::class, 'installed' => true]);
 });
 
 it('prefers an explicit name over the environment variable', function () {
@@ -94,75 +144,134 @@ it('prefers an explicit name over the environment variable', function () {
     expect(LoopDriver::resolve('select'))->toBe('select');
 });
 
-it('installs on an idle empty loop and runs a deferred callback and a timer', function (string $name) {
-    $driver = LoopDriver::install($name);
+it('installs on an idle empty loop and runs a deferred callback and a timer', function (string $name, string $class) {
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        $driver = Fledge\Async\EventLoop\LoopDriver::install($name);
+        $installed = Revolt\EventLoop::getDriver() === $driver;
 
-    expect(EventLoop::getDriver())->toBe($driver);
+        $order = [];
+        Revolt\EventLoop::delay(0.01, function () use (&$order) {
+            $order[] = 'timer';
+        });
+        Revolt\EventLoop::defer(function () use (&$order) {
+            $order[] = 'defer';
+        });
 
-    $order = [];
-    EventLoop::delay(0.01, function () use (&$order) {
-        $order[] = 'timer';
-    });
-    EventLoop::defer(function () use (&$order) {
-        $order[] = 'defer';
-    });
+        Revolt\EventLoop::run();
 
-    EventLoop::run();
+        echo json_encode(['class' => $driver::class, 'installed' => $installed, 'order' => $order]);
+        PHP, ['name' => $name]);
 
-    expect($order)->toBe(['defer', 'timer']);
-})->with(['poll', 'select', 'revolt']);
+    expect($result)->toBe(['class' => $class, 'installed' => true, 'order' => ['defer', 'timer']]);
+})->with([
+    'poll' => ['poll', PollDriver::class],
+    'select' => ['select', StreamSelectDriver::class],
+    'revolt' => ['revolt', $revoltClass],
+]);
 
 it('always installs a fresh driver, even of the same kind', function () {
-    $first = LoopDriver::install('poll');
-    $second = LoopDriver::install('poll');
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        $first = Fledge\Async\EventLoop\LoopDriver::install('poll');
+        $second = Fledge\Async\EventLoop\LoopDriver::install('poll');
+        echo json_encode([
+            'class' => $second::class,
+            'fresh' => $second !== $first,
+            'installed' => Revolt\EventLoop::getDriver() === $second,
+        ]);
+        PHP);
 
-    expect($second)->toBeInstanceOf(PollDriver::class)
-        ->and($second)->not->toBe($first)
-        ->and(EventLoop::getDriver())->toBe($second);
+    expect($result)->toBe(['class' => PollDriver::class, 'fresh' => true, 'installed' => true]);
 });
 
 it('refuses to install while the loop is running', function () {
-    $before = EventLoop::getDriver();
-    $caught = null;
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        $before = Revolt\EventLoop::getDriver();
+        $caught = null;
 
-    EventLoop::defer(function () use (&$caught) {
+        Revolt\EventLoop::defer(function () use (&$caught) {
+            try {
+                Fledge\Async\EventLoop\LoopDriver::install('select');
+            } catch (Throwable $exception) {
+                $caught = $exception;
+            }
+        });
+
+        Revolt\EventLoop::run();
+
+        echo json_encode([
+            'class' => $caught === null ? null : $caught::class,
+            'message' => $caught?->getMessage(),
+            'unchanged' => Revolt\EventLoop::getDriver() === $before,
+        ]);
+        PHP);
+
+    expect($result['class'])->toBe(LogicException::class)
+        ->and($result['message'])->toContain('while the event loop is running')
+        ->and($result['unchanged'])->toBeTrue();
+});
+
+it('refuses to install after {main} awaited, until the loop has run to completion', function () {
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        $before = Revolt\EventLoop::getDriver();
+        $suspension = Revolt\EventLoop::getSuspension();
+        Revolt\EventLoop::defer(fn () => $suspension->resume());
+        $suspension->suspend();
+
+        $message = null;
         try {
-            LoopDriver::install('select');
+            Fledge\Async\EventLoop\LoopDriver::install('select');
+        } catch (LogicException $exception) {
+            $message = $exception->getMessage();
+        }
+        $unchanged = Revolt\EventLoop::getDriver() === $before;
+
+        Revolt\EventLoop::run();
+        $after = Fledge\Async\EventLoop\LoopDriver::install('select');
+
+        echo json_encode(['message' => $message, 'unchanged' => $unchanged, 'after' => $after::class]);
+        PHP);
+
+    expect($result['message'])->toContain('while the event loop is running')
+        ->and($result['unchanged'])->toBeTrue()
+        ->and($result['after'])->toBe(StreamSelectDriver::class);
+});
+
+it('refuses to install while callbacks are registered', function (string $case) {
+    $result = loopDriverInFreshProcess(<<<'PHP'
+        $before = Revolt\EventLoop::getDriver();
+        $id = match ($case) {
+            'enabled defer' => Revolt\EventLoop::defer(static fn () => null),
+            'disabled timer' => Revolt\EventLoop::disable(Revolt\EventLoop::delay(10, static fn () => null)),
+            'unreferenced repeat' => Revolt\EventLoop::unreference(Revolt\EventLoop::repeat(10, static fn () => null)),
+            'unreferenced readable' => Revolt\EventLoop::unreference(
+                Revolt\EventLoop::onReadable(fopen('php://memory', 'r'), static fn () => null),
+            ),
+        };
+
+        $caught = null;
+        try {
+            Fledge\Async\EventLoop\LoopDriver::install('select');
         } catch (Throwable $exception) {
             $caught = $exception;
         }
-    });
+        $unchanged = Revolt\EventLoop::getDriver() === $before;
 
-    EventLoop::run();
+        Revolt\EventLoop::cancel($id);
+        $after = Fledge\Async\EventLoop\LoopDriver::install('select');
 
-    expect($caught)->toBeInstanceOf(LogicException::class)
-        ->and($caught->getMessage())->toContain('while the event loop is running')
-        ->and(EventLoop::getDriver())->toBe($before);
-});
+        echo json_encode([
+            'class' => $caught === null ? null : $caught::class,
+            'message' => $caught?->getMessage(),
+            'unchanged' => $unchanged,
+            'replaced' => $after !== $before && Revolt\EventLoop::getDriver() === $after,
+        ]);
+        PHP, ['case' => $case]);
 
-it('refuses to install while callbacks are registered', function (Closure $register) {
-    $before = EventLoop::getDriver();
-    $id = $register();
-
-    try {
-        expect(fn () => LoopDriver::install('select'))
-            ->toThrow(LogicException::class, '1 callback(s) registered')
-            ->and(EventLoop::getDriver())->toBe($before);
-    } finally {
-        EventLoop::cancel($id);
-    }
-
-    expect(LoopDriver::install('select'))->not->toBe($before);
-})->with([
-    'enabled defer' => fn () => EventLoop::defer(static fn () => null),
-    'disabled timer' => fn () => EventLoop::disable(EventLoop::delay(10, static fn () => null)),
-    'unreferenced repeat' => fn () => EventLoop::unreference(EventLoop::repeat(10, static fn () => null)),
-    'unreferenced readable' => function () {
-        $stream = fopen('php://memory', 'r');
-
-        return EventLoop::unreference(EventLoop::onReadable($stream, static fn () => null));
-    },
-]);
+    expect($result['class'])->toBe(LogicException::class)
+        ->and($result['message'])->toContain('1 callback(s) registered')
+        ->and($result['unchanged'])->toBeTrue()
+        ->and($result['replaced'])->toBeTrue();
+})->with(['enabled defer', 'disabled timer', 'unreferenced repeat', 'unreferenced readable']);
 
 it('leaves the active driver untouched when creation fails', function () {
     $before = EventLoop::getDriver();
