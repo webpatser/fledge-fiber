@@ -1,12 +1,12 @@
 # Fledge Fiber
 
-Non-blocking async drivers for the [Fledge framework](https://github.com/webpatser/fledge). PHP 8.5 only.
+Non-blocking async drivers for the [Fledge framework](https://github.com/webpatser/fledge). PHP 8.6 only.
 
 Provides fiber-based database (MySQL, MariaDB, PostgreSQL), Redis, HTTP, WebSocket, filesystem, and parallel processing drivers that integrate seamlessly with Laravel's service container.
 
 ## Requirements
 
-- PHP 8.5+
+- PHP 8.6+
 - [revolt/event-loop](https://github.com/revoltphp/event-loop) ^1.0
 - fledge-framework v13.42.0.1 and later require fledge-fiber 13.42.0.1 or later (earlier v13 frameworks work with any fiber v13 release)
 
@@ -349,9 +349,9 @@ Remaining differences:
 
 The Laravel integration layer lives under `Fledge\Fiber\` and bridges async drivers to Laravel's database, Redis, HTTP, and Livewire systems.
 
-## PHP 8.5 Features
+## PHP 8.6 Features
 
-This library requires PHP 8.5 and uses:
+This library requires PHP 8.6 and uses:
 
 - `#[\NoDiscard]` on Future-returning methods
 - `clone()` with property overrides for immutable configs

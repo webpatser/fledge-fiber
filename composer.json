@@ -1,11 +1,11 @@
 {
     "name": "webpatser/fledge-fiber",
-    "description": "Non-blocking async drivers for the Fledge framework — PHP 8.5 only",
+    "description": "Non-blocking async drivers for the Fledge framework, PHP 8.6 only",
     "license": "Apache-2.0",
     "type": "library",
     "keywords": ["async", "fiber", "non-blocking", "mysql", "redis", "http", "websocket", "postgres"],
     "require": {
-        "php": "^8.5",
+        "php": "^8.6",
         "revolt/event-loop": "^1.0",
         "daverandom/libdns": "^2.1",
         "guzzlehttp/guzzle": "^7.8 || ^8.0",
@@ -28,9 +28,9 @@
         "livewire/livewire": "^4.4.8",
         "mockery/mockery": "^1.6",
         "pdphilip/elasticsearch": "^5.0",
-        "pestphp/pest": "^4.0",
+        "pestphp/pest": "^5.0",
         "phpoption/phpoption": "^1.9",
-        "phpunit/phpunit": "^11.0 || ^12.0 || ^13.0",
+        "phpunit/phpunit": "^13.0",
         "symfony/http-client": "^7.4 || ^8.0",
         "symfony/postmark-mailer": "^7.4 || ^8.0",
         "vlucas/phpdotenv": "^5.6"

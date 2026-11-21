@@ -89,7 +89,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.5'
+          php-version: '8.6'
           extensions: mbstring, pdo, pdo_mysql, pdo_pgsql, sockets, pcntl, ffi
           tools: pie
           coverage: none

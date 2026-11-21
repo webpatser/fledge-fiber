@@ -11,6 +11,7 @@
         </testsuite>
     </testsuites>
     <php>
+        <ini name="memory_limit" value="-1"/>
         <env name="FLEDGE_TEST_MYSQL_HOST" value="127.0.0.1"/>
         <env name="FLEDGE_TEST_MYSQL_PORT" value="13306"/>
         <env name="FLEDGE_TEST_MYSQL_USER" value="fledge"/>
