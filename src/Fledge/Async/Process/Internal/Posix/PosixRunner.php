@@ -102,6 +102,8 @@ final class PosixRunner implements ProcessRunner
         try {
             $suspension->suspend();
         } catch (\Throwable $exception) {
+            // proc_close() closes the data pipe: stop watching it first.
+            Loop::cancel($callbackId);
             \proc_terminate($proc);
             \proc_close($proc);
             throw $exception;

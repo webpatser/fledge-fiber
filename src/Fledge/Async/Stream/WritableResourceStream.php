@@ -159,6 +159,10 @@ final class WritableResourceStream implements WritableStream, ResourceStream
                 } finally {
                     /** @psalm-suppress RedundantCondition */
                     if (!$writable && \is_resource($resource)) {
+                        // Cancel before the close: the loop must never watch a closed stream. Writes still queued
+                        // (only when an exception left the loop above) are failed below instead of on a later call.
+                        Loop::cancel($callbackId);
+
                         $meta = \stream_get_meta_data($resource);
                         if (\str_contains($meta["mode"], "+")) {
                             \stream_socket_shutdown($resource, \STREAM_SHUT_WR);
@@ -177,6 +181,18 @@ final class WritableResourceStream implements WritableStream, ResourceStream
                             if (!$onClose->isComplete()) {
                                 $onClose->complete();
                             }
+                        }
+                    } elseif (!$writable) {
+                        Loop::cancel($callbackId);
+
+                        do {
+                            /** @var Suspension|null $suspension */
+                            [, $suspension] = $writes->shift();
+                            $suspension?->resume(static fn () => throw new ClosedException("The stream was closed"));
+                        } while (!$writes->isEmpty());
+
+                        if (!$onClose->isComplete()) {
+                            $onClose->complete();
                         }
                     }
                 }
@@ -275,6 +291,9 @@ final class WritableResourceStream implements WritableStream, ResourceStream
      */
     public function close(): void
     {
+        // Cancel the loop callback before the resource is closed: the loop must never watch a closed stream.
+        Loop::cancel($this->callbackId);
+
         if (\is_resource($this->resource) && \get_resource_type($this->resource) === 'stream') {
             // Error suppression, as resource might already be closed
             $meta = \stream_get_meta_data($this->resource);

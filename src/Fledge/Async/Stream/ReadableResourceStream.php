@@ -245,6 +245,9 @@ final class ReadableResourceStream implements ReadableStream, ResourceStream, \I
      */
     public function close(): void
     {
+        // Cancel the loop callback before the resource is closed: the loop must never watch a closed stream.
+        Loop::cancel($this->callbackId);
+
         if (\is_resource($this->resource) && \get_resource_type($this->resource) === 'stream') {
             $meta = \stream_get_meta_data($this->resource);
 

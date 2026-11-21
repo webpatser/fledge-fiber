@@ -47,6 +47,7 @@ final class PqHandle extends AbstractHandle
             &$lastUsedAt,
             &$listeners,
             &$connection,
+            &$await,
             $onClose,
         ): void {
             $lastUsedAt = \time();
@@ -60,8 +61,10 @@ final class PqHandle extends AbstractHandle
                     throw new SqlConnectionException($connection->errorMessage);
                 }
             } catch (SqlConnectionException $exception) {
-                $connection = null; // Marks connection as dead.
+                // Stop watching before the connection (and with it the socket) is dropped.
                 Loop::disable($watcher);
+                Loop::disable($await);
+                $connection = null; // Marks connection as dead.
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
 
@@ -88,6 +91,7 @@ final class PqHandle extends AbstractHandle
             &$deferred,
             &$listeners,
             &$connection,
+            $poll,
             $onClose,
         ): void {
             try {
@@ -96,6 +100,9 @@ final class PqHandle extends AbstractHandle
                 }
             } catch (pq\Exception $exception) {
                 $exception = new SqlConnectionException("Flushing the connection failed", 0, $exception);
+                // Stop watching before the connection (and with it the socket) is dropped.
+                Loop::disable($watcher);
+                Loop::disable($poll);
                 $connection = null; // Marks connection as dead.
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
@@ -119,8 +126,10 @@ final class PqHandle extends AbstractHandle
     #[\Override]
     public function close(): void
     {
-        $this->handle = null;
+        // Cancels the poll and await watchers while pq still owns the socket; dropping the handle afterwards
+        // closes it with nothing watching it.
         parent::close();
+        $this->handle = null;
     }
 
     /**

@@ -92,6 +92,7 @@ final class PgSqlHandle extends AbstractHandle
             &$listeners,
             &$connection,
             &$lostMessage,
+            &$await,
             $onClose,
         ): void {
             if (!$connection) {
@@ -161,8 +162,10 @@ final class PgSqlHandle extends AbstractHandle
                 if ($lostMessage !== null) {
                     $exception = new SqlConnectionException($lostMessage, 0, $exception);
                 }
-                $connection = null; // Marks connection as dead.
+                // Stop watching before the connection (and with it the socket) is dropped.
                 Loop::disable($watcher);
+                Loop::disable($await);
+                $connection = null; // Marks connection as dead.
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
             } finally {
@@ -174,6 +177,7 @@ final class PgSqlHandle extends AbstractHandle
             &$deferred,
             &$listeners,
             &$connection,
+            $poll,
             $onClose,
         ): void {
             if (!$connection) {
@@ -195,8 +199,10 @@ final class PgSqlHandle extends AbstractHandle
                     throw new SqlConnectionException(\pg_last_error($connection));
                 }
             } catch (SqlConnectionException $exception) {
-                $connection = null; // Marks connection as dead.
+                // Stop watching before the connection (and with it the socket) is dropped.
                 Loop::disable($watcher);
+                Loop::disable($poll);
+                $connection = null; // Marks connection as dead.
 
                 self::shutdown($listeners, $deferred, $onClose, $exception);
             } finally {

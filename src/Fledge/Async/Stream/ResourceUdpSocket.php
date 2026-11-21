@@ -224,6 +224,9 @@ final class ResourceUdpSocket implements UdpSocket, ResourceStream
      */
     public function close(): void
     {
+        // Cancel the loop callback before the resource is closed: the loop must never watch a closed stream.
+        Loop::cancel($this->callbackId);
+
         if ($this->socket) {
             /** @psalm-suppress InvalidPropertyAssignmentValue */
             \fclose($this->socket);
