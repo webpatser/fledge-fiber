@@ -1,6 +1,6 @@
 # Changelog
 
-## v13.43.0.3 - 2026-11-21
+## v13.43.0.3 - 2026-11-22
 
 ### Changed
 - BREAKING: the event loop is now [webpatser/fledge-loop](https://github.com/webpatser/fledge-loop) (`Fledge\Loop`) instead of revolt/event-loop. Code that uses `Revolt\EventLoop` directly must be renamed: `Revolt\EventLoop` becomes `Fledge\Loop` (so `EventLoop::defer()` becomes `Loop::defer()` after `use Fledge\Loop;`) and `Revolt\EventLoop\X` becomes `Fledge\Loop\X`. fledge-loop conflicts with revolt/event-loop, so Composer refuses to install both. Its default driver uses PHP 8.6 `Io\Poll` (epoll on Linux, kqueue on macOS/BSD) and is not bound by the 1024 descriptor limit of `stream_select`; `FLEDGE_EVENT_LOOP` (`auto`, `poll`, `select`) chooses the driver, and `Loop::install()`, `Loop::afterFork()` and `Loop::fork()` cover a worker's own setup and forked children. The `event_loop` config key carries the same values. The fiberio waiter is `Fledge\Loop\FiberIoWaiter`.
