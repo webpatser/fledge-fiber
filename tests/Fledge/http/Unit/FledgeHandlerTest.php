@@ -445,7 +445,7 @@ it('invokeStats does nothing without on_stats option', function () {
 
     $request = new Request('GET', 'https://example.com');
 
-    // Should not throw — just silently does nothing
+    // Should not throw, just silently does nothing
     $method->invoke($handler, $request, [], null, microtime(true));
 
     expect(true)->toBeTrue();

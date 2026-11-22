@@ -19,7 +19,7 @@ use function Livewire\trigger;
  * When a Livewire request contains multiple component payloads (e.g., a
  * dashboard with 5 components), each update runs in its own Fiber. With
  * non-blocking I/O drivers (Fledge Async database, Redis, HTTP), the updates
- * interleave during I/O waits — wall-clock time approaches the slowest
+ * interleave during I/O waits, wall-clock time approaches the slowest
  * component rather than the sum of all components.
  */
 class FiberHandleRequests extends HandleRequests

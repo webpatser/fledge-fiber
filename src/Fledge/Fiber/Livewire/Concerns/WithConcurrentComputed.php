@@ -48,7 +48,7 @@ trait WithConcurrentComputed
         $methods = $this->getComputedMethods();
 
         if (count($methods) <= 1) {
-            // Single or no computed — just access normally to warm cache
+            // Single or no computed, just access normally to warm cache
             foreach ($methods as $method) {
                 $this->{$method};
             }

@@ -247,7 +247,7 @@ it('setFetchMode persists across multiple fetchAll calls', function () {
 
     expect($result)->toBe([['id' => 1]]);
 
-    // Set new result and fetch again — mode should persist
+    // Set new result and fetch again, mode should persist
     $result2 = new FakeRowResult($rows2);
 
     $resultProp = new ReflectionProperty($stmt, 'result');
