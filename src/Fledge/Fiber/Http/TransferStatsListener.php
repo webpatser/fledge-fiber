@@ -36,12 +36,28 @@ class TransferStatsListener implements EventListener
 
     public ?int $sizeDownload = null;
 
+    /**
+     * Streams obtained from the connection so far, this request's included.
+     * Both HTTP/1.1 and HTTP/2 connections count from 1 per connection, so
+     * anything above 1 means an earlier request already opened it.
+     */
+    public int $streamCount = 0;
+
     public function __construct(protected float $startTime) {}
 
     public function connectionAcquired(Request $request, Connection $connection, int $streamCount): void
     {
-        $this->connectTime = $connection->getConnectDuration();
-        $this->appconnectTime = $connection->getTlsHandshakeDuration();
+        $this->streamCount = $streamCount;
+
+        // A reused connection costs this request no connect or TLS time,
+        // matching curl, which reports 0 for both on a reused handle.
+        if ($this->connectionReused()) {
+            $this->connectTime = 0.0;
+            $this->appconnectTime = 0.0;
+        } else {
+            $this->connectTime = $connection->getConnectDuration();
+            $this->appconnectTime = $connection->getTlsHandshakeDuration();
+        }
 
         $remote = $connection->getRemoteAddress();
 
@@ -51,6 +67,11 @@ class TransferStatsListener implements EventListener
         }
 
         $this->alpn = $connection->getTlsInfo()?->getApplicationLayerProtocol();
+    }
+
+    public function connectionReused(): bool
+    {
+        return $this->streamCount > 1;
     }
 
     public function requestHeaderStart(Request $request, Stream $stream): void

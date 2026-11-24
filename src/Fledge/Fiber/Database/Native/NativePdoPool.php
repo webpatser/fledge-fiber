@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fledge\Fiber\Database\Native;
 
+use Fledge\Fiber\Database\PoolStats;
 use Closure;
 use Countable;
 use InvalidArgumentException;
@@ -35,7 +36,7 @@ use WeakReference;
  *   still inside a transaction, or whose LeaseGuard reports it broken, is
  *   discarded on release instead of reused.
  */
-final class NativePdoPool implements Countable
+final class NativePdoPool implements Countable, PoolStats
 {
     private readonly Closure $factory;
 

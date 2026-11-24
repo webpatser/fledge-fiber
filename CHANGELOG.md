@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `Fledge\Fiber\Database\PoolStats`: a read-only interface for pool numbers (`count()`, `getIdleCount()`, `getMaxSize()`, `getWaitingCount()`, `isClosed()`), implemented by `NativePdoPool` and by `SqlCommonConnectionPool` (so the MySQL and Postgres pools). `getWaitingCount()` on the SqlCommon pools counts every caller blocked for a connection, those queued behind another caller or an in-progress connect included.
+- `Fledge\Fiber\Database\PoolStatsRegistry`: a process-wide registry of live pools for metrics. The native MySQL, Fledge MySQL and Fledge Postgres connectors register every pool they create under its connection name. Pools are held weakly, so a garbage collected pool drops out, and `all()` leaves closed pools out. It returns a list of `['name' => ..., 'pool' => ...]` entries; one connection name can hold several pools (read/write split, per-task connections, reconnects), so sum the numbers per name.
+- Handler stats of `FledgeHandler` (Guzzle `on_stats`) gain `connection_reused` (whether the request went over a kept-alive connection) and `alpn` (the negotiated protocol, null without TLS).
+
+### Changed
+- Handler stats report `connect_time` and `appconnect_time` as 0 for a request on a reused connection, where they repeated the original connect and TLS durations before.
+
 ## v13.43.0.3 - 2026-11-22
 
 ### Changed

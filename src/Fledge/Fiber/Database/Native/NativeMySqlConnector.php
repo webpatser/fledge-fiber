@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fledge\Fiber\Database\Native;
 
+use Fledge\Fiber\Database\PoolStatsRegistry;
 use Fledge\Loop\FiberIoWaiter;
 use Illuminate\Container\Container;
 use Illuminate\Database\Connectors\ConnectorInterface;
@@ -62,12 +63,16 @@ class NativeMySqlConnector implements ConnectorInterface
     {
         $stock = $this->stockConnector();
 
-        return new NativePdoPool(
+        $pool = new NativePdoPool(
             fn () => $stock->connect($config),
             (int) ($config['pool_size'] ?? 32),
             (float) ($config['pool_idle_timeout'] ?? 60),
             waitTimeout: (float) ($config['pool_wait_timeout'] ?? 30),
         );
+
+        PoolStatsRegistry::register($pool, (string) ($config['name'] ?? 'default'));
+
+        return $pool;
     }
 
     /**

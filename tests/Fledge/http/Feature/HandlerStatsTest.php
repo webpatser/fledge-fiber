@@ -38,6 +38,59 @@ it('fires on_stats with transfer details on success', function () {
     }
 });
 
+it('reports connection reuse for a second request over a kept-alive connection', function () {
+    [$server, $port] = startLoopbackServer(null, fn (): ServerResponse => new ServerResponse(200, [], 'reuse ok'));
+
+    try {
+        $client = makeGuzzleClient();
+        $stats = [];
+        $options = [
+            'on_stats' => function (TransferStats $transferStats) use (&$stats) {
+                $stats[] = $transferStats->getHandlerStats();
+            },
+        ];
+
+        $client->get("http://127.0.0.1:{$port}/", $options);
+        $client->get("http://127.0.0.1:{$port}/", $options);
+
+        expect($stats)->toHaveCount(2)
+            ->and($stats[0]['connection_reused'])->toBeFalse()
+            ->and($stats[0]['connect_time'])->toBeGreaterThanOrEqual(0.0)
+            ->and($stats[0]['alpn'])->toBeNull()
+            ->and($stats[1]['connection_reused'])->toBeTrue()
+            ->and($stats[1]['connect_time'])->toBe(0.0)
+            ->and($stats[1]['appconnect_time'])->toBe(0.0)
+            ->and($stats[1]['primary_port'])->toBe($port)
+            ->and($stats[1]['http_code'])->toBe(200);
+    } finally {
+        $server->stop();
+    }
+});
+
+it('reports no reuse for the request after a Connection: close response', function () {
+    [$server, $port] = startLoopbackServer(null, fn (): ServerResponse => new ServerResponse(200, ['connection' => 'close'], 'close ok'));
+
+    try {
+        $client = makeGuzzleClient();
+        $stats = [];
+        $options = [
+            'on_stats' => function (TransferStats $transferStats) use (&$stats) {
+                $stats[] = $transferStats->getHandlerStats();
+            },
+        ];
+
+        $client->get("http://127.0.0.1:{$port}/", $options);
+        $client->get("http://127.0.0.1:{$port}/", $options);
+
+        expect($stats)->toHaveCount(2)
+            ->and($stats[0]['connection_reused'])->toBeFalse()
+            ->and($stats[1]['connection_reused'])->toBeFalse()
+            ->and($stats[1]['http_code'])->toBe(200);
+    } finally {
+        $server->stop();
+    }
+});
+
 it('fires on_stats with the error on failure', function () {
     $port = refusedPort();
     $captured = null;

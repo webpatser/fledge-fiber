@@ -10,6 +10,7 @@ use Fledge\Async\Stream\ClientTlsContext;
 use Fledge\Async\Stream\ConnectContext;
 use Fledge\Fiber\Database\Pdo\FledgeMySqlPdo;
 use Fledge\Fiber\Database\Pdo\FledgePdoException;
+use Fledge\Fiber\Database\PoolStatsRegistry;
 use Illuminate\Database\Connectors\ConnectorInterface;
 
 use function Fledge\Async\Database\Mysql\mysqlConnector;
@@ -215,16 +216,20 @@ class FledgeMySqlConnector implements ConnectorInterface
         $statements = $this->sessionStatements($appConfig);
 
         if ($statements === []) {
-            return new MysqlConnectionPool($config, $maxConnections, $idleTimeout, waitTimeout: $waitTimeout);
+            $pool = new MysqlConnectionPool($config, $maxConnections, $idleTimeout, waitTimeout: $waitTimeout);
+        } else {
+            $pool = new MysqlConnectionPool(
+                $config,
+                $maxConnections,
+                $idleTimeout,
+                new SessionInitializingConnector(mysqlConnector(), $statements),
+                $waitTimeout,
+            );
         }
 
-        return new MysqlConnectionPool(
-            $config,
-            $maxConnections,
-            $idleTimeout,
-            new SessionInitializingConnector(mysqlConnector(), $statements),
-            $waitTimeout,
-        );
+        PoolStatsRegistry::register($pool, (string) ($appConfig['name'] ?? 'default'));
+
+        return $pool;
     }
 
     /**

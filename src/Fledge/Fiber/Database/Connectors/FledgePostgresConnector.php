@@ -6,6 +6,7 @@ use Fledge\Async\Database\Postgres\PostgresConfig;
 use Fledge\Async\Database\Postgres\PostgresConnectionPool;
 use Fledge\Fiber\Database\Pdo\FledgePdoException;
 use Fledge\Fiber\Database\Pdo\FledgePostgresPdo;
+use Fledge\Fiber\Database\PoolStatsRegistry;
 use Illuminate\Database\Concerns\ParsesSearchPath;
 use Illuminate\Database\Connectors\ConnectorInterface;
 
@@ -75,12 +76,16 @@ class FledgePostgresConnector implements ConnectorInterface
         // GUCs to the startup-packet session defaults. Session settings therefore
         // ride the libpq startup packet via buildOptions() instead of SET
         // statements, which the first DISCARD ALL would wipe out.
-        return new PostgresConnectionPool(
+        $pool = new PostgresConnectionPool(
             $config,
             $maxConnections,
             $idleTimeout,
             waitTimeout: $this->poolWaitTimeout($appConfig),
         );
+
+        PoolStatsRegistry::register($pool, (string) ($appConfig['name'] ?? 'default'));
+
+        return $pool;
     }
 
     /**

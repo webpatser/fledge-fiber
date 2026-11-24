@@ -20,6 +20,7 @@ use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
+use Fledge\Fiber\Database\PoolStats;
 use Fledge\Loop;
 use function Fledge\Async\async;
 use function Fledge\Async\delay;
@@ -33,7 +34,7 @@ use function Fledge\Async\delay;
  *
  * @implements SqlConnectionPool<TConfig, TResult, TStatement, TTransaction>
  */
-abstract class SqlCommonConnectionPool implements SqlConnectionPool
+abstract class SqlCommonConnectionPool implements SqlConnectionPool, PoolStats
 {
     use ForbidCloning;
     use ForbidSerialization;
@@ -52,6 +53,9 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
 
     /** @var DeferredFuture<TConnection>|null */
     private ?DeferredFuture $awaitingConnection = null;
+
+    /** Fledge: callers blocked in popConnection(), queued on $future or awaiting a connection. */
+    private int $waiting = 0;
 
     private readonly DeferredFuture $onClose;
 
@@ -322,6 +326,38 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
         return $this->idle->count();
     }
 
+    /**
+     * Fledge: PoolStats alias of {@see getConnectionCount()}.
+     */
+    public function count(): int
+    {
+        return $this->connections->count();
+    }
+
+    /**
+     * Fledge: PoolStats alias of {@see getIdleConnectionCount()}.
+     */
+    public function getIdleCount(): int
+    {
+        return $this->idle->count();
+    }
+
+    /**
+     * Fledge: PoolStats alias of {@see getConnectionLimit()}.
+     */
+    public function getMaxSize(): int
+    {
+        return $this->maxConnections;
+    }
+
+    /**
+     * Fledge: callers blocked waiting for a connection, queued behind another caller or a connect included.
+     */
+    public function getWaitingCount(): int
+    {
+        return $this->waiting;
+    }
+
     public function getConnectionLimit(): int
     {
         return $this->maxConnections;
@@ -371,11 +407,16 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
                 delay(0);
             }
 
+            // Fledge: counted for getWaitingCount().
+            $this->waiting++;
+
             try {
                 $future->await($deadline);
             } catch (CancelledException $exception) {
                 // A queued caller holds nothing, so on its deadline it just leaves.
                 throw $this->timedOut($exception, $deadline);
+            } finally {
+                $this->waiting--;
             }
         }
 
@@ -428,6 +469,9 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
                 }
 
                 // All possible connections busy, so wait until one becomes available.
+                // Fledge: counted for getWaitingCount().
+                $this->waiting++;
+
                 try {
                     $this->awaitingConnection = $awaiting = new DeferredFuture;
 
@@ -441,6 +485,8 @@ abstract class SqlCommonConnectionPool implements SqlConnectionPool
                         throw $this->timedOut($exception, $deadline);
                     }
                 } finally {
+                    $this->waiting--;
+
                     if ($this->future === $future) {
                         $this->future = null;
                     }

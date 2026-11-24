@@ -417,6 +417,8 @@ class FledgeHandler
                     'http_code' => $response?->getStatusCode() ?? 0,
                     'url' => (string) $request->getUri(),
                     'handler' => 'fledge',
+                    'connection_reused' => $listener?->connectionReused() ?? false,
+                    'alpn' => $listener?->alpn,
                 ],
             );
 
