@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v13.44.1.0 - 2026-11-25
 
 ### Added
 - `Fledge\Fiber\Database\PoolStats`: a read-only interface for pool numbers (`count()`, `getIdleCount()`, `getMaxSize()`, `getWaitingCount()`, `isClosed()`), implemented by `NativePdoPool` and by `SqlCommonConnectionPool` (so the MySQL and Postgres pools). `getWaitingCount()` on the SqlCommon pools counts every caller blocked for a connection, those queued behind another caller or an in-progress connect included.
@@ -9,6 +9,8 @@
 
 ### Changed
 - Handler stats report `connect_time` and `appconnect_time` as 0 for a request on a reused connection, where they repeated the original connect and TLS durations before.
+- Verified against Laravel v13.44.1 with no code changes needed. The new `RedisStore` pipeline paths (`putManyViaPipeline`, `foreverMany`, `forgetManyKeys`) only run for `PhpRedisConnection` and `PredisConnection`, so fiber Redis connections keep the existing per-key paths.
+- `Connection::whenTransactionRunsLongerThan()` (new in Laravel v13.44) tracks one start time per connection, so timings are unreliable when several fibers run transactions concurrently on one native pool connection.
 
 ## v13.43.0.3 - 2026-11-22
 
