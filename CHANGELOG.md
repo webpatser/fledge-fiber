@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.44.1.1 - 2026-11-25
+
+### Fixed
+- `Connection::whenTransactionRunsLongerThan()` on the native MySQL and MariaDB connections now keeps the start time per fiber, next to the fiber's transaction level, so concurrent fiber transactions on one connection are each timed from their own begin and none of them is skipped. Behaviour in a single fiber or the main context matches Laravel: the clock starts at level 1 and stops when a commit or rollback returns the level to 0. A fiber that ends with its transaction still open leaves no start time behind.
+
 ## v13.44.1.0 - 2026-11-25
 
 ### Added

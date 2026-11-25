@@ -310,3 +310,141 @@ it('isolates concurrent fiber transactions on a real MariaDB server', function (
         $connection->statement('DROP TABLE IF EXISTS native_tx_spike');
     }
 });
+
+/**
+ * A native connection on a fake pool with a real event dispatcher and a
+ * whenTransactionRunsLongerThan() handler that records every call.
+ *
+ * @return array{0: NativeMariaDbConnection, 1: ArrayObject<int, array{0: mixed, 1: object, 2: float}>}
+ */
+function nativeSlowTxConnection(mixed $threshold): array
+{
+    $connection = nativeTxConnection(nativeFakePdo(...));
+    $connection->setEventDispatcher(new Illuminate\Events\Dispatcher);
+
+    $calls = new ArrayObject;
+
+    $connection->whenTransactionRunsLongerThan($threshold, function ($connection, $event, $duration) use ($calls) {
+        $calls[] = [$connection, $event, $duration];
+    });
+
+    return [$connection, $calls];
+}
+
+it('times overlapping fiber transactions from their own start', function () {
+    [$connection, $calls] = nativeSlowTxConnection(40);
+
+    $slow = new Fiber(function () use ($connection) {
+        $connection->beginTransaction();
+        Fiber::suspend();
+        $connection->commit();
+    });
+
+    $fast = new Fiber(function () use ($connection) {
+        $connection->beginTransaction();
+        Fiber::suspend();
+        $connection->commit();
+    });
+
+    $slow->start();         // slow begins at t0
+    usleep(60_000);
+    $fast->start();         // fast begins at t60, while slow is still open
+    usleep(10_000);
+    $slow->resume();        // slow commits after ~70 ms
+    $fast->resume();        // fast commits after ~10 ms
+
+    expect($slow->isTerminated())->toBeTrue()
+        ->and($fast->isTerminated())->toBeTrue()
+        ->and($calls)->toHaveCount(1)
+        ->and($calls[0][0])->toBe($connection)
+        ->and($calls[0][1])->toBeInstanceOf(Illuminate\Database\Events\TransactionCommitted::class)
+        ->and($calls[0][2])->toBeGreaterThanOrEqual(69.0);
+});
+
+it('times a slow fiber transaction that rolls back while another fiber commits', function () {
+    [$connection, $calls] = nativeSlowTxConnection(40);
+
+    $slow = new Fiber(function () use ($connection) {
+        try {
+            $connection->transaction(function () {
+                Fiber::suspend();
+
+                throw new RuntimeException('abort');
+            });
+        } catch (RuntimeException) {
+        }
+    });
+
+    $fast = new Fiber(function () use ($connection) {
+        $connection->beginTransaction();
+        Fiber::suspend();
+        $connection->rollBack();
+    });
+
+    $slow->start();
+    usleep(60_000);
+    $fast->start();
+    usleep(10_000);
+    $fast->resume();        // fast rolls back after ~10 ms: below the threshold
+    $slow->resume();        // slow rolls back after ~70 ms
+
+    expect($slow->isTerminated())->toBeTrue()
+        ->and($fast->isTerminated())->toBeTrue()
+        ->and($calls)->toHaveCount(1)
+        ->and($calls[0][1])->toBeInstanceOf(Illuminate\Database\Events\TransactionRolledBack::class)
+        ->and($calls[0][2])->toBeGreaterThanOrEqual(69.0);
+});
+
+it('times a nested transaction from the outer begin to the outer commit in one context', function () {
+    [$connection, $calls] = nativeSlowTxConnection(Carbon\CarbonInterval::milliseconds(20));
+
+    $connection->beginTransaction();
+    usleep(15_000);
+    $connection->beginTransaction();    // savepoint: does not restart the clock
+    usleep(15_000);
+    $connection->commit();              // back to level 1: no call yet
+
+    expect($calls)->toHaveCount(0);
+
+    $connection->beginTransaction();
+    $connection->rollBack();            // savepoint rollback: still level 1
+
+    expect($calls)->toHaveCount(0);
+
+    $connection->commit();
+
+    expect($calls)->toHaveCount(1)
+        ->and($calls[0][1])->toBeInstanceOf(Illuminate\Database\Events\TransactionCommitted::class)
+        ->and($calls[0][2])->toBeGreaterThanOrEqual(29.0);
+
+    // A fast transaction afterwards stays below the threshold.
+    $connection->transaction(fn () => null);
+
+    expect($calls)->toHaveCount(1);
+});
+
+it('starts a fresh clock for every transaction of one fiber and ignores other connections', function () {
+    [$connection, $calls] = nativeSlowTxConnection(20);
+    [$other] = nativeSlowTxConnection(0);
+    $other->setEventDispatcher($connection->getEventDispatcher());
+
+    $fiber = new Fiber(function () use ($connection, $other) {
+        $connection->beginTransaction();
+        usleep(30_000);
+        $connection->rollBack();
+
+        $other->beginTransaction();
+        usleep(30_000);
+        $other->commit();
+
+        $connection->beginTransaction();
+        $connection->commit();
+    });
+
+    $fiber->start();
+
+    expect($fiber->isTerminated())->toBeTrue()
+        ->and($calls)->toHaveCount(1)
+        ->and($calls[0][1])->toBeInstanceOf(Illuminate\Database\Events\TransactionRolledBack::class)
+        ->and($calls[0][2])->toBeGreaterThanOrEqual(29.0);
+});

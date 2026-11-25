@@ -2,10 +2,15 @@
 
 namespace Fledge\Fiber\Database\Native;
 
+use Carbon\CarbonInterval;
 use Closure;
+use DateTimeInterface;
 use Fiber;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseTransactionsManager;
+use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Database\LostConnectionException;
 use Illuminate\Database\QueryException;
 use Fledge\Loop\FiberLocal;
@@ -681,6 +686,61 @@ trait UsesNativePdoPool
         } finally {
             $this->exitLeaseScope($scope);
         }
+    }
+
+    /**
+     * Register a handler for transactions that run longer than the threshold.
+     *
+     * Same semantics as the stock version (the clock starts when level 1
+     * begins and stops when the level returns to 0 through a commit or a
+     * rollback), but the start time is kept per fiber: it is stored against
+     * the fiber's LeaseScope, which also holds its transaction level, so
+     * concurrent fibers on this connection never overwrite each other's start.
+     * The map is weak, so a fiber that ends without commit or rollback leaves
+     * nothing behind once the loop clears its scope.
+     *
+     * @param  \DateTimeInterface|\Carbon\CarbonInterval|float|int  $threshold
+     * @param  callable(\Illuminate\Database\Connection, \Illuminate\Database\Events\TransactionCommitted|\Illuminate\Database\Events\TransactionRolledBack, float): mixed  $handler
+     * @return void
+     */
+    public function whenTransactionRunsLongerThan($threshold, $handler)
+    {
+        $threshold = $threshold instanceof DateTimeInterface
+            ? $this->secondsUntil($threshold) * 1000
+            : $threshold;
+
+        $threshold = $threshold instanceof CarbonInterval
+            ? $threshold->totalMilliseconds
+            : $threshold;
+
+        /** @var WeakMap<LeaseScope, float> $startedAt */
+        $startedAt = new WeakMap;
+
+        $this->events?->listen(TransactionBeginning::class, function ($event) use ($startedAt) {
+            if ($event->connection === $this && $this->transactionLevel() === 1) {
+                $startedAt[$this->leaseScope(true)] = microtime(true);
+            }
+        });
+
+        $this->events?->listen([TransactionCommitted::class, TransactionRolledBack::class], function ($event) use ($startedAt, $threshold, $handler) {
+            if ($event->connection !== $this || $this->transactionLevel() !== 0) {
+                return;
+            }
+
+            $scope = $this->leaseScope(false);
+
+            if ($scope === null || ! isset($startedAt[$scope])) {
+                return;
+            }
+
+            $duration = $this->getElapsedTime($startedAt[$scope]);
+
+            unset($startedAt[$scope]);
+
+            if ($duration > $threshold) {
+                $handler($this, $event, $duration);
+            }
+        });
     }
 
     /**
