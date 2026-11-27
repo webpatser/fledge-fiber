@@ -34,9 +34,7 @@ final class ProcessContextFactory implements ContextFactory
         Duration|int $childConnectTimeout = 5,
         private readonly IpcHub $ipcHub = new LocalIpcHub(),
     ) {
-        $this->childConnectTimeout = $childConnectTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($childConnectTimeout))
-            : $childConnectTimeout;
+        $this->childConnectTimeout = Durations::toWholeSeconds($childConnectTimeout);
     }
 
     /**

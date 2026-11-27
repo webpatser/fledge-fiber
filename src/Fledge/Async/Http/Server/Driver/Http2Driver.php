@@ -153,12 +153,8 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
         private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
-        $this->streamTimeout = $streamTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($streamTimeout))
-            : $streamTimeout;
-        $this->connectionTimeout = $connectionTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($connectionTimeout))
-            : $connectionTimeout;
+        $this->streamTimeout = Durations::toWholeSeconds($streamTimeout);
+        $this->connectionTimeout = Durations::toWholeSeconds($connectionTimeout);
 
         parent::__construct($requestHandler, $errorHandler, $logger);
 

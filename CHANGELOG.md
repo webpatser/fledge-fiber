@@ -1,5 +1,15 @@
 # Changelog
 
+## v13.44.1.3 - 2026-11-27
+
+### Fixed
+- `Fledge\Async\Parallel\parallel()`, `parallelMap()` and `parallelFilter()` work: the task class they instantiate, `Fledge\Async\Parallel\Internal\SerializedCallableTask`, was missing from the package, so every call failed with a class-not-found error. A closure needs `laravel/serializable-closure` (optional, now listed under `suggest`) and throws a clear `\Error` naming the package when it is absent; function names and static method callables work without it. `parallelFilter()` without a callable uses a closure internally, so it needs the package too. A closure must be loadable in the worker process: one whose scope is a class generated at runtime cannot be restored there.
+
+### Changed
+- Behaviour change: `StatusCachingFilesystemDriver` caches a file status for 1 second (in practice between 1 and 2 seconds, because expiry is counted in whole seconds) and its cache garbage collection runs every second. Both were 1000 seconds, about 16 minutes, through a unit mix-up: the values were written as milliseconds and read as seconds. `File\Internal\Cache` now documents its `$gcInterval` and `set()` TTL as seconds and defaults the interval to 1.
+- Whole-second rounding of a `Time\Duration` (connection pool idle timeouts for MySQL and Postgres, the WebSocket heartbeat period, HTTP/1 and HTTP/2 server timeouts, `DocumentRoot` expiry, process and thread context child connect timeouts) goes through `Fledge\Loop\Durations::toWholeSeconds()` instead of a float `ceil()`. Results are the same, except that a duration above about 1e8 seconds with a sub-second fraction now rounds up correctly.
+- Requires webpatser/fledge-loop `^0.1.2` (for `Durations::toWholeSeconds()`).
+
 ## v13.44.1.2 - 2026-11-27
 
 ### Added

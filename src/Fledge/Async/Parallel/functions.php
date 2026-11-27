@@ -21,11 +21,20 @@ use function Fledge\Async\Parallel\Worker\workerPool;
  *
  * @return \Closure(TValue...): TReturn Callable executing in another thread / process.
  * @throws SerializationException If the passed callable is not safely serializable.
+ * @throws \Error If a closure is passed and laravel/serializable-closure is not installed.
  */
 function parallel(callable $callable, ?WorkerPool $pool = null): \Closure
 {
     /** @psalm-suppress DocblockTypeContradiction https://github.com/vimeo/psalm/issues/10029 */
     if ($callable instanceof \Closure) {
+        if (!\class_exists(SerializableClosure::class)) {
+            throw new \Error(
+                'Passing a closure to parallel() requires the laravel/serializable-closure package;'
+                . ' install it with "composer require laravel/serializable-closure" or pass a function name'
+                . ' or static method callable instead'
+            );
+        }
+
         $callable = new SerializableClosure($callable);
     }
 

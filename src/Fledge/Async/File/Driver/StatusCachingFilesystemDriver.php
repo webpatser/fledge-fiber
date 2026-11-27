@@ -7,6 +7,12 @@ use Fledge\Async\File\Internal\Cache;
 
 final class StatusCachingFilesystemDriver implements FilesystemDriver
 {
+    /** Seconds between garbage collection runs of the status cache. */
+    private const int GC_INTERVAL_SECONDS = 1;
+
+    /** Seconds a file status stays cached. */
+    private const int TTL_SECONDS = 1;
+
     private FilesystemDriver $driver;
 
     private Cache $statusCache;
@@ -14,7 +20,7 @@ final class StatusCachingFilesystemDriver implements FilesystemDriver
     public function __construct(FilesystemDriver $driver)
     {
         $this->driver = $driver;
-        $this->statusCache = new Cache(1000, 1024);
+        $this->statusCache = new Cache(self::GC_INTERVAL_SECONDS, 1024);
     }
 
     public function openFile(string $path, string $mode): StatusCachingFile
@@ -33,7 +39,7 @@ final class StatusCachingFilesystemDriver implements FilesystemDriver
 
         $stat = $this->driver->getStatus($path);
         if ($stat) {
-            $this->statusCache->set($path, $stat, 1000);
+            $this->statusCache->set($path, $stat, self::TTL_SECONDS);
         }
 
         return $stat;

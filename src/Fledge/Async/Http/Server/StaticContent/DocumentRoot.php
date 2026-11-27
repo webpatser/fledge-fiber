@@ -595,9 +595,7 @@ final class DocumentRoot implements RequestHandler
      */
     public function setExpiresPeriod(Duration|int $seconds): void
     {
-        $seconds = $seconds instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($seconds))
-            : $seconds;
+        $seconds = Durations::toWholeSeconds($seconds);
 
         $this->expiresPeriod = \max(0, $seconds);
     }

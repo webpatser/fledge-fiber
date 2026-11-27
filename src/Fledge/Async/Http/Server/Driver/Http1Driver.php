@@ -83,9 +83,7 @@ final class Http1Driver extends AbstractHttpDriver
         private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
         private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
-        $this->connectionTimeout = $connectionTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($connectionTimeout))
-            : $connectionTimeout;
+        $this->connectionTimeout = Durations::toWholeSeconds($connectionTimeout);
 
         parent::__construct($requestHandler, $errorHandler, $logger);
 

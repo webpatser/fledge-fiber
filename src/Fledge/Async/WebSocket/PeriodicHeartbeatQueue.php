@@ -37,9 +37,7 @@ final class PeriodicHeartbeatQueue implements WebsocketHeartbeatQueue
         int $queuedPingLimit = 3,
         Duration|int $heartbeatPeriod = 10,
     ) {
-        $this->heartbeatPeriod = $heartbeatPeriod instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($heartbeatPeriod))
-            : $heartbeatPeriod;
+        $this->heartbeatPeriod = Durations::toWholeSeconds($heartbeatPeriod);
 
         /** @psalm-suppress TypeDoesNotContainType */
         if ($queuedPingLimit <= 0) {

@@ -76,9 +76,7 @@ final class ProcessContext extends AbstractContext
         Duration|int $childConnectTimeout = self::DEFAULT_START_TIMEOUT
     ): self {
         // The timeout crosses a process boundary as a plain integer number of seconds.
-        $childConnectTimeout = $childConnectTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($childConnectTimeout))
-            : $childConnectTimeout;
+        $childConnectTimeout = Durations::toWholeSeconds($childConnectTimeout);
 
         /** @psalm-suppress RedundantFunctionCall */
         $script = \is_array($script) ? \array_values($script) : [$script];

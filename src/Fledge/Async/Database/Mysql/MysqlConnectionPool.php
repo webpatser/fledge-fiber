@@ -34,9 +34,7 @@ final class MysqlConnectionPool extends SqlCommonConnectionPool implements Mysql
         ?SqlConnector $connector = null,
         Duration|float|null $waitTimeout = null,
     ) {
-        $idleTimeout = $idleTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($idleTimeout))
-            : $idleTimeout;
+        $idleTimeout = Durations::toWholeSeconds($idleTimeout);
         $waitTimeout = Durations::nullable($waitTimeout);
 
         $this->seen = new \WeakMap();

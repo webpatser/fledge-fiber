@@ -12,11 +12,11 @@ final class Cache
     private readonly string $ttlWatcherId;
 
     /**
-     * @param int      $gcInterval The frequency in milliseconds at which expired cache entries should be garbage
+     * @param int      $gcInterval The frequency in seconds at which expired cache entries should be garbage
      *     collected.
      * @param int|null $maxSize The maximum size of cache array (number of elements).
      */
-    public function __construct(int $gcInterval = 1000, private readonly ?int $maxSize = null)
+    public function __construct(int $gcInterval = 1, private readonly ?int $maxSize = null)
     {
         // By using a shared state object we're able to use `__destruct()` for "normal" garbage collection of both this
         // instance and the loop's watcher. Otherwise, this object could only be GC'd when the TTL watcher was cancelled
@@ -82,6 +82,9 @@ final class Cache
         return $this->sharedState->cache[$key];
     }
 
+    /**
+     * @param int|null $ttl Time to live in seconds, or null for an entry that never expires.
+     */
     public function set(string $key, array $value, ?int $ttl = null): void
     {
         if ($ttl === null) {

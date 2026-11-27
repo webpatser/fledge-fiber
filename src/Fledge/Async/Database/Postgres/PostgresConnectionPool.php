@@ -60,9 +60,7 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
         SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed,
         Duration|float|null $waitTimeout = null,
     ) {
-        $idleTimeout = $idleTimeout instanceof Duration
-            ? (int) \ceil(Durations::toSeconds($idleTimeout))
-            : $idleTimeout;
+        $idleTimeout = Durations::toWholeSeconds($idleTimeout);
         $waitTimeout = Durations::nullable($waitTimeout);
 
         $this->clean = new \WeakMap();
