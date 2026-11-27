@@ -26,8 +26,10 @@ use Fledge\Async\Http\Server\Trailers;
 use Fledge\Async\DisposedException;
 use Fledge\Async\Queue;
 use Fledge\Async\Stream\InternetAddress;
+use Fledge\Loop\Durations;
 use League\Uri;
 use Psr\Log\LoggerInterface as PsrLogger;
+use Time\Duration;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\formatDateHeader;
 use function Fledge\Async\Http\mapHeaderPairs;
@@ -63,17 +65,28 @@ final class Http1Driver extends AbstractHttpDriver
 
     private readonly DeferredCancellation $deferredCancellation;
 
+    /** Connection timeout in whole seconds. */
+    private readonly int $connectionTimeout;
+
+    /**
+     * @param Duration|int $connectionTimeout Idle timeout, as a `Duration` or in seconds. A `Duration` is rounded up
+     *     to whole seconds.
+     */
     public function __construct(
         RequestHandler $requestHandler,
         ErrorHandler $errorHandler,
         PsrLogger $logger,
-        private readonly int $connectionTimeout = self::DEFAULT_STREAM_TIMEOUT,
+        Duration|int $connectionTimeout = self::DEFAULT_STREAM_TIMEOUT,
         private readonly int $headerSizeLimit = self::DEFAULT_HEADER_SIZE_LIMIT,
         private readonly int $bodySizeLimit = self::DEFAULT_BODY_SIZE_LIMIT,
         private readonly bool $allowHttp2Upgrade = false,
         private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
         private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
+        $this->connectionTimeout = $connectionTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($connectionTimeout))
+            : $connectionTimeout;
+
         parent::__construct($requestHandler, $errorHandler, $logger);
 
         if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {

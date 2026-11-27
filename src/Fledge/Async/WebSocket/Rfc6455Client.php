@@ -20,6 +20,7 @@ use Fledge\Async\WebSocket\Parser\WebsocketFrameCompilerFactory;
 use Fledge\Async\WebSocket\Parser\WebsocketFrameType;
 use Fledge\Async\WebSocket\Parser\WebsocketParserFactory;
 use Fledge\Loop;
+use Time\Duration;
 
 /**
  * @implements \IteratorAggregate<int, WebsocketMessage>
@@ -43,6 +44,8 @@ final class Rfc6455Client implements WebsocketClient, \IteratorAggregate
 
     /**
      * @param bool $masked True for client, false for server.
+     * @param Duration|float $closePeriod Time to wait for the peer to complete the close handshake, as a `Duration` or
+     *     in seconds.
      */
     public function __construct(
         private readonly Socket $socket,
@@ -53,7 +56,7 @@ final class Rfc6455Client implements WebsocketClient, \IteratorAggregate
         ?WebsocketHeartbeatQueue $heartbeatQueue = null,
         ?WebsocketRateLimit $rateLimit = null,
         private readonly int $frameSplitThreshold = self::DEFAULT_FRAME_SPLIT_THRESHOLD,
-        float $closePeriod = self::DEFAULT_CLOSE_PERIOD,
+        Duration|float $closePeriod = self::DEFAULT_CLOSE_PERIOD,
     ) {
         $this->metadata = new Internal\WebsocketClientMetadata($compressionContext !== null);
 

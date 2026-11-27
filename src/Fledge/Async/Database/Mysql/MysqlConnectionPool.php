@@ -8,6 +8,8 @@ use Fledge\Async\Database\SqlConnector;
 use Fledge\Async\Database\SqlResult;
 use Fledge\Async\Database\SqlStatement;
 use Fledge\Async\Database\SqlTransaction;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 /**
  * @extends SqlCommonConnectionPool<MysqlConfig, MysqlResult, MysqlStatement, MysqlTransaction, MysqlConnection>
@@ -19,17 +21,24 @@ final class MysqlConnectionPool extends SqlCommonConnectionPool implements Mysql
 
     /**
      * @param positive-int $maxConnections
-     * @param positive-int $idleTimeout
+     * @param Duration|positive-int $idleTimeout Time until idle connections are removed from the pool, as a `Duration`
+     *     or in seconds. A `Duration` is rounded up to whole seconds.
      * @param SqlConnector<MysqlConfig, MysqlConnection>|null $connector
-     * @param float|null $waitTimeout Fledge: seconds a caller may wait for a connection, null for no limit
+     * @param Duration|float|null $waitTimeout Fledge: time a caller may wait for a connection, as a `Duration` or in
+     *     seconds, null for no limit
      */
     public function __construct(
         MysqlConfig $config,
         int $maxConnections = self::DEFAULT_MAX_CONNECTIONS,
-        int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
+        Duration|int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
         ?SqlConnector $connector = null,
-        ?float $waitTimeout = null,
+        Duration|float|null $waitTimeout = null,
     ) {
+        $idleTimeout = $idleTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($idleTimeout))
+            : $idleTimeout;
+        $waitTimeout = Durations::nullable($waitTimeout);
+
         $this->seen = new \WeakMap();
 
         parent::__construct(

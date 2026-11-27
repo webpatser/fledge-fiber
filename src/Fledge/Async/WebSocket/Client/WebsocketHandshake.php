@@ -6,8 +6,10 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Http\Client\Request;
 use Fledge\Async\Http\HttpMessage;
 use Fledge\Async\Http\HttpRequest;
+use Fledge\Loop\Durations;
 use League\Uri;
 use Psr\Http\Message\UriInterface as PsrUri;
+use Time\Duration;
 
 /**
  * @psalm-import-type HeaderParamArrayType from HttpMessage
@@ -72,8 +74,14 @@ final class WebsocketHandshake extends HttpRequest
         return $this->tlsHandshakeTimeout;
     }
 
-    public function withTlsHandshakeTimeout(float $tlsHandshakeTimeout): self
+    /**
+     * @param Duration|float $tlsHandshakeTimeout Time until the TLS handshake is abandoned, as a `Duration` or in
+     *     seconds.
+     */
+    public function withTlsHandshakeTimeout(Duration|float $tlsHandshakeTimeout): self
     {
+        $tlsHandshakeTimeout = Durations::toSeconds($tlsHandshakeTimeout);
+
         $clone = clone $this;
         $clone->tlsHandshakeTimeout = $tlsHandshakeTimeout;
 

@@ -2,6 +2,9 @@
 
 namespace Fledge\Async\Redis\Connection;
 
+use Fledge\Loop\Durations;
+use Time\Duration;
+
 /**
  * Value class carrying the retry related connection options from a Laravel
  * redis configuration array, mirroring the phpredis option semantics:
@@ -29,14 +32,30 @@ final readonly class RetryPolicy
         'decorrelated_jitter',
     ];
 
+    public ?float $retryIntervalSeconds;
+
+    public ?float $backoffBase;
+
+    public ?float $backoffCap;
+
+    /**
+     * @param Duration|float|null $retryIntervalSeconds Base delay between reconnect attempts, as a `Duration` or in
+     *     seconds.
+     * @param Duration|float|null $backoffBase Backoff base delay, as a `Duration` or in seconds.
+     * @param Duration|float|null $backoffCap Backoff delay cap, as a `Duration` or in seconds.
+     */
     public function __construct(
         public int $commandRetries = 0,
         public ?int $maxRetries = null,
-        public ?float $retryIntervalSeconds = null,
+        Duration|float|null $retryIntervalSeconds = null,
         public string $backoffAlgorithm = self::BACKOFF_DEFAULT,
-        public ?float $backoffBase = null,
-        public ?float $backoffCap = null,
+        Duration|float|null $backoffBase = null,
+        Duration|float|null $backoffCap = null,
     ) {
+        $this->retryIntervalSeconds = Durations::nullable($retryIntervalSeconds);
+        $this->backoffBase = Durations::nullable($backoffBase);
+        $this->backoffCap = Durations::nullable($backoffCap);
+
         if (!\in_array($this->backoffAlgorithm, self::BACKOFF_ALGORITHMS, true)) {
             throw new \InvalidArgumentException(
                 "Algorithm [{$this->backoffAlgorithm}] is not a valid backoff algorithm."

@@ -3,6 +3,7 @@
 namespace Fledge\Async;
 
 use Fledge\Loop;
+use Time\Duration;
 
 /**
  * This object invokes the given callback within a new coroutine every $interval seconds until either the
@@ -16,12 +17,15 @@ final class Interval
     private readonly string $callbackId;
 
     /**
-     * @param float $interval Invoke the function every $interval seconds.
+     * @param Duration|float $interval Invoke the function every $interval, as a `Duration` or in seconds. Float INF
+     *     never invokes it.
      * @param \Closure():void $closure Use {@see weakClosure()} to avoid a circular reference if storing this object
      *      as a property of another object.
      * @param bool $reference If false, unreference the underlying event-loop callback.
+     *
+     * @throws \Error When the interval is negative (a negated `Duration` included) or NAN.
      */
-    public function __construct(float $interval, \Closure $closure, bool $reference = true)
+    public function __construct(Duration|float $interval, \Closure $closure, bool $reference = true)
     {
         $this->callbackId = Loop::repeat($interval, $closure);
 

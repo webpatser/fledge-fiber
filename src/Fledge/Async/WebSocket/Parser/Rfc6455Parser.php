@@ -289,7 +289,7 @@ final class Rfc6455Parser implements WebsocketParser
         do {
             if ($messageSizeLimit) {
                 $chunkSize = \intdiv(\max(0, $messageSizeLimit - $inflated), self::MAX_INFLATE_RATIO) + 1;
-                $chunkSize = \min(\max($chunkSize, self::MIN_INFLATE_CHUNK), self::MAX_INFLATE_CHUNK);
+                $chunkSize = \clamp($chunkSize, self::MIN_INFLATE_CHUNK, self::MAX_INFLATE_CHUNK);
             } else {
                 $chunkSize = \max($length, 1);
             }

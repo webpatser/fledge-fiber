@@ -2,6 +2,9 @@
 
 namespace Fledge\Async\Redis\Sync;
 
+use Fledge\Loop\Durations;
+use Time\Duration;
+
 final class RedisMutexOptions
 {
     private string $keyPrefix = '';
@@ -39,13 +42,23 @@ final class RedisMutexOptions
         return clone($this, ['lockExpiration' => $lockExpiration]);
     }
 
-    public function withLockRenewInterval(float $lockRenewInterval): self
+    /**
+     * @param Duration|float $lockRenewInterval Time between lock renewals, as a `Duration` or in seconds.
+     */
+    public function withLockRenewInterval(Duration|float $lockRenewInterval): self
     {
+        $lockRenewInterval = Durations::toSeconds($lockRenewInterval);
+
         return clone($this, ['lockRenewInterval' => $lockRenewInterval]);
     }
 
-    public function withLockTimeout(float $lockTimeout): self
+    /**
+     * @param Duration|float $lockTimeout Time to wait for the lock, as a `Duration` or in seconds.
+     */
+    public function withLockTimeout(Duration|float $lockTimeout): self
     {
+        $lockTimeout = Durations::toSeconds($lockTimeout);
+
         return clone($this, ['lockTimeout' => $lockTimeout]);
     }
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## v13.44.1.2 - 2026-11-27
+
+### Added
+- Redis `SortOptions` and `RangeOptions` accept the PHP 8.6 `SortDirection` enum next to their existing API: `withDirection(SortDirection|'asc'|'desc')` and `getDirection()`. `isAscending()`, `isDescending()`, `withAscendingOrder()`, `withDescendingOrder()` and `withReverseOrder()` stay as they were, and the arguments sent to Redis (`DESC`, `REV`) do not change.
+- PHP 8.6 `Time\Duration` is accepted next to float seconds by `delay()`, `new TimeoutCancellation()`, `new Interval()` and `Pipeline::delay()` (`Duration|float`). Float callers see no change and float INF keeps meaning "never"; a negated `Duration` throws the same `\Error` as a negative float. Getters and return types stay float.
+- `Time\Duration` is also accepted next to float/int seconds across the rest of the timeout and interval parameters. HTTP client: `Request` timeout setters, `SetRequestTimeout`, HTTP/1 grace period. HTTP server: HTTP/1 and HTTP/2 driver timeouts, `DefaultHttpDriverFactory`, `SocketClientFactory` TLS handshake timeout, static content expires period. Streams, DNS and WebSocket: `UnlimitedSocketPool` idle timeout, `DnsConfig::withTimeout()`, WebSocket close period, `WebsocketHandshake::withTlsHandshakeTimeout()`, `PeriodicHeartbeatQueue` heartbeat period. Redis: `RedisConfig` timeouts, `RedisMutexOptions` lock renew interval and lock timeout, `ReconnectingRedisLink` read timeout, `RetryPolicy` intervals. Parallel, database and sync: IPC hub key receive timeout, `RateLimitingSemaphore` lock period, process and thread context connect timeout, MySQL and Postgres pool idle and wait timeouts. Whole-second int parameters round a `Duration` up; getters and return types still return float or int.
+
+### Changed
+- PHP 8.6 idioms, no behaviour change: `clamp()` replaces `min(max())` where both bounds are constants or provably ordered (HTTP/1 keep-alive timeout, WebSocket inflate chunk size, WebSocket pong count), and partial function application (`f(?, $x)`, `f(...)`) replaces closures that only forwarded their arguments (async helpers, parallel map and filter, Redis cluster fan-out, HTTP/2 stream release, Postgres array casting and encoding, PDO `fetchAll()`, the Symfony HTTP client, `FiberDB::concurrent()`, `WithFibers::concurrently()`).
+- Requires webpatser/fledge-loop `^0.1.1` (for `Loop::delay()`/`Loop::repeat()` with a `Duration` and the `Fledge\Loop\Durations` helper).
+
 ## v13.44.1.1 - 2026-11-25
 
 ### Fixed

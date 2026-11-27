@@ -150,7 +150,7 @@ function encodeParam(PostgresExecutor $executor, mixed $value): string|int|float
  */
 function encodeArray(PostgresExecutor $executor, array $array, string $delimiter): string
 {
-    return '{' . \implode($delimiter, \array_map(fn ($i) => encodeArrayItem($executor, $i), $array)) . '}';
+    return '{' . \implode($delimiter, \array_map(encodeArrayItem($executor, ?), $array)) . '}';
 }
 
 /**

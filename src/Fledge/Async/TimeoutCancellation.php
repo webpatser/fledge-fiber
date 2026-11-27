@@ -3,6 +3,7 @@
 namespace Fledge\Async;
 
 use Fledge\Loop;
+use Time\Duration;
 
 /**
  * A TimeoutCancellation automatically requests cancellation after the timeout has elapsed.
@@ -17,10 +18,13 @@ final readonly class TimeoutCancellation implements Cancellation
     private Cancellation $cancellation;
 
     /**
-     * @param float $timeout Seconds until cancellation is requested.
+     * @param Duration|float $timeout Time until cancellation is requested, as a `Duration` or in seconds. Float INF
+     *     never cancels.
      * @param string $message Message for TimeoutException. Default is "Operation timed out".
+     *
+     * @throws \Error When the timeout is negative (a negated `Duration` included) or NAN.
      */
-    public function __construct(float $timeout, string $message = "Operation timed out")
+    public function __construct(Duration|float $timeout, string $message = "Operation timed out")
     {
         $this->cancellation = $source = new Internal\Cancellable();
 

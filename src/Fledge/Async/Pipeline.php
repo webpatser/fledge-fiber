@@ -12,6 +12,7 @@ use Fledge\Async\Internal\FlatMapOperation;
 use Fledge\Async\Internal\IntermediateOperation;
 use Fledge\Async\Internal\Sequence;
 use Fledge\Async\Internal\SortOperation;
+use Time\Duration;
 use function Fledge\Async\delay;
 
 /**
@@ -430,9 +431,13 @@ final class Pipeline implements \IteratorAggregate
     }
 
     /**
-     * Delays each item by $delay seconds.
+     * Delays each item by $delay.
+     *
+     * @param Duration|float $delay As a `Duration` or in seconds.
+     *
+     * @throws \Error When the delay is negative (a negated `Duration` included) or NAN, on the first item.
      */
-    public function delay(float $delay): static
+    public function delay(Duration|float $delay): static
     {
         return $this->tap(static fn () => delay($delay));
     }

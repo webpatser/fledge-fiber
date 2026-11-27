@@ -12,6 +12,8 @@ use parallel\Future as ParallelFuture;
 use parallel\Runtime;
 use parallel\Runtime\Error\Closed;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 /**
  * @template-covariant TResult
@@ -44,8 +46,8 @@ final class ThreadContext extends AbstractContext
     /**
      * @param string|non-empty-list<string> $script Path to PHP script or array with first element as path and
      *     following elements options to the PHP script (e.g.: ['bin/worker.php', 'Option1Value', 'Option2Value']).
-     * @param positive-int $childConnectTimeout Number of seconds the thread will attempt to connect to the parent
-     *      before failing.
+     * @param Duration|positive-int $childConnectTimeout Time the thread will attempt to connect to the parent before
+     *      failing, as a `Duration` or in seconds.
      *
      * @throws ContextException If starting the process fails.
      */
@@ -53,8 +55,11 @@ final class ThreadContext extends AbstractContext
         IpcHub $ipcHub,
         string|array $script,
         ?Cancellation $cancellation = null,
-        int $childConnectTimeout = self::DEFAULT_START_TIMEOUT
+        Duration|int $childConnectTimeout = self::DEFAULT_START_TIMEOUT
     ): self {
+        // The timeout is sent to the thread runtime as a plain float number of seconds.
+        $childConnectTimeout = Durations::toSeconds($childConnectTimeout);
+
         /** @psalm-suppress RedundantFunctionCall */
         $script = \is_array($script) ? \array_values($script) : [$script];
         if (!$script) {

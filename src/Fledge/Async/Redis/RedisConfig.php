@@ -5,7 +5,9 @@ namespace Fledge\Async\Redis;
 use Fledge\Async\Redis\Connection\RetryPolicy;
 use Fledge\Async\Stream\Certificate;
 use Fledge\Async\Stream\ClientTlsContext;
+use Fledge\Loop\Durations;
 use League\Uri\Uri;
+use Time\Duration;
 
 final class RedisConfig
 {
@@ -14,10 +16,14 @@ final class RedisConfig
     public const int DEFAULT_TIMEOUT = 5;
 
     /**
+     * @param Duration|float $timeout Connect timeout, as a `Duration` or in seconds.
+     *
      * @throws RedisException
      */
-    public static function fromUri(string $uri, float $timeout = self::DEFAULT_TIMEOUT): self
+    public static function fromUri(string $uri, Duration|float $timeout = self::DEFAULT_TIMEOUT): self
     {
+        $timeout = Durations::toSeconds($timeout);
+
         $config = new self();
         $config->timeout = $timeout;
         $config->applyUri($uri);
@@ -262,8 +268,13 @@ final class RedisConfig
         return $this->database;
     }
 
-    public function withTimeout(float $timeout): self
+    /**
+     * @param Duration|float $timeout Connect timeout, as a `Duration` or in seconds.
+     */
+    public function withTimeout(Duration|float $timeout): self
     {
+        $timeout = Durations::toSeconds($timeout);
+
         return clone($this, ['timeout' => $timeout]);
     }
 

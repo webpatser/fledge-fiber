@@ -34,6 +34,8 @@ use League\Uri;
 use Psr\Http\Message\UriInterface as PsrUri;
 use Psr\Log\LoggerInterface as PsrLogger;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\formatDateHeader;
 
@@ -125,12 +127,24 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
 
     private readonly HPack $hpack;
 
+    /** Stream timeout in whole seconds. */
+    private readonly int $streamTimeout;
+
+    /** Connection timeout in whole seconds. */
+    private readonly int $connectionTimeout;
+
+    /**
+     * @param Duration|int $streamTimeout Stream timeout, as a `Duration` or in seconds. A `Duration` is rounded up to
+     *     whole seconds.
+     * @param Duration|int $connectionTimeout Connection timeout, as a `Duration` or in seconds. A `Duration` is
+     *     rounded up to whole seconds.
+     */
     public function __construct(
         RequestHandler $requestHandler,
         ErrorHandler $errorHandler,
         PsrLogger $logger,
-        private readonly int $streamTimeout = self::DEFAULT_STREAM_TIMEOUT,
-        private readonly int $connectionTimeout = self::DEFAULT_CONNECTION_TIMEOUT,
+        Duration|int $streamTimeout = self::DEFAULT_STREAM_TIMEOUT,
+        Duration|int $connectionTimeout = self::DEFAULT_CONNECTION_TIMEOUT,
         private readonly int $headerSizeLimit = self::DEFAULT_HEADER_SIZE_LIMIT,
         private readonly int $bodySizeLimit = self::DEFAULT_BODY_SIZE_LIMIT,
         private readonly int $concurrentStreamLimit = self::DEFAULT_CONCURRENT_STREAM_LIMIT,
@@ -139,6 +153,13 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
         private readonly int $lowValueFrameLimit = self::DEFAULT_LOW_VALUE_FRAME_LIMIT,
         private readonly int $lowValueFrameWindow = self::DEFAULT_LOW_VALUE_FRAME_WINDOW,
     ) {
+        $this->streamTimeout = $streamTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($streamTimeout))
+            : $streamTimeout;
+        $this->connectionTimeout = $connectionTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($connectionTimeout))
+            : $connectionTimeout;
+
         parent::__construct($requestHandler, $errorHandler, $logger);
 
         if ($lowValueFrameLimit < 1 || $lowValueFrameWindow < 1) {

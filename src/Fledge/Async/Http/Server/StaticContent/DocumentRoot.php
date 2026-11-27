@@ -18,6 +18,8 @@ use Fledge\Async\Http\Server\RequestHandler;
 use Fledge\Async\Http\Server\Response;
 use Fledge\Async\Http\Server\StaticContent\Internal\Precondition;
 use Fledge\Async\Pipeline;
+use Fledge\Loop\Durations;
+use Time\Duration;
 use function Fledge\Async\File\filesystem;
 use function Fledge\Async\Http\formatDateHeader;
 
@@ -587,8 +589,16 @@ final class DocumentRoot implements RequestHandler
         $this->useEtagInode = $useInode;
     }
 
-    public function setExpiresPeriod(int $seconds): void
+    /**
+     * @param Duration|int $seconds Cache lifetime, as a `Duration` or in seconds. A `Duration` is rounded up to whole
+     *     seconds; negative values count as zero.
+     */
+    public function setExpiresPeriod(Duration|int $seconds): void
     {
+        $seconds = $seconds instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($seconds))
+            : $seconds;
+
         $this->expiresPeriod = \max(0, $seconds);
     }
 

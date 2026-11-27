@@ -10,6 +10,7 @@ use Fledge\Async\Http\Server\HttpServer;
 use Fledge\Async\Http\Server\Request;
 use Fledge\Async\Http\Server\RequestHandler;
 use Fledge\Async\Http\Server\Response;
+use Time\Duration;
 
 final class StaticResource implements RequestHandler
 {
@@ -53,7 +54,11 @@ final class StaticResource implements RequestHandler
         $this->documentRoot->setUseEtagInode($useInode);
     }
 
-    public function setExpiresPeriod(int $seconds): void
+    /**
+     * @param Duration|int $seconds Cache lifetime, as a `Duration` or in seconds. A `Duration` is rounded up to whole
+     *     seconds; negative values count as zero.
+     */
+    public function setExpiresPeriod(Duration|int $seconds): void
     {
         $this->documentRoot->setExpiresPeriod($seconds);
     }

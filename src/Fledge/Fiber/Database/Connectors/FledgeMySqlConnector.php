@@ -159,7 +159,7 @@ class FledgeMySqlConnector implements ConnectorInterface
             \Pdo\Mysql::ATTR_SSL_CIPHER,
         ];
 
-        if (! array_any($sslOptions, fn ($option) => array_key_exists($option, $options))) {
+        if (! array_any($sslOptions, array_key_exists(?, $options))) {
             return null;
         }
 

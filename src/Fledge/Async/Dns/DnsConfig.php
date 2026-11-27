@@ -2,6 +2,9 @@
 
 namespace Fledge\Async\Dns;
 
+use Fledge\Loop\Durations;
+use Time\Duration;
+
 final class DnsConfig
 {
     private array $nameservers;
@@ -79,8 +82,15 @@ final class DnsConfig
         return $self;
     }
 
-    public function withTimeout(float $timeout): self
+    /**
+     * @param Duration|float $timeout Time until a query is abandoned, as a `Duration` or in seconds.
+     *
+     * @throws DnsConfigException When the timeout is negative (a negated `Duration` included).
+     */
+    public function withTimeout(Duration|float $timeout): self
     {
+        $timeout = Durations::toSeconds($timeout);
+
         if ($timeout < 0) {
             throw new DnsConfigException("Invalid timeout ($timeout), must be 0 or greater");
         }

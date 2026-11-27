@@ -510,7 +510,7 @@ class FledgePdoStatement
 
         $effectiveMode = $mode === PDO::FETCH_DEFAULT ? $this->fetchMode : $mode;
 
-        return array_map(fn (array $row): mixed => $this->applyFetchMode($row, $effectiveMode, $args), $rows);
+        return array_map($this->applyFetchMode(?, $effectiveMode, $args), $rows);
     }
 
     /**

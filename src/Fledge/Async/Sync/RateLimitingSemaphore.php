@@ -5,6 +5,8 @@ namespace Fledge\Async\Sync;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 /**
  * When a locked is released from this semaphore, it does not become available to be acquired again until
@@ -21,18 +23,23 @@ final class RateLimitingSemaphore implements Semaphore
 
     private int $waitingCount = 0;
 
+    private readonly float $lockPeriod;
+
     /**
-     * @param float $lockPeriod Time after which a lock is released from the semaphore after being initially
-     * released by the consumer.
+     * @param Duration|float $lockPeriod Time after which a lock is released from the semaphore after being
+     * initially released by the consumer, as a `Duration` or in seconds.
      */
     public function __construct(
         private readonly Semaphore $semaphore,
-        private readonly float $lockPeriod,
+        Duration|float $lockPeriod,
     ) {
+        $lockPeriod = Durations::toSeconds($lockPeriod);
+
         if ($lockPeriod <= 0) {
             throw new \ValueError('The lock period must be greater than 0, got ' . $lockPeriod);
         }
 
+        $this->lockPeriod = $lockPeriod;
         $this->timers = new \SplQueue();
     }
 

@@ -32,6 +32,8 @@ use Fledge\Async\Stream\SocketAddress;
 use Fledge\Async\Stream\TlsInfo;
 use Fledge\Async\TimeoutCancellation;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 use function Fledge\Async\async;
 use function Fledge\Async\Http\Client\events;
 use function Fledge\Async\Http\Client\Internal\normalizeRequestPathWithQuery;
@@ -81,12 +83,19 @@ final class Http1Connection implements Connection
 
     private ?Future $idleRead = null;
 
+    private readonly float $timeoutGracePeriod;
+
+    /**
+     * @param Duration|float $timeoutGracePeriod Grace period before an idle connection without an explicit keep-alive
+     *     timeout is considered expired, as a `Duration` or in seconds.
+     */
     public function __construct(
         Socket $socket,
         private readonly float $connectDuration,
         private readonly ?float $tlsHandshakeDuration,
-        private readonly float $timeoutGracePeriod = 2,
+        Duration|float $timeoutGracePeriod = 2,
     ) {
+        $this->timeoutGracePeriod = Durations::toSeconds($timeoutGracePeriod);
         $this->socket = $socket;
         $this->localAddress = $socket->getLocalAddress();
         $this->remoteAddress = $socket->getRemoteAddress();
@@ -615,7 +624,7 @@ final class Http1Connection implements Connection
         $params = Http\parseMultipleHeaderFields($response, 'keep-alive')[0] ?? null;
 
         $timeout = (int) ($params['timeout'] ?? $this->priorTimeout);
-        $timeout = \min(\max(0, $timeout), self::MAX_KEEP_ALIVE_TIMEOUT);
+        $timeout = \clamp($timeout, 0, self::MAX_KEEP_ALIVE_TIMEOUT);
 
         return [$timeout, isset($params['timeout']), $timeout];
     }

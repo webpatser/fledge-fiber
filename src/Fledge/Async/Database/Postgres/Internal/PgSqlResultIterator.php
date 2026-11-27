@@ -87,7 +87,7 @@ final readonly class PgSqlResultIterator
                 'int2vector', 'oidvector' => $value, // Deprecated array types
                 default => ArrayParser::parse(
                     $value,
-                    fn (string $data) => $this->cast($type->element, $data),
+                    $this->cast($type->element, ?),
                     $type->delimiter,
                 ),
             },

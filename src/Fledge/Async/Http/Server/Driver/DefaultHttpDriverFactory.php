@@ -5,10 +5,13 @@ namespace Fledge\Async\Http\Server\Driver;
 use Fledge\Async\Http\Server\ErrorHandler;
 use Fledge\Async\Http\Server\RequestHandler;
 use Psr\Log\LoggerInterface as PsrLogger;
+use Time\Duration;
 
 final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
 {
     /**
+     * @param Duration|int $streamTimeout Stream timeout, as a `Duration` or in seconds.
+     * @param Duration|int $connectionTimeout Connection timeout, as a `Duration` or in seconds.
      * @param bool $allowHttp2Upgrade Requires HTTP/2 support to be enabled.
      * @param bool $pushEnabled Requires HTTP/2 support to be enabled.
      * @param positive-int $lowValueFrameLimit HTTP/2 low-value frames allowed per window.
@@ -16,8 +19,8 @@ final readonly class DefaultHttpDriverFactory implements HttpDriverFactory
      */
     public function __construct(
         private PsrLogger $logger,
-        private int $streamTimeout = HttpDriver::DEFAULT_STREAM_TIMEOUT,
-        private int $connectionTimeout = HttpDriver::DEFAULT_CONNECTION_TIMEOUT,
+        private Duration|int $streamTimeout = HttpDriver::DEFAULT_STREAM_TIMEOUT,
+        private Duration|int $connectionTimeout = HttpDriver::DEFAULT_CONNECTION_TIMEOUT,
         private int $headerSizeLimit = HttpDriver::DEFAULT_HEADER_SIZE_LIMIT,
         private int $bodySizeLimit = HttpDriver::DEFAULT_BODY_SIZE_LIMIT,
         private bool $http2Enabled = true,

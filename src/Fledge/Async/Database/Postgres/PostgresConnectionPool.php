@@ -12,6 +12,8 @@ use Fledge\Async\Database\SqlTransaction;
 use Fledge\Async\Database\SqlTransactionIsolation;
 use Fledge\Async\Database\SqlTransactionIsolationLevel;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 use function Fledge\Async\async;
 
 /**
@@ -40,22 +42,29 @@ final class PostgresConnectionPool extends SqlCommonConnectionPool implements Po
 
     /**
      * @param positive-int $maxConnections
-     * @param positive-int $idleTimeout
+     * @param Duration|positive-int $idleTimeout Time until idle connections are removed from the pool, as a `Duration`
+     *     or in seconds. A `Duration` is rounded up to whole seconds.
      * @param bool $resetConnections True to execute DISCARD ALL on checkout of a connection whose session
      *     may have changed (fresh connections included); see Internal\PostgresSessionClassifier.
      * @param SqlConnector<PostgresConfig, PostgresConnection>|null $connector
-     * @param float|null $waitTimeout Fledge: seconds a caller may wait for a connection (the wait on a full
-     *     pool, the connect and the DISCARD ALL on checkout included), null for no limit.
+     * @param Duration|float|null $waitTimeout Fledge: time a caller may wait for a connection (the wait on a full
+     *     pool, the connect and the DISCARD ALL on checkout included), as a `Duration` or in seconds, null for no
+     *     limit.
      */
     public function __construct(
         PostgresConfig $config,
         int $maxConnections = self::DEFAULT_MAX_CONNECTIONS,
-        int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
+        Duration|int $idleTimeout = self::DEFAULT_IDLE_TIMEOUT,
         private readonly bool $resetConnections = true,
         ?SqlConnector $connector = null,
         SqlTransactionIsolation $transactionIsolation = SqlTransactionIsolationLevel::Committed,
-        ?float $waitTimeout = null,
+        Duration|float|null $waitTimeout = null,
     ) {
+        $idleTimeout = $idleTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($idleTimeout))
+            : $idleTimeout;
+        $waitTimeout = Durations::nullable($waitTimeout);
+
         $this->clean = new \WeakMap();
 
         parent::__construct(

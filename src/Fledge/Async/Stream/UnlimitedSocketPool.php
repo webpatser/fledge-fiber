@@ -7,6 +7,7 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use League\Uri\UriString;
 use Fledge\Loop;
+use Time\Duration;
 
 /**
  * SocketPool implementation that doesn't impose any limits on concurrent open connections.
@@ -37,8 +38,11 @@ final class UnlimitedSocketPool implements SocketPool
     /** @var int[] */
     private array $pendingCount = [];
 
+    /**
+     * @param Duration|float $idleTimeout Time until an idle pooled socket is closed, as a `Duration` or in seconds.
+     */
     public function __construct(
-        private readonly float $idleTimeout = 10,
+        private readonly Duration|float $idleTimeout = 10,
         private readonly ?SocketConnector $connector = null,
     ) {
     }

@@ -121,7 +121,7 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
             'max_duration' => $options['max_duration'],
         ];
 
-        $send = fn (Cancellation $cancellation): array => $this->send($request, $body, $options, $cancellation);
+        $send = $this->send($request, $body, $options, ?);
 
         return new FledgeSymfonyResponse($send, $info);
     }

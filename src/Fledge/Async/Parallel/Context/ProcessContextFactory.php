@@ -7,11 +7,15 @@ use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Parallel\Ipc\IpcHub;
 use Fledge\Async\Parallel\Ipc\LocalIpcHub;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 final class ProcessContextFactory implements ContextFactory
 {
     use ForbidCloning;
     use ForbidSerialization;
+
+    private readonly int $childConnectTimeout;
 
     /**
      * @param string|null $workingDirectory Working directory.
@@ -19,17 +23,20 @@ final class ProcessContextFactory implements ContextFactory
      *     the parent.
      * @param string|non-empty-list<string>|null $binary Path to PHP binary or array of binary path and options.
      *      Null will attempt to automatically locate the binary.
-     * @param positive-int $childConnectTimeout Number of seconds the child will attempt to connect to the parent
-     *      before failing.
+     * @param Duration|positive-int $childConnectTimeout Time the child will attempt to connect to the parent before
+     *      failing, as a `Duration` or in seconds. A `Duration` is rounded up to whole seconds.
      * @param IpcHub $ipcHub Optional IpcHub instance.
      */
     public function __construct(
         private readonly ?string $workingDirectory = null,
         private readonly array $environment = [],
         private readonly string|array|null $binary = null,
-        private readonly int $childConnectTimeout = 5,
+        Duration|int $childConnectTimeout = 5,
         private readonly IpcHub $ipcHub = new LocalIpcHub(),
     ) {
+        $this->childConnectTimeout = $childConnectTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($childConnectTimeout))
+            : $childConnectTimeout;
     }
 
     /**

@@ -51,12 +51,12 @@ class FledgeRedisClusterConnection extends FledgeRedisConnection
         $async = strtoupper((string) (func_get_args()[0] ?? '')) === 'ASYNC';
         $params = $async ? ['ASYNC'] : [];
 
-        return $this->fanOutToMasters(fn (string $endpoint) => $this->commandOn($endpoint, 'flushdb', $params));
+        return $this->fanOutToMasters($this->commandOn(?, 'flushdb', $params));
     }
 
     public function flushall()
     {
-        return $this->fanOutToMasters(fn (string $endpoint) => $this->commandOn($endpoint, 'flushall', []));
+        return $this->fanOutToMasters($this->commandOn(?, 'flushall', []));
     }
 
     /**
@@ -107,7 +107,7 @@ class FledgeRedisClusterConnection extends FledgeRedisConnection
      */
     public function keys($pattern = '*')
     {
-        $results = $this->fanOutToMasters(fn (string $endpoint) => $this->commandOn($endpoint, 'keys', [$pattern]));
+        $results = $this->fanOutToMasters($this->commandOn(?, 'keys', [$pattern]));
 
         $merged = [];
 

@@ -12,6 +12,8 @@ use Fledge\Async\Redis\Protocol\RedisValue;
 use Fledge\Async\Redis\RedisException;
 use Fledge\Async\TimeoutCancellation;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 final class ReconnectingRedisLink implements RedisLink
 {
@@ -22,6 +24,8 @@ final class ReconnectingRedisLink implements RedisLink
     private readonly \SplQueue $queue;
 
     private readonly BackoffStrategy $backoff;
+
+    private readonly ?float $readTimeout;
 
     private ?int $database = null;
 
@@ -47,17 +51,18 @@ final class ReconnectingRedisLink implements RedisLink
     private bool $transactionLost = false;
 
     /**
-     * @param ?float $readTimeout Maximum seconds to wait for a single command
-     *     response (phpredis read_timeout); null waits forever.
+     * @param Duration|float|null $readTimeout Maximum time to wait for a single command response (phpredis
+     *     read_timeout), as a `Duration` or in seconds; null waits forever.
      * @param ?int $maxReconnectAttempts Bound on consecutive failed reconnect
      *     attempts before pending commands are failed; null retries forever.
      */
     public function __construct(
         private readonly RedisConnector $connector,
-        private readonly ?float $readTimeout = null,
+        Duration|float|null $readTimeout = null,
         ?BackoffStrategy $backoff = null,
         private readonly ?int $maxReconnectAttempts = null,
     ) {
+        $this->readTimeout = Durations::nullable($readTimeout);
         $this->backoff = $backoff ?? BackoffStrategy::default();
         $this->queue = new \SplQueue();
     }

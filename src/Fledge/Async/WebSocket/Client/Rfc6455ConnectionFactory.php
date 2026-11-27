@@ -12,12 +12,17 @@ use Fledge\Async\WebSocket\Parser\WebsocketParserFactory;
 use Fledge\Async\WebSocket\Rfc6455Client;
 use Fledge\Async\WebSocket\WebsocketHeartbeatQueue;
 use Fledge\Async\WebSocket\WebsocketRateLimit;
+use Time\Duration;
 
 final class Rfc6455ConnectionFactory implements WebsocketConnectionFactory
 {
     use ForbidCloning;
     use ForbidSerialization;
 
+    /**
+     * @param Duration|float $closePeriod Time to wait for the peer to complete the close handshake, as a `Duration` or
+     *     in seconds.
+     */
     public function __construct(
         private readonly ?WebsocketHeartbeatQueue $heartbeatQueue = null,
         private readonly ?WebsocketRateLimit $rateLimit = null,
@@ -26,7 +31,7 @@ final class Rfc6455ConnectionFactory implements WebsocketConnectionFactory
             frameSizeLimit: Rfc6455Connection::DEFAULT_FRAME_SIZE_LIMIT,
         ),
         private readonly int $frameSplitThreshold = Rfc6455Client::DEFAULT_FRAME_SPLIT_THRESHOLD,
-        private readonly float $closePeriod = Rfc6455Client::DEFAULT_CLOSE_PERIOD,
+        private readonly Duration|float $closePeriod = Rfc6455Client::DEFAULT_CLOSE_PERIOD,
     ) {
     }
 

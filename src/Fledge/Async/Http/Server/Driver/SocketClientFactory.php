@@ -7,12 +7,17 @@ use Fledge\Async\Stream\Socket;
 use Fledge\Async\Stream\SocketException;
 use Fledge\Async\TimeoutCancellation;
 use Psr\Log\LoggerInterface as PsrLogger;
+use Time\Duration;
 
 final readonly class SocketClientFactory implements ClientFactory
 {
+    /**
+     * @param Duration|float $tlsHandshakeTimeout Time until the TLS handshake is cancelled, as a `Duration` or in
+     *     seconds. Float INF never cancels.
+     */
     public function __construct(
         private PsrLogger $logger,
-        private float $tlsHandshakeTimeout = 5,
+        private Duration|float $tlsHandshakeTimeout = 5,
     ) {
     }
 

@@ -6,11 +6,35 @@ final class RangeOptions
 {
     private ?int $offset = null;
     private ?int $count = null;
-    private bool $reverse = false;
+    private \SortDirection $direction = \SortDirection::Ascending;
 
     public function withReverseOrder(): self
     {
-        return clone($this, ['reverse' => true]);
+        return clone($this, ['direction' => \SortDirection::Descending]);
+    }
+
+    /**
+     * Descending is the same as {@see withReverseOrder()} (REV); ascending is the default order.
+     *
+     * @param \SortDirection|'asc'|'desc' $direction
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function withDirection(\SortDirection|string $direction): self
+    {
+        $direction = match (true) {
+            $direction instanceof \SortDirection => $direction,
+            \strtolower($direction) === 'asc' => \SortDirection::Ascending,
+            \strtolower($direction) === 'desc' => \SortDirection::Descending,
+            default => throw new \InvalidArgumentException('Range direction must be a SortDirection, "asc" or "desc".'),
+        };
+
+        return clone($this, ['direction' => $direction]);
+    }
+
+    public function getDirection(): \SortDirection
+    {
+        return $this->direction;
     }
 
     public function withLimit(int $offset, int $count): self
@@ -25,7 +49,7 @@ final class RangeOptions
     {
         $query = [];
 
-        if ($this->reverse) {
+        if ($this->direction === \SortDirection::Descending) {
             $query[] = "REV";
         }
 

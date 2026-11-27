@@ -13,6 +13,8 @@ use Fledge\Async\Stream\ResourceSocket;
 use Fledge\Async\Stream\SocketAddressType;
 use Fledge\Async\TimeoutCancellation;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 final class SocketIpcHub implements IpcHub
 {
@@ -37,14 +39,17 @@ final class SocketIpcHub implements IpcHub
     private LocalCache $clientsByKey;
 
     /**
-     * @param float $keyReceiveTimeout Timeout to receive the key on accepted connections.
+     * @param Duration|float $keyReceiveTimeout Timeout to receive the key on accepted connections, as a `Duration` or
+     *     in seconds.
      * @param positive-int $keyLength Length of the random key exchanged on the IPC channel when connecting.
      */
     public function __construct(
         private readonly Stream\ServerSocket $server,
-        float $keyReceiveTimeout = self::DEFAULT_KEY_RECEIVE_TIMEOUT,
+        Duration|float $keyReceiveTimeout = self::DEFAULT_KEY_RECEIVE_TIMEOUT,
         private readonly int $keyLength = self::DEFAULT_KEY_LENGTH,
     ) {
+        $keyReceiveTimeout = Durations::toSeconds($keyReceiveTimeout);
+
         $address = $this->server->getAddress();
         $this->uri = match ($address->getType()) {
             SocketAddressType::Unix => 'unix://' . $address->toString(),

@@ -3,7 +3,6 @@
 namespace Fledge\Async\Parallel;
 
 use Fledge\Async\CompositeException;
-use Fledge\Async\Future;
 use Fledge\Async\Parallel\Worker\WorkerPool;
 use Fledge\Async\Serialization\SerializationException;
 use Laravel\SerializableClosure\SerializableClosure;
@@ -61,7 +60,7 @@ function parallel(callable $callable, ?WorkerPool $pool = null): \Closure
 function parallelMap(array $array, callable $callable, ?WorkerPool $pool = null): array
 {
     $callable = parallel($callable, $pool);
-    $callable = fn (mixed $v): Future => async($callable, $v);
+    $callable = async($callable, ?);
     [$errors, $results] = awaitAll(\array_map($callable, $array));
 
     if ($errors) {
@@ -100,7 +99,7 @@ function parallelFilter(array $array, ?callable $callable = null, int $flag = 0,
         $callable = fn (mixed $v): bool => (bool) $v;
     }
     $callable = parallel($callable, $pool);
-    $callable = fn (mixed ...$v): Future => async($callable, ...$v);
+    $callable = async($callable, ...);
 
     if ($flag === \ARRAY_FILTER_USE_BOTH) {
         /** @psalm-suppress TooManyArguments Ignore this, we can't represent a variable number of args with templates */

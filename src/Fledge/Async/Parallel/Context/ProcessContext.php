@@ -10,6 +10,8 @@ use Fledge\Async\Parallel\Context\Internal\AbstractContext;
 use Fledge\Async\Parallel\Ipc\IpcHub;
 use Fledge\Async\Process\Process;
 use Fledge\Async\Process\ProcessException;
+use Fledge\Loop\Durations;
+use Time\Duration;
 
 /**
  * @template-covariant TResult
@@ -58,8 +60,9 @@ final class ProcessContext extends AbstractContext
      *     the parent.
      * @param string|non-empty-list<string>|null $binary Path to PHP binary or array of binary path and options.
      *      Null will attempt to automatically locate the binary.
-     * @param positive-int $childConnectTimeout Number of seconds the child will attempt to connect to the parent
-     *      before failing.
+     * @param Duration|positive-int $childConnectTimeout Time the child will attempt to connect to the parent before
+     *      failing, as a `Duration` or in seconds. A `Duration` is rounded up to whole seconds, because the value is
+     *      passed to the child process as a command-line argument.
      *
      * @throws ContextException If starting the process fails.
      */
@@ -70,8 +73,13 @@ final class ProcessContext extends AbstractContext
         array $environment = [],
         ?Cancellation $cancellation = null,
         string|array|null $binary = null,
-        int $childConnectTimeout = self::DEFAULT_START_TIMEOUT
+        Duration|int $childConnectTimeout = self::DEFAULT_START_TIMEOUT
     ): self {
+        // The timeout crosses a process boundary as a plain integer number of seconds.
+        $childConnectTimeout = $childConnectTimeout instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($childConnectTimeout))
+            : $childConnectTimeout;
+
         /** @psalm-suppress RedundantFunctionCall */
         $script = \is_array($script) ? \array_values($script) : [$script];
         if (!$script) {

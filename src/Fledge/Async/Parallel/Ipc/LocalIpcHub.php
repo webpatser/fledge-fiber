@@ -8,6 +8,7 @@ use Fledge\Async\ForbidSerialization;
 use Fledge\Async\Stream;
 use Fledge\Async\Stream\ResourceSocket;
 use Fledge\Loop;
+use Time\Duration;
 use const Fledge\Async\Process\IS_WINDOWS;
 
 final class LocalIpcHub implements IpcHub
@@ -20,13 +21,14 @@ final class LocalIpcHub implements IpcHub
     private ?string $toUnlink = null;
 
     /**
-     * @param float $keyReceiveTimeout Timeout to receive the key on accepted connections.
+     * @param Duration|float $keyReceiveTimeout Timeout to receive the key on accepted connections, as a `Duration` or
+     *     in seconds.
      * @param positive-int $keyLength Length of the random key exchanged on the IPC channel when connecting.
      *
      * @throws Stream\SocketException
      */
     public function __construct(
-        float $keyReceiveTimeout = SocketIpcHub::DEFAULT_KEY_RECEIVE_TIMEOUT,
+        Duration|float $keyReceiveTimeout = SocketIpcHub::DEFAULT_KEY_RECEIVE_TIMEOUT,
         int $keyLength = SocketIpcHub::DEFAULT_KEY_LENGTH,
     ) {
         if (IS_WINDOWS) {

@@ -7,7 +7,7 @@ final class SortOptions
     private ?string $pattern = null;
     private ?int $offset = null;
     private ?int $count = null;
-    private bool $ascending = true;
+    private \SortDirection $direction = \SortDirection::Ascending;
     private bool $lexicographically = false;
 
     public function hasPattern(): bool
@@ -57,22 +57,37 @@ final class SortOptions
 
     public function isAscending(): bool
     {
-        return $this->ascending;
+        return $this->direction === \SortDirection::Ascending;
     }
 
     public function isDescending(): bool
     {
-        return !$this->ascending;
+        return $this->direction === \SortDirection::Descending;
+    }
+
+    public function getDirection(): \SortDirection
+    {
+        return $this->direction;
     }
 
     public function withAscendingOrder(): self
     {
-        return clone($this, ['ascending' => true]);
+        return clone($this, ['direction' => \SortDirection::Ascending]);
     }
 
     public function withDescendingOrder(): self
     {
-        return clone($this, ['ascending' => false]);
+        return clone($this, ['direction' => \SortDirection::Descending]);
+    }
+
+    /**
+     * @param \SortDirection|'asc'|'desc' $direction
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function withDirection(\SortDirection|string $direction): self
+    {
+        return clone($this, ['direction' => self::normalizeDirection($direction)]);
     }
 
     public function isLexicographicSorting(): bool
@@ -124,5 +139,15 @@ final class SortOptions
         }
 
         return $payload;
+    }
+
+    private static function normalizeDirection(\SortDirection|string $direction): \SortDirection
+    {
+        return match (true) {
+            $direction instanceof \SortDirection => $direction,
+            \strtolower($direction) === 'asc' => \SortDirection::Ascending,
+            \strtolower($direction) === 'desc' => \SortDirection::Descending,
+            default => throw new \InvalidArgumentException('Sort direction must be a SortDirection, "asc" or "desc".'),
+        };
     }
 }

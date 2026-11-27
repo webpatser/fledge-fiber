@@ -36,7 +36,7 @@ class FiberDB
      */
     public static function concurrent(callable ...$operations): array
     {
-        $futures = array_map(fn (callable $op) => async($op), $operations);
+        $futures = array_map(async(...), $operations);
 
         return await($futures);
     }

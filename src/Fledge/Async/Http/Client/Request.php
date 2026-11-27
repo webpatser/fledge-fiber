@@ -9,8 +9,10 @@ use Fledge\Async\Http\Client\Internal\EventInvoker;
 use Fledge\Async\Http\Client\Internal\Phase;
 use Fledge\Async\Http\HttpMessage;
 use Fledge\Async\Http\HttpRequest;
+use Fledge\Loop\Durations;
 use League\Uri;
 use Psr\Http\Message\UriInterface;
+use Time\Duration;
 use function Fledge\Async\async;
 
 /**
@@ -347,10 +349,11 @@ final class Request extends HttpRequest
     }
 
     /**
-     * Set the timeout in seconds for establishing the TCP connection. Use 0 for no timeout.
+     * Set the timeout for establishing the TCP connection, as a `Duration` or in seconds. Use 0 for no timeout.
      */
-    public function setTcpConnectTimeout(float $tcpConnectTimeout): void
+    public function setTcpConnectTimeout(Duration|float $tcpConnectTimeout): void
     {
+        $tcpConnectTimeout = Durations::toSeconds($tcpConnectTimeout);
         $this->tcpConnectTimeout = \max(0, $tcpConnectTimeout);
     }
 
@@ -363,10 +366,11 @@ final class Request extends HttpRequest
     }
 
     /**
-     * Set the timeout in seconds for the TLS handshake. Use 0 for no timeout.
+     * Set the timeout for the TLS handshake, as a `Duration` or in seconds. Use 0 for no timeout.
      */
-    public function setTlsHandshakeTimeout(float $tlsHandshakeTimeout): void
+    public function setTlsHandshakeTimeout(Duration|float $tlsHandshakeTimeout): void
     {
+        $tlsHandshakeTimeout = Durations::toSeconds($tlsHandshakeTimeout);
         $this->tlsHandshakeTimeout = \max(0, $tlsHandshakeTimeout);
     }
 
@@ -379,11 +383,12 @@ final class Request extends HttpRequest
     }
 
     /**
-     * @param float $transferTimeout The timeout in seconds for the entire HTTP request transfer. Use 0 for no
-     *      transfer timeout.
+     * @param Duration|float $transferTimeout The timeout for the entire HTTP request transfer, as a `Duration` or in
+     *      seconds. Use 0 for no transfer timeout.
      */
-    public function setTransferTimeout(float $transferTimeout): void
+    public function setTransferTimeout(Duration|float $transferTimeout): void
     {
+        $transferTimeout = Durations::toSeconds($transferTimeout);
         $this->transferTimeout = \max(0, $transferTimeout);
     }
 
@@ -396,11 +401,12 @@ final class Request extends HttpRequest
     }
 
     /**
-     * @param float $inactivityTimeout The timeout in seconds since the last data was received before the request
-     *      fails due to inactivity. Use 0 for no inactivity timeout.
+     * @param Duration|float $inactivityTimeout The timeout since the last data was received before the request
+     *      fails due to inactivity, as a `Duration` or in seconds. Use 0 for no inactivity timeout.
      */
-    public function setInactivityTimeout(float $inactivityTimeout): void
+    public function setInactivityTimeout(Duration|float $inactivityTimeout): void
     {
+        $inactivityTimeout = Durations::toSeconds($inactivityTimeout);
         $this->inactivityTimeout = \max(0, $inactivityTimeout);
     }
 

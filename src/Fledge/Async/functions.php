@@ -4,6 +4,7 @@ namespace Fledge\Async;
 
 use Fledge\Loop;
 use Fledge\Loop\UnsupportedFeatureException;
+use Time\Duration;
 
 use function Fledge\Async\Future\awaitAll;
 
@@ -72,7 +73,7 @@ function disperse(array $closures, ?Cancellation $cancellation = null): array
         return [];
     }
 
-    $futures = \array_map(static fn (\Closure $closure): Future => async($closure), $closures);
+    $futures = \array_map(async(...), $closures);
 
     [$errors, $values] = awaitAll($futures, $cancellation);
 
@@ -98,17 +99,17 @@ function now(): float
 /**
  * Non-blocking sleep for the specified number of seconds.
  *
- * @param float $timeout Number of seconds to wait.
+ * @param Duration|float $timeout Time to wait, as a `Duration` or in seconds. Float INF waits until cancelled.
  * @param bool $reference If false, unreference the underlying watcher.
  * @param Cancellation|null $cancellation Cancel waiting if cancellation is requested.
+ *
+ * @throws \Error When the timeout is negative (a negated `Duration` included) or NAN.
  */
-function delay(float $timeout, bool $reference = true, ?Cancellation $cancellation = null): void
+function delay(Duration|float $timeout, bool $reference = true, ?Cancellation $cancellation = null): void
 {
     $suspension = Loop::getSuspension();
     $callbackId = Loop::delay($timeout, static fn () => $suspension->resume());
-    $cancellationId = $cancellation?->subscribe(
-        static fn (CancelledException $exception) => $suspension->throw($exception)
-    );
+    $cancellationId = $cancellation?->subscribe($suspension->throw(...));
 
     if (!$reference) {
         Loop::unreference($callbackId);
@@ -138,7 +139,7 @@ function trapSignal(int|array $signals, bool $reference = true, ?Cancellation $c
 {
     $suspension = Loop::getSuspension();
     $callback = static fn (string $watcher, int $signal) => $suspension->resume($signal);
-    $id = $cancellation?->subscribe(static fn (CancelledException $exception) => $suspension->throw($exception));
+    $id = $cancellation?->subscribe($suspension->throw(...));
 
     $callbackIds = [];
 

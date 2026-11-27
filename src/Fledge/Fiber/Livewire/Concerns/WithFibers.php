@@ -42,7 +42,7 @@ trait WithFibers
             return array_map(fn (callable $op) => $op(), $operations);
         }
 
-        $futures = array_map(fn (callable $op) => async($op), $operations);
+        $futures = array_map(async(...), $operations);
 
         $results = await($futures);
         ksort($results);

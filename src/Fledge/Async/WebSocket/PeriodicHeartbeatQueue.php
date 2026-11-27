@@ -5,6 +5,8 @@ namespace Fledge\Async\WebSocket;
 use Fledge\Async\ForbidCloning;
 use Fledge\Async\ForbidSerialization;
 use Fledge\Loop;
+use Fledge\Loop\Durations;
+use Time\Duration;
 use function Fledge\Async\async;
 use function Fledge\Async\weakClosure;
 
@@ -18,6 +20,8 @@ final class PeriodicHeartbeatQueue implements WebsocketHeartbeatQueue
 
     private readonly string $watcher;
 
+    private readonly int $heartbeatPeriod;
+
     /** @var array<int, float> Least-recently-used cache of next ping (heartbeat) times. */
     private array $heartbeatTimeouts = [];
 
@@ -26,12 +30,17 @@ final class PeriodicHeartbeatQueue implements WebsocketHeartbeatQueue
 
     /**
      * @param positive-int $queuedPingLimit
-     * @param positive-int $heartbeatPeriod
+     * @param positive-int|Duration $heartbeatPeriod Time between heartbeats, as a `Duration` (rounded up to whole
+     *     seconds) or in seconds.
      */
     public function __construct(
         int $queuedPingLimit = 3,
-        private readonly int $heartbeatPeriod = 10,
+        Duration|int $heartbeatPeriod = 10,
     ) {
+        $this->heartbeatPeriod = $heartbeatPeriod instanceof Duration
+            ? (int) \ceil(Durations::toSeconds($heartbeatPeriod))
+            : $heartbeatPeriod;
+
         /** @psalm-suppress TypeDoesNotContainType */
         if ($queuedPingLimit <= 0) {
             throw new \ValueError('Queued ping limit must be greater than 0');

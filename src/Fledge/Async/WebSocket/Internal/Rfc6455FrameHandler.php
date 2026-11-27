@@ -24,6 +24,7 @@ use Fledge\Async\WebSocket\WebsocketCloseInfo;
 use Fledge\Async\WebSocket\WebsocketHeartbeatQueue;
 use Fledge\Async\WebSocket\WebsocketMessage;
 use Fledge\Async\WebSocket\WebsocketRateLimit;
+use Time\Duration;
 use function Fledge\Async\async;
 
 /** @internal */
@@ -46,7 +47,7 @@ final class Rfc6455FrameHandler implements WebsocketFrameHandler
         private readonly ?WebsocketHeartbeatQueue $heartbeatQueue,
         private readonly ?WebsocketRateLimit $rateLimit,
         private readonly WebsocketClientMetadata $metadata,
-        private readonly float $closePeriod,
+        private readonly Duration|float $closePeriod,
     ) {
         $this->closeDeferred = new DeferredFuture();
         $this->messageQueue = new Queue();
@@ -231,9 +232,10 @@ final class Rfc6455FrameHandler implements WebsocketFrameHandler
                     break;
                 }
 
-                // We need a min() here, else someone might just send a pong frame with a very high pong count and
+                // We need an upper bound here, else someone might just send a pong frame with a very high pong count and
                 // leave TCP connection in open state... Then we'd accumulate connections which never are cleaned up...
-                $this->metadata->pongsReceived = \min($this->metadata->pingsSent, \max(0, (int) $data));
+                // pingsSent only ever counts up from 0, so the bounds are ordered.
+                $this->metadata->pongsReceived = \clamp((int) $data, 0, $this->metadata->pingsSent);
                 $this->metadata->lastHeartbeatAt = \microtime(true);
                 break;
 

@@ -439,9 +439,7 @@ final class Http2ConnectionProcessor implements Http2Processor
         $cancellation = $deferredCancellation->getCancellation();
         $body = new ResponseBodyStream(new ReadableIterableStream($iterator), $deferredCancellation);
 
-        $cancellationId = $cancellation->subscribe(
-            fn (CancelledException $exception) => $this->releaseStream($streamId, $exception, false),
-        );
+        $cancellationId = $cancellation->subscribe($this->releaseStream($streamId, ?, false));
 
         $trailers
             ->finally(static fn () => $cancellation->unsubscribe($cancellationId))
@@ -705,9 +703,7 @@ final class Http2ConnectionProcessor implements Http2Processor
         }
 
         Loop::queue(function () use ($pushId, $deferredCancellation, $stream, $cancellation): void {
-            $cancellationId = $cancellation->subscribe(
-                fn (CancelledException $exception) => $this->releaseStream($pushId, $exception, false),
-            );
+            $cancellationId = $cancellation->subscribe($this->releaseStream($pushId, ?, false));
 
             $onPush = $stream->request->getPushHandler();
 
@@ -1009,9 +1005,7 @@ final class Http2ConnectionProcessor implements Http2Processor
 
         $cancellation = $http2stream->cancellation; // Use CompositeCancellation from Http2Stream.
 
-        $cancellationId = $cancellation->subscribe(
-            fn (CancelledException $exception) => $this->releaseStream($streamId, $exception, false),
-        );
+        $cancellationId = $cancellation->subscribe($this->releaseStream($streamId, ?, false));
 
         \assert($http2stream->pendingResponse !== null);
         $responseFuture = $http2stream->pendingResponse->getFuture();

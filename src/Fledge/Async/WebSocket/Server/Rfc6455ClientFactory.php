@@ -16,6 +16,7 @@ use Fledge\Async\WebSocket\Rfc6455Client;
 use Fledge\Async\WebSocket\WebsocketClient;
 use Fledge\Async\WebSocket\WebsocketHeartbeatQueue;
 use Fledge\Async\WebSocket\WebsocketRateLimit;
+use Time\Duration;
 
 /**
  * Creates the server side of a WebSocket connection on the accepted socket as is.
@@ -32,13 +33,15 @@ final class Rfc6455ClientFactory implements WebsocketClientFactory
     /**
      * @param WebsocketHeartbeatQueue|null $heartbeatQueue Use null to disable automatic heartbeats (pings).
      * @param WebsocketRateLimit|null $rateLimit Use null to disable client rate limits.
+     * @param Duration|float $closePeriod Time to wait for the peer to complete the close handshake, as a `Duration` or
+     *     in seconds.
      */
     public function __construct(
         private readonly ?WebsocketHeartbeatQueue $heartbeatQueue = new PeriodicHeartbeatQueue(),
         private readonly ?WebsocketRateLimit $rateLimit = new ConstantRateLimit(),
         private readonly WebsocketParserFactory $parserFactory = new Rfc6455ParserFactory(),
         private readonly int $frameSplitThreshold = Rfc6455Client::DEFAULT_FRAME_SPLIT_THRESHOLD,
-        private readonly float $closePeriod = Rfc6455Client::DEFAULT_CLOSE_PERIOD,
+        private readonly Duration|float $closePeriod = Rfc6455Client::DEFAULT_CLOSE_PERIOD,
     ) {
     }
 
