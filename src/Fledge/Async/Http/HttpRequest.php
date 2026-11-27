@@ -94,7 +94,7 @@ abstract class HttpRequest extends HttpMessage
 
         $mapper ??= static function (array $values): array {
             \assert(\array_is_list($values));
-            return \array_map('strval', $values);
+            return \array_map(\strval(...), $values);
         };
 
         return \array_map($mapper, $this->getInternalQueryParameters());

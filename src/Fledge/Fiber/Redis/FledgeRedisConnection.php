@@ -643,7 +643,7 @@ class FledgeRedisConnection extends Connection implements ConnectionContract
      */
     protected function streamArguments(array $options, array $streams): array
     {
-        return [...$options, 'STREAMS', ...array_map('strval', array_keys($streams)), ...array_values($streams)];
+        return [...$options, 'STREAMS', ...array_map(strval(...), array_keys($streams)), ...array_values($streams)];
     }
 
     /**

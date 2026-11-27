@@ -243,7 +243,7 @@ final class FledgeSymfonyHttpClient implements HttpClientInterface
         $userInfo = $request->getUri()->getUserInfo();
 
         if ($userInfo !== '' && ! $request->hasHeader('authorization')) {
-            $auth = \array_map('rawurldecode', \explode(':', $userInfo, 2)) + [1 => ''];
+            $auth = \array_map(\rawurldecode(...), \explode(':', $userInfo, 2)) + [1 => ''];
             $request->setHeader('Authorization', 'Basic '.\base64_encode(\implode(':', $auth)));
         }
 

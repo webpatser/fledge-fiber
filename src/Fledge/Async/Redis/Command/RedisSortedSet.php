@@ -136,7 +136,7 @@ final readonly class RedisSortedSet
         $payload = [$this->key, \count($keys)];
         $weights = [];
 
-        if (\count(\array_filter(\array_keys($keys), 'is_string'))) {
+        if (\count(\array_filter(\array_keys($keys), \is_string(...)))) {
             foreach ($keys as $key => $weight) {
                 $payload[] = $key;
                 $weights[] = $weight;
@@ -243,7 +243,7 @@ final readonly class RedisSortedSet
         $payload = [$this->key, \count($keys)];
         $weights = [];
 
-        if (\count(\array_filter(\array_keys($keys), 'is_string'))) {
+        if (\count(\array_filter(\array_keys($keys), \is_string(...)))) {
             foreach ($keys as $key => $weight) {
                 $payload[] = $key;
                 $weights[] = $weight;

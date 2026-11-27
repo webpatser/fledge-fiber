@@ -13,6 +13,7 @@ final class MysqlConfig extends SqlConfig
     public const DEFAULT_MAX_PACKET_SIZE = 1024 * 1024 * 1024;
     public const BIN_CHARSET = 45; // utf8mb4_general_ci, understood by MySQL 5.7+ and MariaDB (255 is MySQL 8 only)
 
+    #[\Override]
     public const KEY_MAP = [
         ...parent::KEY_MAP,
         'compress' => 'compression',

@@ -55,7 +55,7 @@ final class ResponseCookie implements \Stringable
         $unknownAttributes = [];
 
         foreach ($parts as $part) {
-            $pieces = \array_map('trim', \explode('=', $part, 2));
+            $pieces = \array_map(\trim(...), \explode('=', $part, 2));
             $key = \strtolower($pieces[0]);
 
             if (\count($pieces) < 2) {

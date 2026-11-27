@@ -365,7 +365,7 @@ final class Http1Parser
 
         if (isset($headerMap['transfer-encoding'])) {
             $transferEncodings = \explode(',', \strtolower(\implode(',', $headerMap['transfer-encoding'])));
-            $transferEncodings = \array_map('trim', $transferEncodings);
+            $transferEncodings = \array_map(\trim(...), $transferEncodings);
             $this->chunkedEncoding = \in_array('chunked', $transferEncodings, true);
         } elseif (!empty($headerMap['content-length'])) {
             if (\count($headerMap['content-length']) > 1) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v13.44.1.4 - 2026-11-27
+
+### Changed
+- PHP 8.6 idioms, no behaviour change: 13 string callables became first-class callables (PHP 8.6 compiles `array_map` with a first-class callable to a loop), and `#[\Override]` marks the `KEY_MAP` constants of `MysqlConfig` and `PostgresConfig`.
+
 ## v13.44.1.3 - 2026-11-27
 
 ### Fixed

@@ -45,7 +45,7 @@ final readonly class Trailers
      */
     public function __construct(Future $future, array $fields = [])
     {
-        $this->fields = $fields = \array_map('strtolower', \array_values($fields));
+        $this->fields = $fields = \array_map(\strtolower(...), \array_values($fields));
 
         foreach ($this->fields as $field) {
             if (isset(self::DISALLOWED_TRAILERS[$field])) {

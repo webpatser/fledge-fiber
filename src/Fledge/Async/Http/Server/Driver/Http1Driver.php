@@ -476,7 +476,7 @@ final class Http1Driver extends AbstractHttpDriver
                     $trailers = new Trailers(
                         $trailerDeferred->getFuture(),
                         isset($headers['trailers'])
-                            ? \array_map('trim', \explode(',', \implode(',', $headers['trailers'])))
+                            ? \array_map(\trim(...), \explode(',', \implode(',', $headers['trailers'])))
                             : []
                     );
                 } catch (InvalidHeaderException $exception) {

@@ -52,7 +52,7 @@ final class Rfc6455Acceptor implements WebsocketAcceptor
 
         $hasConnectionUpgrade = false;
         foreach ($request->getHeaderArray('connection') as $value) {
-            $values = \array_map('trim', \explode(',', $value));
+            $values = \array_map(\trim(...), \explode(',', $value));
 
             foreach ($values as $token) {
                 if (\strcasecmp($token, 'upgrade') === 0) {

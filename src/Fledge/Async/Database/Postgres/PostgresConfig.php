@@ -17,6 +17,7 @@ final class PostgresConfig extends SqlConfig
         'verify-full',
     ];
 
+    #[\Override]
     public const KEY_MAP = [
         ...parent::KEY_MAP,
         'ssl_mode' => 'sslmode',

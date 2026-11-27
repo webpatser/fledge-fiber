@@ -61,7 +61,7 @@ final class Rfc7692Compression implements WebsocketCompressionContext
     private static function fromHeader(bool $isServer, string $headerIn, ?string &$headerOut = null): ?self
     {
         $headerIn = \explode(';', \strtolower($headerIn));
-        $headerIn = \array_map('trim', $headerIn);
+        $headerIn = \array_map(\trim(...), $headerIn);
 
         if (\array_shift($headerIn) !== 'permessage-deflate') {
             return null;

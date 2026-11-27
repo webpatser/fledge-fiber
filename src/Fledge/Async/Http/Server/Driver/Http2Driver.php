@@ -1176,7 +1176,7 @@ final class Http2Driver extends AbstractHttpDriver implements Http2Processor
             $trailers = new Trailers(
                 $this->trailerDeferreds[$streamId]->getFuture(),
                 isset($headers['trailers'])
-                    ? \array_map('trim', \explode(',', \implode(',', $headers['trailers'])))
+                    ? \array_map(\trim(...), \explode(',', \implode(',', $headers['trailers'])))
                     : []
             );
         } catch (InvalidHeaderException $exception) {
